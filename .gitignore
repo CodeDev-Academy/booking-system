@@ -1,0 +1,41 @@
+# Python & Django
+__pycache__/
+*.py[cod]
+*$py.class
+*.sqlite3
+*.db
+local_settings.py
+db.sqlite3-journal
+media/
+staticfiles/
+.env
+
+# Environments
+.env/
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Node.js & React (Frontend)
+node_modules/
+dist/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE & Editor files
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
