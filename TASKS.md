@@ -10,7 +10,7 @@ Every decision, edge case, and feature discussed across all 8 planning stages is
   - Scaffold Django project in `backend/` (`core` settings, `manage.py`).
   - Configure Django REST Framework, `django-cors-headers`, and SQLite database engine with MySQL/Postgres toggle via `DATABASE_URL`.
   - Set up timezone support (`TIME_ZONE = 'Africa/Lagos'`, `USE_TZ = True`).
-- [ ] **Task 1.2: Database Models & Relational Schema (`appointments/models.py`)**
+- [x] **Task 1.2: Database Models & Relational Schema (`appointments/models.py`)**
   - `ClinicSetting`: Clinic name, phone, address, operating hours (open/close/lunch break), 60m offer expiry, 15m hold expiry, default buffer, emergency slots per shift, 24h & 2h reminder toggles.
   - `StaffUser`: Email, full name, password hash, 4-digit quick PIN hash, role (`receptionist`, `doctor`, `clinic_admin`), `is_active` boolean, `last_login`.
   - `Doctor`: Name, email, phone, specialty, working days JSON `[1,2,3,4,5]`, shift start/end times, `is_active`, `is_on_leave` toggle.
