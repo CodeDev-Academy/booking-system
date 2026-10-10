@@ -60,30 +60,31 @@ Every decision, edge case, and feature discussed across all 8 planning stages is
 ---
 
 ## Phase 3: REST API Viewsets, Staff Auth & Real-Time Events
-- [ ] **Task 3.1: Staff Authentication & Governance API**
-  - `POST /api/v1/auth/login/`: Issues 30-day session with HTTP-Only JWT cookie.
+- [x] **Task 3.1: Staff Authentication & Governance API**
+  - `POST /api/v1/auth/login/`: Issues 30-day session with SimpleJWT token pair.
   - `POST /api/v1/auth/pin-unlock/`: Verifies 4-digit PIN after 20-minute screen lock.
   - `POST /api/v1/admin/staff/`: Create new receptionist account for incoming shifts.
   - `POST /api/v1/admin/staff/{id}/reset-pin/`: 1-click PIN reset by admin.
-  - `POST /api/v1/admin/staff/{id}/deactivate/`: 1-click instant deactivation with token blacklisting and immediate 401 session ejection.
-- [ ] **Task 3.2: Intake & Booking Request API**
+  - `POST /api/v1/admin/staff/{id}/deactivate/`: 1-click instant deactivation with immediate 401/403 session ejection.
+- [x] **Task 3.2: Intake & Booking Request API**
   - `POST /api/v1/booking-requests/`: Ingest Web / Telegram requests, phone sanitization, returning patient lookup.
   - `GET /api/v1/booking-requests/`: Queue list with status filters (`awaiting_review`, `re_requested`, `slots_offered`, `offer_expired`), ordered by FIFO (`created_at ASC`).
   - `POST /api/v1/booking-requests/{id}/check-slots/`: Calculate candidate slots.
   - `POST /api/v1/booking-requests/{id}/dispatch-offers/`: Receptionist approves/edits slots and initiates 1-hour window.
   - `POST /api/v1/booking-requests/{id}/ask-info/`: Sends pre-written or custom front-desk prompt to patient.
-- [ ] **Task 3.3: Appointment & Live Visit Management API**
-  - `POST /api/v1/appointments/hold/`: Patient selects slot; creates atomic hold/confirmation.
+- [x] **Task 3.3: Appointment & Live Visit Management API**
+  - `POST /api/v1/appointments/hold/` and `/api/v1/slots/hold/`: Patient selects slot; creates atomic hold/confirmation.
   - `PATCH /api/v1/appointments/{id}/status/`: Advance status (`arrived`, `in_consultation`, `completed`, `no_show`, `cancelled`).
   - `POST /api/v1/appointments/{id}/follow-up/`: Schedule doctor-directed follow-up task.
-- [ ] **Task 3.4: Clinic Settings & Staff Directory API**
+  - `POST /api/v1/appointments/{id}/reassign-leave/`: 1-click colleague reassignment when doctor takes sick leave.
+- [x] **Task 3.4: Clinic Settings & Staff Directory API**
   - `GET / PATCH /api/v1/clinic/settings/`: Visual settings CRUD for non-technical managers.
   - `GET /api/v1/clinic/staff-directory/`: Roster of doctors and receptionists with live duty status and attendance metrics.
-- [ ] **Task 3.5: Real-Time SSE Hub & Presence Broadcasting**
+- [x] **Task 3.5: Real-Time SSE Hub & Presence Broadcasting**
   - `GET /api/v1/realtime/events/`: Server-Sent Events endpoint streaming updates.
   - Broadcast `request.created`, `slot.held`, `offer.expired`, `status.updated`.
   - Broadcast `request.reviewing` presence badge when a receptionist opens a card.
-- [ ] **Task 3.6: Analytics & Export API**
+- [x] **Task 3.6: Analytics & Export API**
   - `GET /api/v1/analytics/summary/`: Total bookings, attendance vs no-shows, top doctors/services, front-desk response times.
   - `GET /api/v1/analytics/export/appointments/`: Stream CSV file.
   - `GET /api/v1/analytics/export/attendance/`: Stream CSV file.
