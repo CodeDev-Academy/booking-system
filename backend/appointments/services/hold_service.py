@@ -58,6 +58,18 @@ class HoldService:
         """
         now = timezone.now()
 
+        if isinstance(start_datetime, str):
+            from django.utils.dateparse import parse_datetime
+            start_datetime = parse_datetime(start_datetime)
+            if start_datetime and timezone.is_naive(start_datetime):
+                start_datetime = timezone.make_aware(start_datetime)
+
+        if isinstance(end_datetime, str):
+            from django.utils.dateparse import parse_datetime
+            end_datetime = parse_datetime(end_datetime)
+            if end_datetime and timezone.is_naive(end_datetime):
+                end_datetime = timezone.make_aware(end_datetime)
+
         with transaction.atomic():
             # Check for conflicting active appointments or active temporary holds
             conflict_exists = Appointment.objects.filter(

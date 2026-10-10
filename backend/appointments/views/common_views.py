@@ -1,5 +1,5 @@
 """
-Views for the appointments application.
+Common utility views including healthcheck.
 """
 
 from django.conf import settings
