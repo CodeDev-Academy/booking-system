@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 import urllib.parse
 import importlib.util
+import dj_database_url
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -99,35 +100,17 @@ WSGI_APPLICATION = 'core.wsgi.application'
 ASGI_APPLICATION = 'core.asgi.application'
 
 # Database Configuration
-# Automatically parses DATABASE_URL (PostgreSQL, MySQL, or SQLite)
+# Automatically parses DATABASE_URL (PostgreSQL, MySQL, or SQLite) via dj-database-url
 # Defaults to local SQLite db.sqlite3
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
-if DATABASE_URL and (DATABASE_URL.startswith('postgres://') or DATABASE_URL.startswith('postgresql://')):
-    url = urllib.parse.urlparse(DATABASE_URL)
+if DATABASE_URL:
     DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': url.path[1:],
-            'USER': url.username,
-            'PASSWORD': url.password,
-            'HOST': url.hostname,
-            'PORT': url.port or 5432,
-            'CONN_MAX_AGE': 600,
-        }
-    }
-elif DATABASE_URL and (DATABASE_URL.startswith('mysql://') or DATABASE_URL.startswith('mysqlclient://')):
-    url = urllib.parse.urlparse(DATABASE_URL)
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.mysql',
-            'NAME': url.path[1:],
-            'USER': url.username,
-            'PASSWORD': url.password,
-            'HOST': url.hostname,
-            'PORT': url.port or 3306,
-            'CONN_MAX_AGE': 600,
-        }
+        'default': dj_database_url.parse(
+            DATABASE_URL,
+            conn_max_age=600 if not DATABASE_URL.startswith('sqlite') else 0,
+            ssl_require=bool('postgres' in DATABASE_URL and 'localhost' not in DATABASE_URL),
+        )
     }
 else:
     DATABASES = {

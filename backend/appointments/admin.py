@@ -25,9 +25,17 @@ class ClinicSettingAdmin(admin.ModelAdmin):
 
 @admin.register(StaffUser)
 class StaffUserAdmin(admin.ModelAdmin):
-    list_display = ('full_name', 'email', 'role', 'is_active', 'last_login', 'created_at')
+    list_display = ('user', 'get_full_name', 'get_email', 'role', 'is_active', 'created_at')
     list_filter = ('role', 'is_active')
-    search_fields = ('full_name', 'email')
+    search_fields = ('user__username', 'user__first_name', 'user__last_name', 'user__email')
+
+    @admin.display(description='Full Name')
+    def get_full_name(self, obj):
+        return obj.user.get_full_name() or obj.user.username
+
+    @admin.display(description='Email')
+    def get_email(self, obj):
+        return obj.user.email
 
 
 class DoctorServiceInline(admin.TabularInline):

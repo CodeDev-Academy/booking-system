@@ -4,6 +4,7 @@ Agency Template Master Schema.
 """
 
 import uuid
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -53,7 +54,7 @@ class ClinicSetting(models.Model):
 
 class StaffUser(models.Model):
     """
-    Staff accounts for Receptionists, Doctors, and Clinic Admins.
+    Staff accounts for Receptionists, Doctors, and Clinic Admins linked to Django auth User.
     Supports 30-day session cookies and 20-min Quick PIN lock.
     """
     ROLE_CHOICES = [
@@ -63,9 +64,11 @@ class StaffUser(models.Model):
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    full_name = models.CharField(max_length=150)
-    email = models.EmailField(unique=True)
-    password_hash = models.CharField(max_length=255)
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='staff_profile'
+    )
     quick_pin_hash = models.CharField(
         max_length=255,
         blank=True,
@@ -74,15 +77,22 @@ class StaffUser(models.Model):
     )
     role = models.CharField(max_length=30, choices=ROLE_CHOICES, default='receptionist')
     is_active = models.BooleanField(default=True, help_text="Set to False to instantly revoke all sessions and lock account")
-    last_login = models.DateTimeField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ['full_name']
+        ordering = ['user__first_name', 'user__last_name']
         indexes = [
-            models.Index(fields=['email'], name='idx_staff_email'),
             models.Index(fields=['is_active', 'role'], name='idx_staff_status_role'),
         ]
+
+    @property
+    def full_name(self):
+        name = self.user.get_full_name()
+        return name if name else self.user.username
+
+    @property
+    def email(self):
+        return self.user.email
 
     def __str__(self):
         return f"{self.full_name} ({self.get_role_display()})"
@@ -112,6 +122,10 @@ class Doctor(models.Model):
             models.Index(fields=['is_active', 'is_on_leave'], name='idx_doc_active_leave'),
             models.Index(fields=['specialty'], name='idx_doc_specialty'),
         ]
+
+    def is_available_on_date(self, target_date):
+        """Checks if doctor works on target_date using ISO weekday (1=Mon, 7=Sun)."""
+        return target_date.isoweekday() in self.working_days
 
     def __str__(self):
         return f"{self.name} — {self.specialty}"
@@ -254,7 +268,11 @@ class BookingRequest(models.Model):
     
     # 2-Week Requested Window
     preferred_date_start = models.DateField()
-    preferred_date_end = models.DateField()
+    preferred_date_end = models.DateField(
+        blank=True,
+        null=True,
+        help_text="End of 2-week window; defaults to start date if single day selected"
+    )
     preferred_time_window = models.CharField(max_length=20, choices=TIME_WINDOW_CHOICES, default='morning')
     
     channel = models.CharField(max_length=20, choices=CHANNEL_CHOICES, default='web')
@@ -276,6 +294,11 @@ class BookingRequest(models.Model):
     rejection_reason = models.CharField(max_length=255, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        if not self.preferred_date_end and self.preferred_date_start:
+            self.preferred_date_end = self.preferred_date_start
+        super().save(*args, **kwargs)
 
     class Meta:
         ordering = ['created_at']  # FIFO Order: Earliest patients on top
@@ -365,7 +388,7 @@ class Appointment(models.Model):
     arrival_at = models.DateTimeField(blank=True, null=True)
     completed_at = models.DateTimeField(blank=True, null=True)
     cancelled_at = models.DateTimeField(blank=True, null=True)
-    cancellation_reason = models.CharField(max_length=255, blank=True, null=True)
+    cancellation_reason = models.TextField(blank=True, null=True, help_text="Detailed clinical cancellation notes")
 
     # Reminders Dispatch Log
     reminder_24h_sent = models.BooleanField(default=False)
