@@ -1,31 +1,43 @@
 """
 Django settings for Clinic Booking System core project.
 Agency Template Architecture.
+Zero-friction local dev + full production support.
 """
 
 import os
+import sys
 from pathlib import Path
-import dj_database_url
-from dotenv import load_dotenv
+import urllib.parse
+import importlib.util
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Load environment variables from .env if present
-load_dotenv(BASE_DIR / '.env')
+# Lightweight .env loader using standard library
+env_file = BASE_DIR / '.env'
+if env_file.exists():
+    with open(env_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, val = line.split('=', 1)
+                os.environ.setdefault(key.strip(), val.strip().strip("'\""))
 
 # SECURITY & DEBUG SETTINGS
 DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() in ('true', '1', 'yes')
 
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
 if not SECRET_KEY:
-    if DEBUG:
+    if DEBUG or os.environ.get('DJANGO_DEV_MODE', '1') == '1':
         SECRET_KEY = 'django-insecure-cedarcare-clinic-template-dev-key-2026-wuse2-abuja'
     else:
         raise ValueError("DJANGO_SECRET_KEY environment variable must be set in production.")
 
-raw_hosts = os.environ.get('DJANGO_ALLOWED_HOSTS', '*' if DEBUG else '')
+raw_hosts = os.environ.get('DJANGO_ALLOWED_HOSTS', '*' if DEBUG or os.environ.get('DJANGO_DEV_MODE', '1') == '1' else '')
 ALLOWED_HOSTS = [h.strip() for h in raw_hosts.split(',') if h.strip()]
+
+# Check optional production modules
+has_whitenoise = importlib.util.find_spec('whitenoise') is not None
 
 # Application definition
 INSTALLED_APPS = [
@@ -34,28 +46,36 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
-    'whitenoise.runserver_nostatic',
-    'django.contrib.staticfiles',
+]
 
+if has_whitenoise:
+    INSTALLED_APPS.append('whitenoise.runserver_nostatic')
+
+INSTALLED_APPS.extend([
+    'django.contrib.staticfiles',
     # Third-party packages
     'rest_framework',
     'corsheaders',
-
     # Core Clinic Apps
     'appointments.apps.AppointmentsConfig',
-]
+])
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware',
+]
+
+if has_whitenoise:
+    MIDDLEWARE.append('whitenoise.middleware.WhiteNoiseMiddleware')
+
+MIDDLEWARE.extend([
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-]
+])
 
 ROOT_URLCONF = 'core.urls'
 
@@ -79,17 +99,44 @@ WSGI_APPLICATION = 'core.wsgi.application'
 ASGI_APPLICATION = 'core.asgi.application'
 
 # Database Configuration
-# Dynamic connection pooling: conn_max_age=0 for SQLite to avoid file-lock deadlocks;
-# conn_max_age=600 for client-server databases (PostgreSQL/MySQL) on Railway.
-is_postgres_or_mysql = 'DATABASE_URL' in os.environ and not os.environ['DATABASE_URL'].startswith('sqlite')
+# Automatically parses DATABASE_URL (PostgreSQL, MySQL, or SQLite)
+# Defaults to local SQLite db.sqlite3
+DATABASE_URL = os.environ.get('DATABASE_URL')
 
-DATABASES = {
-    'default': dj_database_url.config(
-        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
-        conn_max_age=600 if is_postgres_or_mysql else 0,
-        conn_health_checks=is_postgres_or_mysql,
-    )
-}
+if DATABASE_URL and (DATABASE_URL.startswith('postgres://') or DATABASE_URL.startswith('postgresql://')):
+    url = urllib.parse.urlparse(DATABASE_URL)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': url.path[1:],
+            'USER': url.username,
+            'PASSWORD': url.password,
+            'HOST': url.hostname,
+            'PORT': url.port or 5432,
+            'CONN_MAX_AGE': 600,
+        }
+    }
+elif DATABASE_URL and (DATABASE_URL.startswith('mysql://') or DATABASE_URL.startswith('mysqlclient://')):
+    url = urllib.parse.urlparse(DATABASE_URL)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.mysql',
+            'NAME': url.path[1:],
+            'USER': url.username,
+            'PASSWORD': url.password,
+            'HOST': url.hostname,
+            'PORT': url.port or 3306,
+            'CONN_MAX_AGE': 600,
+        }
+    }
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+            'CONN_MAX_AGE': 0,  # Avoid file-lock deadlocks on SQLite
+        }
+    }
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
@@ -108,16 +155,17 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-# Internationalization & Timezone
+# Internationalization & Timezone (Africa/Lagos)
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'Africa/Lagos'
 USE_I18N = True
 USE_TZ = True
 
-# Static files (CSS, JavaScript, Images) with WhiteNoise storage
+# Static files (CSS, JavaScript, Images)
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+if has_whitenoise:
+    STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
@@ -126,7 +174,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.SessionAuthentication',
-        # Ready for rest_framework_simplejwt.authentication.JWTAuthentication in Task 3.1
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',

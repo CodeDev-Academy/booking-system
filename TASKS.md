@@ -22,7 +22,7 @@ Every decision, edge case, and feature discussed across all 8 planning stages is
   - `Appointment`: Code (`AP-1042`), Patient name, phone, Doctor FK, Service FK, BookingRequest FK, `start_datetime`, `end_datetime`, status (`held`, `confirmed`, `arrived`, `in_consultation`, `completed`, `cancelled`, `no_show`, `hold_expired`), `hold_expires_at`, `confirmed_at`, `arrival_at`, `completed_at`, `cancelled_at`, cancellation reason.
   - `FollowUpTask`: Appointment FK, Doctor FK, follow-up date, notes, `reminder_sent`, `is_completed`.
   - `AuditLog`: Timestamp, Actor (staff name/ID), Action, Entity Name, Entity ID, Changes JSON, IP address.
-- [ ] **Task 1.3: Database Migrations**
+- [x] **Task 1.3: Database Migrations**
   - Generate initial migrations (`makemigrations`) and execute schema creation (`migrate`).
 - [ ] **Task 1.4: One-Click Demo Seeder (`manage.py seed_clinic`)**
   - Populate default clinic settings (Cedarcare Specialist Clinic, Wuse 2, Abuja).
