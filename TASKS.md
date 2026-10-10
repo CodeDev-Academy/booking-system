@@ -33,29 +33,29 @@ Every decision, edge case, and feature discussed across all 8 planning stages is
 ---
 
 ## Phase 2: Availability Engine, Atomic Holds & Business Logic
-- [ ] **Task 2.1: Deterministic Availability Calculator (`availability_service.py`)**
+- [x] **Task 2.1: Deterministic Availability Calculator (`availability.py`)**
   - Doctor shift & working days filter.
   - Doctor service qualification matching.
   - Total block size calculation (`duration + buffer`).
   - Overlap & conflict detector against existing appointments, holds, and lunch breaks.
   - Emergency reserve protection (shields 1 floating slot per shift from regular booking).
   - Contiguous schedule scoring ($W_1 \dots W_4$) to avoid fragmented gaps.
-- [ ] **Task 2.2: 2-Week Range & Nearest-Alternative Fallback**
+- [x] **Task 2.2: 2-Week Range & Nearest-Alternative Fallback**
   - Query slots within the patient's requested 2-week date window.
   - If 0 slots exist, automatically calculate the 3 earliest available slots immediately following the window and flag them as `is_alternative_date = True`.
-- [ ] **Task 2.3: Atomic Slot Hold & Selection Engine (`hold_service.py`)**
+- [x] **Task 2.3: Atomic Slot Hold & Selection Engine (`hold_service.py`)**
   - Implement concurrency-safe `select_for_update()` transaction.
   - Acquire 15-minute temporary hold or instant confirmation.
   - Handle race conditions (first patient secures slot; second patient receives friendly alternate times).
-- [ ] **Task 2.4: Doctor Sick Leave Disruption Protocol**
+- [x] **Task 2.4: Doctor Sick Leave Disruption Protocol (`disruption_service.py`)**
   - When doctor is marked `is_on_leave = True`, generate disruption alerts for affected bookings.
   - Implement 1-click reassignment to an available colleague at the same time.
   - Implement 1-click reschedule options generator for another day.
-- [ ] **Task 2.5: 60-Second Expiry Cron Sweeper (`sweep_service.py`)**
+- [x] **Task 2.5: 60-Second Expiry Cron Sweeper (`sweep_service.py` & `run_expiry_sweep.py`)**
   - Check `BookingRequest` records where `status = 'slots_offered'` and `offer_expires_at < now()`.
   - Transition to `offer_expired` and trigger re-engagement dispatch.
   - Check `Appointment` records where `status = 'held'` and `hold_expires_at < now()`.
-  - Transition to `hold_expired` and free the slot back to the open pool.
+  - Transition to `cancelled` with reason and free the slot back to the open pool.
 
 ---
 
