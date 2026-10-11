@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { LockIcon, ShieldIcon, AlertCircleIcon, LogOutIcon } from '../common/Icons';
+import { LockIcon, AlertCircleIcon, LogOutIcon } from '../common/Icons';
 
 export const QuickPinLockModal = () => {
   const { isLocked, currentUser, unlockWithPin, logout } = useAuth();
@@ -15,15 +15,12 @@ export const QuickPinLockModal = () => {
     }
   }, [isLocked]);
 
-  // Keyboard listener for typing PIN
   useEffect(() => {
     if (!isLocked) return;
 
     const handleKeyDown = (e) => {
       if (e.key >= '0' && e.key <= '9') {
-        if (pin.length < 4) {
-          handleDigitPress(e.key);
-        }
+        if (pin.length < 4) handleDigitPress(e.key);
       } else if (e.key === 'Backspace') {
         handleBackspace();
       } else if (e.key === 'Enter' && pin.length === 4) {
@@ -42,7 +39,6 @@ export const QuickPinLockModal = () => {
       const nextPin = pin + digit;
       setPin(nextPin);
       setError('');
-
       if (nextPin.length === 4) {
         handleSubmitPin(nextPin);
       }
@@ -75,44 +71,45 @@ export const QuickPinLockModal = () => {
     <div style={{
       position: 'fixed',
       inset: 0,
-      backgroundColor: 'rgba(15, 23, 42, 0.88)',
-      backdropFilter: 'blur(10px)',
+      backgroundColor: 'rgba(0, 0, 0, 0.88)',
+      backdropFilter: 'blur(20px)',
+      WebkitBackdropFilter: 'blur(20px)',
       zIndex: 9999,
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
       padding: '20px'
     }}>
-      <div style={{
-        background: '#ffffff',
-        borderRadius: '20px',
+      <div className="glass-card" style={{
         width: '100%',
-        maxWidth: '380px',
-        padding: '32px 28px',
-        boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+        maxWidth: '360px',
+        padding: '36px 28px',
         textAlign: 'center',
         transform: isShaking ? 'translateX(-6px)' : 'none',
-        transition: 'transform 0.08s ease-in-out'
+        transition: 'transform 0.08s ease-in-out',
+        border: '1px solid rgba(255, 255, 255, 0.15)',
+        background: 'rgba(20, 21, 25, 0.92)'
       }}>
-        {/* Header Icon */}
+        {/* Lock Icon */}
         <div style={{
-          width: '56px',
-          height: '56px',
+          width: '52px',
+          height: '52px',
           borderRadius: '50%',
-          backgroundColor: 'var(--color-primary-light)',
-          color: 'var(--color-primary)',
+          backgroundColor: 'rgba(255, 107, 0, 0.15)',
+          color: 'var(--color-accent-orange)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          margin: '0 auto 16px'
+          margin: '0 auto 16px',
+          boxShadow: '0 0 20px rgba(255, 107, 0, 0.3)'
         }}>
-          <LockIcon size={26} color="var(--color-primary)" />
+          <LockIcon size={24} color="var(--color-accent-orange)" />
         </div>
 
-        <h2 style={{ fontSize: '1.25rem', marginBottom: '6px' }}>Desk Screen Locked</h2>
-        <p style={{ fontSize: '0.875rem', color: 'var(--color-text-muted)', marginBottom: '16px' }}>
-          20-minute idle threshold reached.<br />
-          <strong>{currentUser?.full_name}</strong> ({currentUser?.desk || 'Front Desk'})
+        <h2 style={{ fontSize: '1.25rem', color: '#ffffff', marginBottom: '6px' }}>Screen Locked</h2>
+        <p style={{ fontSize: '0.8125rem', color: '#8e8e93', marginBottom: '20px' }}>
+          Enter Quick PIN to resume shift<br />
+          <strong style={{ color: '#ffffff' }}>{currentUser?.full_name}</strong>
         </p>
 
         {/* PIN Indicators */}
@@ -120,7 +117,7 @@ export const QuickPinLockModal = () => {
           display: 'flex',
           justifyContent: 'center',
           gap: '14px',
-          margin: '20px 0 24px'
+          marginBottom: '20px'
         }}>
           {[0, 1, 2, 3].map((index) => {
             const isFilled = pin.length > index;
@@ -128,11 +125,12 @@ export const QuickPinLockModal = () => {
               <div
                 key={index}
                 style={{
-                  width: '18px',
-                  height: '18px',
+                  width: '16px',
+                  height: '16px',
                   borderRadius: '50%',
-                  border: '2px solid var(--color-primary)',
-                  backgroundColor: isFilled ? 'var(--color-primary)' : 'transparent',
+                  border: isFilled ? 'none' : '2px solid rgba(255, 255, 255, 0.2)',
+                  backgroundColor: isFilled ? 'var(--color-accent-orange)' : 'transparent',
+                  boxShadow: isFilled ? '0 0 10px rgba(255, 107, 0, 0.6)' : 'none',
                   transition: 'all 0.15s ease'
                 }}
               />
@@ -142,20 +140,15 @@ export const QuickPinLockModal = () => {
 
         {error && (
           <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '6px',
-            color: 'var(--color-danger)',
-            fontSize: '0.8125rem',
+            color: 'var(--color-accent-coral)',
+            fontSize: '0.75rem',
             marginBottom: '14px'
           }}>
-            <AlertCircleIcon size={14} color="var(--color-danger)" />
-            <span>{error}</span>
+            {error}
           </div>
         )}
 
-        {/* Numeric Keypad */}
+        {/* Keypad */}
         <div style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(3, 1fr)',
@@ -166,96 +159,84 @@ export const QuickPinLockModal = () => {
             <button
               key={num}
               onClick={() => handleDigitPress(num.toString())}
+              className="btn-pill"
               style={{
-                height: '52px',
-                borderRadius: '12px',
+                height: '48px',
+                borderRadius: 'var(--radius-md)',
                 fontSize: '1.25rem',
-                fontWeight: '600',
-                backgroundColor: 'var(--color-surface-subtle)',
-                color: 'var(--color-text-main)',
-                border: '1px solid var(--color-border)',
-                transition: 'background-color 0.1s'
+                fontWeight: '700',
+                backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                color: '#ffffff',
+                border: '1px solid rgba(255, 255, 255, 0.08)'
               }}
-              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--color-border)'}
-              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'var(--color-surface-subtle)'}
             >
               {num}
             </button>
           ))}
           <button
             onClick={handleClear}
+            className="btn-pill"
             style={{
-              height: '52px',
-              borderRadius: '12px',
-              fontSize: '0.875rem',
-              fontWeight: '600',
-              color: 'var(--color-text-muted)',
-              backgroundColor: 'var(--color-surface-subtle)',
-              border: '1px solid var(--color-border)'
+              height: '48px',
+              borderRadius: 'var(--radius-md)',
+              fontSize: '0.8125rem',
+              color: '#8e8e93',
+              backgroundColor: 'rgba(255, 255, 255, 0.03)'
             }}
           >
             Clear
           </button>
           <button
             onClick={() => handleDigitPress('0')}
+            className="btn-pill"
             style={{
-              height: '52px',
-              borderRadius: '12px',
+              height: '48px',
+              borderRadius: 'var(--radius-md)',
               fontSize: '1.25rem',
-              fontWeight: '600',
-              backgroundColor: 'var(--color-surface-subtle)',
-              color: 'var(--color-text-main)',
-              border: '1px solid var(--color-border)'
+              fontWeight: '700',
+              backgroundColor: 'rgba(255, 255, 255, 0.04)',
+              color: '#ffffff',
+              border: '1px solid rgba(255, 255, 255, 0.08)'
             }}
           >
             0
           </button>
           <button
             onClick={handleBackspace}
+            className="btn-pill"
             style={{
-              height: '52px',
-              borderRadius: '12px',
+              height: '48px',
+              borderRadius: 'var(--radius-md)',
               fontSize: '0.875rem',
-              fontWeight: '600',
-              color: 'var(--color-text-muted)',
-              backgroundColor: 'var(--color-surface-subtle)',
-              border: '1px solid var(--color-border)'
+              color: '#8e8e93',
+              backgroundColor: 'rgba(255, 255, 255, 0.03)'
             }}
           >
             ⌫
           </button>
         </div>
 
-        {/* Demo Pin helper badge */}
         <div style={{
-          backgroundColor: 'var(--color-info-bg)',
-          color: 'var(--color-info-text)',
           fontSize: '0.75rem',
-          padding: '6px 10px',
-          borderRadius: '8px',
-          marginBottom: '16px',
-          display: 'inline-block'
+          color: '#8e8e93',
+          marginBottom: '16px'
         }}>
-          💡 Quick PIN: <strong>1234</strong>
+          Default PIN: <strong style={{ color: '#ffffff' }}>1234</strong>
         </div>
 
-        {/* Logout / Switch */}
-        <div>
-          <button
-            onClick={logout}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              fontSize: '0.8125rem',
-              color: 'var(--color-danger)',
-              fontWeight: '500'
-            }}
-          >
-            <LogOutIcon size={14} color="var(--color-danger)" />
-            Switch Staff / Sign Out
-          </button>
-        </div>
+        <button
+          onClick={logout}
+          style={{
+            fontSize: '0.8125rem',
+            color: 'var(--color-accent-coral)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px'
+          }}
+        >
+          <LogOutIcon size={14} color="currentColor" />
+          <span>Switch Account</span>
+        </button>
       </div>
     </div>
   );

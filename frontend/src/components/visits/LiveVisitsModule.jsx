@@ -1,17 +1,14 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
-  CalendarIcon,
   ClockIcon,
-  UserIcon,
-  PhoneIcon,
-  StethoscopeIcon,
   CheckCircleIcon,
-  AlertTriangleIcon
+  ChevronRightIcon
 } from '../common/Icons';
 import { FollowUpCompletionModal } from './FollowUpCompletionModal';
-import { INITIAL_DOCTORS } from '../../utils/mockData';
+import { PastAppointmentsHistory } from './PastAppointmentsHistory';
 
-export const LiveVisitsModule = ({ controller }) => {
+export const LiveVisitsModule = ({ controller, doctors = [] }) => {
+  const [activeView, setActiveView] = useState('live'); // 'live' or 'history'
   const {
     filterDoctor,
     setFilterDoctor,
@@ -22,272 +19,376 @@ export const LiveVisitsModule = ({ controller }) => {
     arrivedCount,
     inConsultCount,
     completedCount,
-    confirmedCount,
+    noShowCount,
     filteredAppointments,
     updateVisitStatus,
     completeWithFollowUp
   } = controller;
 
-  const getStatusBadge = (status) => {
-    switch (status) {
-      case 'arrived':
-        return <span className="badge badge-warning">Waiting in Clinic</span>;
-      case 'in_consultation':
-        return <span className="badge badge-primary">🩺 In Consultation</span>;
-      case 'completed':
-        return <span className="badge badge-success">✅ Completed</span>;
-      case 'no_show':
-        return <span className="badge badge-danger">⚠️ No-Show</span>;
-      default:
-        return <span className="badge badge-info">📅 Confirmed Today</span>;
-    }
-  };
-
   return (
-    <div>
-      {/* Header & Metrics Strip */}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      {/* Primary Section Switcher: Today's Live Visits vs Past Appointments History */}
       <div style={{
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        marginBottom: '20px',
         flexWrap: 'wrap',
-        gap: '12px'
+        gap: '12px',
+        paddingBottom: '2px'
       }}>
-        <div>
-          <h1 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Live Clinic Visits Tracker</h1>
-          <p style={{ fontSize: '0.875rem', color: 'var(--color-text-muted)' }}>
-            Real-time patient progression from waiting room to doctor consultation and discharge.
-          </p>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          backgroundColor: 'rgba(255, 255, 255, 0.04)',
+          padding: '4px',
+          borderRadius: 'var(--radius-pill)',
+          border: '1px solid var(--color-border-glass)'
+        }}>
+          <button
+            onClick={() => setActiveView('live')}
+            className="btn-pill"
+            style={{
+              padding: '7px 18px',
+              fontSize: '0.8125rem',
+              fontWeight: activeView === 'live' ? '700' : '500',
+              backgroundColor: activeView === 'live' ? 'var(--color-accent-orange)' : 'transparent',
+              color: activeView === 'live' ? '#ffffff' : '#8e8e93',
+              boxShadow: activeView === 'live' ? '0 0 15px rgba(255, 107, 0, 0.4)' : 'none',
+              border: 'none'
+            }}
+          >
+            🕒 Today's Live Queue
+          </button>
+
+          <button
+            onClick={() => setActiveView('history')}
+            className="btn-pill"
+            style={{
+              padding: '7px 18px',
+              fontSize: '0.8125rem',
+              fontWeight: activeView === 'history' ? '700' : '500',
+              backgroundColor: activeView === 'history' ? 'var(--color-accent-orange)' : 'transparent',
+              color: activeView === 'history' ? '#ffffff' : '#8e8e93',
+              boxShadow: activeView === 'history' ? '0 0 15px rgba(255, 107, 0, 0.4)' : 'none',
+              border: 'none'
+            }}
+          >
+            📋 Past Appointments History
+          </button>
+        </div>
+      </div>
+
+      {/* Conditional Rendering between Live Queue and Past History */}
+      {activeView === 'history' ? (
+        <PastAppointmentsHistory doctors={doctors} />
+      ) : (
+        <>
+          {/* Top Filter Bar (Simple Plain English & Dynamic Doctors Filter from Staff Directory) */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '12px'
+          }}>
+            {/* Simple Tabs with live counts, including Missed / No-Show */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+          background: 'rgba(255, 255, 255, 0.03)',
+          padding: '4px',
+          borderRadius: 'var(--radius-pill)',
+          border: '1px solid var(--color-border-glass)'
+        }}>
+          {[
+            { id: 'all', label: 'All Today' },
+            { id: 'arrived', label: 'Waiting Room', count: arrivedCount },
+            { id: 'in_consultation', label: 'Inside with Doctor', count: inConsultCount },
+            { id: 'completed', label: 'Completed', count: completedCount },
+            { id: 'no_show', label: 'Missed / No-Show', count: noShowCount, isCoral: true }
+          ].map(tab => {
+            const isActive = filterStatus === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setFilterStatus(tab.id)}
+                className="btn-pill"
+                style={{
+                  padding: '7px 16px',
+                  fontSize: '0.8125rem',
+                  fontWeight: isActive ? '700' : '500',
+                  backgroundColor: isActive ? '#ffffff' : 'transparent',
+                  color: isActive ? '#0c0d0e' : '#8e8e93',
+                  boxShadow: isActive ? '0 0 20px rgba(255, 255, 255, 0.25)' : 'none'
+                }}
+              >
+                <span>{tab.label}</span>
+                {tab.count !== undefined && (
+                  <span style={{
+                    fontSize: '0.6875rem',
+                    fontWeight: '800',
+                    padding: '2px 6px',
+                    borderRadius: '10px',
+                    backgroundColor: isActive
+                      ? '#0c0d0e'
+                      : tab.isCoral && tab.count > 0
+                      ? 'rgba(255, 77, 77, 0.2)'
+                      : 'rgba(255, 255, 255, 0.08)',
+                    color: isActive
+                      ? '#ffffff'
+                      : tab.isCoral && tab.count > 0
+                      ? 'var(--color-accent-coral)'
+                      : '#8e8e93'
+                  }}>
+                    {tab.count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
 
-        {/* Doctor Filter */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '0.8125rem', color: 'var(--color-text-muted)', fontWeight: '600' }}>
-            Filter Doctor:
-          </span>
+        {/* Dynamic Doctor Filter Dropdown powered by Staff Directory */}
+        <div>
           <select
-            className="form-control"
-            style={{ width: 'auto', padding: '6px 12px', fontSize: '0.8125rem' }}
+            className="form-control-glass"
+            style={{ width: 'auto', padding: '6px 14px', fontSize: '0.8125rem', borderRadius: 'var(--radius-pill)' }}
             value={filterDoctor}
             onChange={(e) => setFilterDoctor(e.target.value)}
           >
-            <option value="all">All Doctors</option>
-            {INITIAL_DOCTORS.map(d => (
-              <option key={d.id} value={d.id}>{d.name}</option>
+            <option value="all">All Doctors ({doctors.length})</option>
+            {doctors.map(d => (
+              <option key={d.id} value={d.id}>{d.name || d.full_name}</option>
             ))}
           </select>
         </div>
       </div>
 
-      {/* KPI Status Tracker Cards */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-        gap: '14px',
-        marginBottom: '24px'
-      }}>
-        <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid var(--color-warning)' }}>
-          <div style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>
-            Waiting in Reception
-          </div>
-          <div style={{ fontSize: '1.75rem', fontWeight: '800', color: 'var(--color-warning-text)', marginTop: '4px' }}>
-            {arrivedCount} <span style={{ fontSize: '0.875rem', fontWeight: '500' }}>patients</span>
-          </div>
-        </div>
+      {/* Patient Visits List */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        {filteredAppointments.map((apt) => {
+          const isArrived = apt.status === 'arrived';
+          const isInConsult = apt.status === 'in_consultation';
+          const isCompleted = apt.status === 'completed';
+          const isNoShow = apt.status === 'no_show';
 
-        <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid var(--color-primary)' }}>
-          <div style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>
-            In Consultation Room
-          </div>
-          <div style={{ fontSize: '1.75rem', fontWeight: '800', color: 'var(--color-primary-dark)', marginTop: '4px' }}>
-            {inConsultCount} <span style={{ fontSize: '0.875rem', fontWeight: '500' }}>active</span>
-          </div>
-        </div>
-
-        <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid var(--color-info)' }}>
-          <div style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>
-            Upcoming Expected
-          </div>
-          <div style={{ fontSize: '1.75rem', fontWeight: '800', color: 'var(--color-info-text)', marginTop: '4px' }}>
-            {confirmedCount} <span style={{ fontSize: '0.875rem', fontWeight: '500' }}>slotted</span>
-          </div>
-        </div>
-
-        <div className="card" style={{ padding: '16px 20px', borderLeft: '4px solid var(--color-success)' }}>
-          <div style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>
-            Completed Today
-          </div>
-          <div style={{ fontSize: '1.75rem', fontWeight: '800', color: 'var(--color-success-text)', marginTop: '4px' }}>
-            {completedCount} <span style={{ fontSize: '0.875rem', fontWeight: '500' }}>seen</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Filter Tabs */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-        marginBottom: '18px',
-        borderBottom: '1px solid var(--color-border)',
-        paddingBottom: '2px',
-        overflowX: 'auto'
-      }}>
-        {[
-          { id: 'active', label: 'Active Schedule & Waiting Room' },
-          { id: 'all', label: 'All Today' },
-          { id: 'arrived', label: 'Waiting Room' },
-          { id: 'in_consultation', label: 'In Consultation' },
-          { id: 'completed', label: 'Completed' }
-        ].map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => setFilterStatus(tab.id)}
-            style={{
-              padding: '8px 14px',
-              borderRadius: '8px',
-              fontSize: '0.8125rem',
-              fontWeight: filterStatus === tab.id ? '700' : '500',
-              backgroundColor: filterStatus === tab.id ? 'var(--color-surface)' : 'transparent',
-              color: filterStatus === tab.id ? 'var(--color-primary)' : 'var(--color-text-muted)',
-              border: filterStatus === tab.id ? '1px solid var(--color-border)' : '1px solid transparent',
-              boxShadow: filterStatus === tab.id ? 'var(--shadow-sm)' : 'none'
-            }}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Appointments Grid */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        {filteredAppointments.map((apt) => (
-          <div
-            key={apt.appointment_id}
-            className="card"
-            style={{
-              padding: '18px 22px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              flexWrap: 'wrap',
-              gap: '14px',
-              borderLeft: apt.status === 'arrived'
-                ? '5px solid var(--color-warning)'
-                : apt.status === 'in_consultation'
-                ? '5px solid var(--color-primary)'
-                : apt.status === 'completed'
-                ? '5px solid var(--color-success)'
-                : '5px solid var(--color-border)'
-            }}
-          >
-            {/* Left: Time & Patient */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-              <div style={{
-                minWidth: '110px',
-                padding: '8px 10px',
-                backgroundColor: 'var(--color-surface-subtle)',
-                borderRadius: '10px',
-                textAlign: 'center',
-                border: '1px solid var(--color-border)'
-              }}>
-                <div style={{ fontSize: '0.875rem', fontWeight: '700', color: 'var(--color-text-main)' }}>
-                  {apt.time_label?.split('-')[0] || '10:00 AM'}
+          return (
+            <div
+              key={apt.appointment_id}
+              className="glass-card"
+              style={{
+                padding: '18px 24px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '14px',
+                borderLeft: isNoShow
+                  ? '3px solid var(--color-accent-coral)'
+                  : isInConsult
+                  ? '3px solid var(--color-accent-green)'
+                  : isArrived
+                  ? '3px solid var(--color-accent-orange)'
+                  : isCompleted
+                  ? '3px solid rgba(255, 255, 255, 0.2)'
+                  : '3px solid rgba(255, 255, 255, 0.1)'
+              }}
+            >
+              {/* Left Column: Time & Patient Details */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '18px' }}>
+                {/* Clean Time Pill */}
+                <div style={{
+                  minWidth: '85px',
+                  padding: '6px 10px',
+                  backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                  borderRadius: 'var(--radius-md)',
+                  textAlign: 'center',
+                  border: isNoShow
+                    ? '1px solid rgba(255, 77, 77, 0.25)'
+                    : '1px solid rgba(255, 255, 255, 0.08)'
+                }}>
+                  <div style={{ fontSize: '0.875rem', fontWeight: '700', color: isNoShow ? 'var(--color-accent-coral)' : '#ffffff' }}>
+                    {apt.time_label?.split('-')[0] || '10:00 AM'}
+                  </div>
+                  <div style={{ fontSize: '0.6875rem', color: '#8e8e93' }}>
+                    {apt.room || 'Clinic'}
+                  </div>
                 </div>
-                <div style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
-                  {apt.room || 'Clinic Suite'}
+
+                {/* Patient Information & Live Status Dot */}
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ fontWeight: '700', fontSize: '1.0625rem', color: '#ffffff' }}>
+                      {apt.patient_name}
+                    </span>
+
+                    {/* Clean Live Status Tag */}
+                    {isNoShow && (
+                      <span className="glass-badge glass-badge-coral" style={{ fontSize: '0.6875rem' }}>
+                        ❌ Did Not Show Up
+                      </span>
+                    )}
+                    {isInConsult && (
+                      <span className="glass-badge glass-badge-green" style={{ fontSize: '0.6875rem' }}>
+                        ● Inside with Doctor
+                      </span>
+                    )}
+                    {isArrived && (
+                      <span className="glass-badge glass-badge-orange" style={{ fontSize: '0.6875rem' }}>
+                        ● Waiting in Clinic ({apt.arrival_at?.includes('Waiting') ? apt.arrival_at.match(/\(.*\)/)[0] : 'Just arrived'})
+                      </span>
+                    )}
+                    {apt.status === 'confirmed' && (
+                      <span className="glass-badge glass-badge-neutral" style={{ fontSize: '0.6875rem' }}>
+                        Expected Today
+                      </span>
+                    )}
+                    {isCompleted && (
+                      <span className="glass-badge glass-badge-neutral" style={{ fontSize: '0.6875rem' }}>
+                        ✓ Completed
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Service, Doctor & Phone Line */}
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px',
+                    fontSize: '0.8125rem',
+                    color: 'var(--color-text-secondary)',
+                    marginTop: '4px'
+                  }}>
+                    <span style={{ color: '#ffffff', fontWeight: '500' }}>{apt.service_name}</span>
+                    <span>•</span>
+                    <span style={{ color: isNoShow ? '#e0e0e0' : 'inherit' }}>Doctor: {apt.doctor_name}</span>
+                    <span>•</span>
+                    <span>{apt.patient_phone}</span>
+                    {apt.notes && isNoShow && (
+                      <>
+                        <span>•</span>
+                        <span style={{ color: '#8e8e93', fontStyle: 'italic' }}>{apt.notes}</span>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
 
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontWeight: '700', fontSize: '1.0625rem', color: 'var(--color-text-main)' }}>
-                    {apt.patient_name}
-                  </span>
-                  {getStatusBadge(apt.status)}
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '0.8125rem', color: 'var(--color-text-muted)', marginTop: '3px' }}>
-                  <span>{apt.service_name}</span>
-                  <span>•</span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <StethoscopeIcon size={13} color="var(--color-primary)" />
-                    {apt.doctor_name}
-                  </span>
-                  <span>•</span>
-                  <span>{apt.patient_phone}</span>
-                </div>
-
-                {apt.arrival_at && (
-                  <div style={{ fontSize: '0.75rem', color: 'var(--color-warning-text)', marginTop: '4px', fontWeight: '500' }}>
-                    🕒 Arrival: {apt.arrival_at}
-                  </div>
+              {/* Right Column: Clean, Unified Action Buttons */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                {apt.status === 'confirmed' && (
+                  <button
+                    onClick={() => updateVisitStatus(apt.appointment_id, 'arrived')}
+                    className="btn-pill btn-pill-orange"
+                    style={{ padding: '8px 18px' }}
+                  >
+                    <span>Mark Arrived</span>
+                    <ChevronRightIcon size={14} color="currentColor" />
+                  </button>
                 )}
-                {apt.follow_up_scheduled && (
-                  <div style={{ fontSize: '0.75rem', color: 'var(--color-success-text)', marginTop: '4px', fontWeight: '500' }}>
-                    🗓️ Follow-up scheduled for: {apt.follow_up_scheduled}
-                  </div>
+
+                {isArrived && (
+                  <button
+                    onClick={() => updateVisitStatus(apt.appointment_id, 'in_consultation')}
+                    className="btn-pill btn-pill-green"
+                    style={{ padding: '8px 18px' }}
+                  >
+                    <span>Call Inside</span>
+                    <ChevronRightIcon size={14} color="currentColor" />
+                  </button>
+                )}
+
+                {isInConsult && (
+                  <button
+                    onClick={() => setSelectedAppointmentForCompletion(apt)}
+                    className="btn-pill btn-pill-glass"
+                    style={{ border: '1px solid var(--color-accent-green)', color: 'var(--color-accent-green)', padding: '8px 18px' }}
+                  >
+                    <span>Finish Visit</span>
+                    <CheckCircleIcon size={14} color="var(--color-accent-green)" />
+                  </button>
+                )}
+
+                {/* No-Show Patient Actions: Allow 1-click Check-In if patient arrives late */}
+                {isNoShow && (
+                  <button
+                    onClick={() => updateVisitStatus(apt.appointment_id, 'arrived')}
+                    className="btn-pill btn-pill-orange"
+                    style={{ padding: '7px 16px', fontSize: '0.75rem' }}
+                    title="Patient arrived late — Check into Waiting Room"
+                  >
+                    <span>Check In (Late Arrival)</span>
+                    <ChevronRightIcon size={13} color="currentColor" />
+                  </button>
+                )}
+
+                {/* Mark as No-Show Button with Confirmation */}
+                {['confirmed', 'arrived'].includes(apt.status) && (
+                  <button
+                    onClick={() => {
+                      if (window.confirm(`Mark ${apt.patient_name} as Missed / No-Show?\nThey will be moved to the "Missed / No-Show" section so reception maintains the record.`)) {
+                        updateVisitStatus(apt.appointment_id, 'no_show');
+                      }
+                    }}
+                    style={{
+                      color: '#8e8e93',
+                      fontSize: '0.75rem',
+                      padding: '6px 12px',
+                      borderRadius: 'var(--radius-pill)',
+                      border: '1px solid rgba(255, 255, 255, 0.05)',
+                      backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                      transition: 'all 0.15s ease'
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.color = 'var(--color-accent-coral)';
+                      e.currentTarget.style.borderColor = 'rgba(255, 77, 77, 0.3)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.color = '#8e8e93';
+                      e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.05)';
+                    }}
+                  >
+                    Did Not Show Up
+                  </button>
                 )}
               </div>
             </div>
-
-            {/* Right: 1-Click Status Transitions */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              {apt.status === 'confirmed' && (
-                <button
-                  onClick={() => updateVisitStatus(apt.appointment_id, 'arrived')}
-                  className="btn btn-warning btn-sm"
-                  style={{ backgroundColor: 'var(--color-warning)', color: 'white' }}
-                >
-                  ➡️ Mark Arrived
-                </button>
-              )}
-
-              {apt.status === 'arrived' && (
-                <button
-                  onClick={() => updateVisitStatus(apt.appointment_id, 'in_consultation')}
-                  className="btn btn-primary btn-sm"
-                >
-                  🩺 In Consultation
-                </button>
-              )}
-
-              {apt.status === 'in_consultation' && (
-                <button
-                  onClick={() => setSelectedAppointmentForCompletion(apt)}
-                  className="btn btn-success btn-sm"
-                >
-                  ✅ Completed
-                </button>
-              )}
-
-              {['confirmed', 'arrived'].includes(apt.status) && (
-                <button
-                  onClick={() => updateVisitStatus(apt.appointment_id, 'no_show')}
-                  className="btn btn-ghost btn-sm"
-                  style={{ color: 'var(--color-danger)' }}
-                >
-                  ⚠️ Mark No-Show
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
+          );
+        })}
 
         {filteredAppointments.length === 0 && (
-          <div style={{
-            padding: '40px',
+          <div className="glass-card" style={{
+            padding: '50px 20px',
             textAlign: 'center',
-            backgroundColor: 'var(--color-surface)',
-            borderRadius: '16px',
-            border: '1px dashed var(--color-border)',
-            color: 'var(--color-text-muted)'
+            color: 'var(--color-text-secondary)'
           }}>
-            No visits matching current filter.
+            <div style={{
+              width: '42px',
+              height: '42px',
+              borderRadius: '50%',
+              backgroundColor: 'rgba(255, 255, 255, 0.05)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 10px'
+            }}>
+              <CheckCircleIcon size={20} color="var(--color-accent-green)" />
+            </div>
+            <h3 style={{ fontSize: '1rem', color: '#ffffff', marginBottom: '2px' }}>
+              {filterStatus === 'no_show' ? 'No Missed Appointments' : 'No Appointments Found'}
+            </h3>
+            <p style={{ fontSize: '0.8125rem' }}>
+              {filterStatus === 'no_show'
+                ? 'All scheduled patients have attended or are currently progressing.'
+                : 'No patients found matching this filter.'}
+            </p>
           </div>
         )}
       </div>
+    </>
+  )}
 
       {/* Completion & Follow-up Modal */}
       <FollowUpCompletionModal
@@ -295,6 +396,7 @@ export const LiveVisitsModule = ({ controller }) => {
         isOpen={Boolean(selectedAppointmentForCompletion)}
         onClose={() => setSelectedAppointmentForCompletion(null)}
         onCompleteWithFollowUp={completeWithFollowUp}
+        doctors={doctors}
       />
     </div>
   );

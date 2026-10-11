@@ -27,13 +27,14 @@ export const ReviewModal = ({
   onRemoveSlot,
   onApproveAndDispatch,
   onOpenAskInfo,
-  onRejectRequest
+  onRejectRequest,
+  doctors = []
 }) => {
   if (!isOpen || !request) return null;
 
-  // Local form state solely for the inline "+ Add Custom Slot" inputs
+  const doctorList = doctors.length > 0 ? doctors : INITIAL_DOCTORS;
   const [showAddCustomSlot, setShowAddCustomSlot] = useState(false);
-  const [customDoctorId, setCustomDoctorId] = useState(INITIAL_DOCTORS[0].id);
+  const [customDoctorId, setCustomDoctorId] = useState(doctorList[0]?.id || 'doc-uuid-1');
   const [customDate, setCustomDate] = useState('2026-10-12');
   const [customTime, setCustomTime] = useState('14:00');
 
@@ -57,106 +58,82 @@ export const ReviewModal = ({
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '780px' }}>
+      <div className="modal-glass-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '720px' }}>
         {/* Header */}
         <div style={{
-          padding: '20px 28px',
-          borderBottom: '1px solid var(--color-border)',
+          padding: '24px 28px',
+          borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          backgroundColor: 'var(--color-surface-subtle)'
+          justifyContent: 'space-between'
         }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span className="badge badge-primary">{request.request_id}</span>
-              <span className={`badge badge-${request.channel === 'whatsapp' ? 'success' : request.channel === 'telegram' ? 'info' : 'purple'}`}>
-                {request.channel.toUpperCase()}
-              </span>
+              <span className="glass-badge glass-badge-neutral">{request.request_id}</span>
+              <span className="glass-badge glass-badge-orange">{request.channel}</span>
               {request.patient_type === 'returning' ? (
-                <span className="badge badge-success">Returning Patient ({request.past_visits_count} visits)</span>
+                <span className="glass-badge glass-badge-green">Returning ({request.past_visits_count} visits)</span>
               ) : (
-                <span className="badge badge-primary">First-Time Patient</span>
+                <span className="glass-badge glass-badge-neutral">New Patient</span>
               )}
             </div>
-            <h2 style={{ fontSize: '1.25rem', marginTop: '6px', margin: '6px 0 0' }}>
-              Review Booking Request: {request.patient_name}
+            <h2 style={{ fontSize: '1.25rem', marginTop: '6px', color: '#ffffff' }}>
+              {request.patient_name}
             </h2>
           </div>
-          <button onClick={onClose} className="btn btn-ghost" style={{ padding: '8px' }}>
-            <XIcon size={20} color="var(--color-text-muted)" />
+          <button onClick={onClose} style={{ color: '#8e8e93', padding: '6px' }}>
+            <XIcon size={18} color="currentColor" />
           </button>
         </div>
 
         {/* Modal Body */}
-        <div style={{ padding: '24px 28px', display: 'flex', flexDirection: 'column', gap: '22px' }}>
-          {/* Patient Profile & Request Details Grid */}
+        <div style={{ padding: '24px 28px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Patient Details Snapshot Card */}
           <div style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
             gap: '14px',
-            backgroundColor: 'var(--color-bg-app)',
-            borderRadius: '12px',
-            padding: '16px',
-            border: '1px solid var(--color-border)'
+            backgroundColor: 'rgba(255, 255, 255, 0.03)',
+            borderRadius: 'var(--radius-lg)',
+            padding: '16px 20px',
+            border: '1px solid rgba(255, 255, 255, 0.06)'
           }}>
             <div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', fontWeight: '600' }}>
-                Patient Contact
+              <div style={{ fontSize: '0.6875rem', color: '#8e8e93', textTransform: 'uppercase', fontWeight: '700' }}>
+                Contact
               </div>
-              <div style={{ fontWeight: '600', fontSize: '0.9375rem', marginTop: '3px' }}>
+              <div style={{ fontWeight: '600', fontSize: '0.9375rem', color: '#ffffff', marginTop: '2px' }}>
                 {request.patient_name}
               </div>
-              <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
-                <PhoneIcon size={13} color="var(--color-primary)" />
+              <div style={{ fontSize: '0.8125rem', color: '#8e8e93', marginTop: '2px' }}>
                 {request.patient_phone}
               </div>
             </div>
 
             <div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', fontWeight: '600' }}>
-                Requested Service
+              <div style={{ fontSize: '0.6875rem', color: '#8e8e93', textTransform: 'uppercase', fontWeight: '700' }}>
+                Service
               </div>
-              <div style={{ fontWeight: '600', fontSize: '0.9375rem', marginTop: '3px' }}>
+              <div style={{ fontWeight: '600', fontSize: '0.9375rem', color: 'var(--color-accent-orange)', marginTop: '2px' }}>
                 {request.service_name}
               </div>
-              <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-muted)', marginTop: '2px' }}>
-                Duration: 30–45 mins • Standard Rate
+              <div style={{ fontSize: '0.8125rem', color: '#8e8e93', marginTop: '2px' }}>
+                Duration: 30m • Standard
               </div>
             </div>
 
             <div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', fontWeight: '600' }}>
-                Doctor & Date Preferences
+              <div style={{ fontSize: '0.6875rem', color: '#8e8e93', textTransform: 'uppercase', fontWeight: '700' }}>
+                Doctor & Window
               </div>
-              <div style={{ fontWeight: '600', fontSize: '0.9375rem', marginTop: '3px' }}>
-                {request.preferred_doctor_name || 'Any Available Specialist'}
+              <div style={{ fontWeight: '600', fontSize: '0.9375rem', color: '#ffffff', marginTop: '2px' }}>
+                {request.preferred_doctor_name || 'Any Specialist'}
               </div>
-              <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-muted)', marginTop: '2px' }}>
-                Dates: {request.preferred_dates ? request.preferred_dates.join(', ') : 'Flexible'} ({request.preferred_time_window})
+              <div style={{ fontSize: '0.8125rem', color: '#8e8e93', marginTop: '2px' }}>
+                {request.preferred_dates ? request.preferred_dates.join(', ') : 'Flexible'} ({request.preferred_time_window})
               </div>
             </div>
           </div>
-
-          {/* Past History Drawer if Returning */}
-          {request.patient_type === 'returning' && (
-            <div style={{
-              backgroundColor: 'var(--color-info-bg)',
-              border: '1px solid var(--color-info-border)',
-              borderRadius: '10px',
-              padding: '10px 14px',
-              fontSize: '0.8125rem',
-              color: 'var(--color-info-text)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between'
-            }}>
-              <div>
-                <strong>Clinical History:</strong> Patient has {request.past_visits_count} previous appointments at MedPulse. Last seen: {request.last_visit || '2 months ago'}.
-              </div>
-              <span className="badge badge-info">Zero No-Shows</span>
-            </div>
-          )}
 
           {/* Candidate Slots Section */}
           <div>
@@ -167,22 +144,23 @@ export const ReviewModal = ({
               marginBottom: '12px'
             }}>
               <div>
-                <h3 style={{ fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span>Proposed Candidate Slots</span>
-                  <span className="badge badge-primary">{candidateSlots.length} Ready</span>
+                <h3 style={{ fontSize: '1rem', color: '#ffffff', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span>Proposed Time Slots</span>
+                  <span className="glass-badge glass-badge-green">{candidateSlots.length} Ready</span>
                 </h3>
-                <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-                  Options sent to patient will be valid for 1 hour. Edit or swap doctors before approving.
+                <p style={{ fontSize: '0.75rem', color: '#8e8e93' }}>
+                  Patient has 1 hour to pick once approved and dispatched.
                 </p>
               </div>
 
               <button
                 onClick={onCheckLiveSlots}
                 disabled={isCheckingSlots}
-                className="btn btn-secondary btn-sm"
+                className="btn-pill btn-pill-glass"
+                style={{ padding: '6px 14px' }}
               >
-                <SparklesIcon size={14} color="var(--color-primary)" />
-                {isCheckingSlots ? 'Recalculating...' : 'Check Live Slots'}
+                <SparklesIcon size={14} color="var(--color-accent-orange)" />
+                <span>{isCheckingSlots ? 'Calculating...' : 'Recalculate'}</span>
               </button>
             </div>
 
@@ -194,14 +172,14 @@ export const ReviewModal = ({
                   <div
                     key={slot.id || index}
                     style={{
-                      border: '1px solid var(--color-border)',
-                      borderRadius: '12px',
-                      padding: '12px 16px',
-                      backgroundColor: 'var(--color-surface)',
+                      border: '1px solid rgba(255, 255, 255, 0.08)',
+                      borderRadius: 'var(--radius-md)',
+                      padding: '12px 18px',
+                      backgroundColor: 'rgba(255, 255, 255, 0.03)',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
-                      boxShadow: 'var(--shadow-sm)'
+                      transition: 'all 0.15s'
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
@@ -209,9 +187,9 @@ export const ReviewModal = ({
                         width: '28px',
                         height: '28px',
                         borderRadius: '50%',
-                        backgroundColor: 'var(--color-primary-light)',
-                        color: 'var(--color-primary-dark)',
-                        fontWeight: '700',
+                        backgroundColor: 'rgba(255, 107, 0, 0.15)',
+                        color: 'var(--color-accent-orange)',
+                        fontWeight: '800',
                         fontSize: '0.8125rem',
                         display: 'flex',
                         alignItems: 'center',
@@ -221,133 +199,119 @@ export const ReviewModal = ({
                       </div>
 
                       <div>
-                        <div style={{ fontWeight: '600', fontSize: '0.9375rem', color: 'var(--color-text-main)' }}>
+                        <div style={{ fontWeight: '600', fontSize: '0.9375rem', color: '#ffffff' }}>
                           {slot.display_label || slot.start_datetime}
                         </div>
-                        <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <UserIcon size={13} color="var(--color-primary)" />
-                          <span>Assigned: <strong>{slot.doctor_name}</strong></span>
+                        <div style={{ fontSize: '0.75rem', color: '#8e8e93', marginTop: '2px' }}>
+                          Assigned: <strong style={{ color: '#ffffff' }}>{slot.doctor_name}</strong>
                         </div>
                       </div>
                     </div>
 
-                    {/* Actions for this Slot */}
+                    {/* Actions */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       {isEditing ? (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                           <select
-                            className="form-control"
+                            className="form-control-glass"
                             style={{ padding: '4px 8px', fontSize: '0.8125rem', width: 'auto' }}
                             defaultValue={slot.doctor_id}
                             onChange={(e) => onSwapDoctor(slot.id, e.target.value)}
                           >
-                            {INITIAL_DOCTORS.map(d => (
-                              <option key={d.id} value={d.id}>{d.name} ({d.specialty})</option>
+                            {doctorList.map(d => (
+                              <option key={d.id} value={d.id}>{d.name || d.full_name}</option>
                             ))}
                           </select>
                           <button
                             onClick={() => setEditingSlotId(null)}
-                            className="btn btn-ghost btn-sm"
+                            className="btn-pill btn-pill-glass"
+                            style={{ padding: '4px 8px', fontSize: '0.75rem' }}
                           >
-                            Cancel
+                            Done
                           </button>
                         </div>
                       ) : (
                         <button
                           onClick={() => setEditingSlotId(slot.id)}
-                          className="btn btn-secondary btn-sm"
+                          className="btn-pill btn-pill-glass"
                           style={{ padding: '4px 10px', fontSize: '0.75rem' }}
                         >
-                          <Edit3Icon size={13} color="var(--color-text-muted)" />
-                          Swap Doctor
+                          <Edit3Icon size={12} color="#8e8e93" />
+                          <span>Swap</span>
                         </button>
                       )}
 
                       <button
                         onClick={() => onRemoveSlot(slot.id)}
-                        className="btn btn-ghost btn-sm"
-                        style={{ color: 'var(--color-danger)', padding: '4px 8px' }}
+                        style={{ color: 'var(--color-accent-coral)', padding: '4px 8px' }}
                         title="Remove option"
                       >
-                        <XIcon size={14} color="var(--color-danger)" />
+                        <XIcon size={14} color="currentColor" />
                       </button>
                     </div>
                   </div>
                 );
               })}
-
-              {candidateSlots.length === 0 && (
-                <div style={{
-                  padding: '24px',
-                  textAlign: 'center',
-                  backgroundColor: 'var(--color-bg-app)',
-                  borderRadius: '12px',
-                  border: '1px dashed var(--color-border)',
-                  color: 'var(--color-text-muted)',
-                  fontSize: '0.875rem'
-                }}>
-                  No candidate slots selected. Click <strong>"Check Live Slots"</strong> or add a custom slot below.
-                </div>
-              )}
             </div>
 
-            {/* Add Custom Slot Drawer/Form */}
+            {/* Custom Slot Toggle */}
             {showAddCustomSlot ? (
               <form
                 onSubmit={handleAddCustomSlotSubmit}
                 style={{
                   marginTop: '12px',
                   padding: '14px',
-                  backgroundColor: 'var(--color-surface-subtle)',
-                  borderRadius: '12px',
-                  border: '1px solid var(--color-border)',
+                  backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
                   display: 'flex',
                   alignItems: 'flex-end',
-                  gap: '12px',
+                  gap: '10px',
                   flexWrap: 'wrap'
                 }}
               >
-                <div style={{ flex: '1 1 180px' }}>
-                  <label className="form-label" style={{ fontSize: '0.75rem' }}>Doctor</label>
+                <div style={{ flex: '1 1 160px' }}>
+                  <label className="form-label">Doctor</label>
                   <select
-                    className="form-control"
+                    className="form-control-glass"
                     value={customDoctorId}
                     onChange={(e) => setCustomDoctorId(e.target.value)}
                   >
-                    {INITIAL_DOCTORS.map(d => (
-                      <option key={d.id} value={d.id}>{d.name}</option>
+                    {doctorList.map(d => (
+                      <option key={d.id} value={d.id}>{d.name || d.full_name}</option>
                     ))}
                   </select>
                 </div>
 
-                <div style={{ flex: '1 1 140px' }}>
-                  <label className="form-label" style={{ fontSize: '0.75rem' }}>Date</label>
+                <div style={{ flex: '1 1 130px' }}>
+                  <label className="form-label">Date</label>
                   <input
                     type="date"
-                    className="form-control"
+                    className="form-control-glass"
                     value={customDate}
                     onChange={(e) => setCustomDate(e.target.value)}
                   />
                 </div>
 
-                <div style={{ flex: '1 1 120px' }}>
-                  <label className="form-label" style={{ fontSize: '0.75rem' }}>Start Time</label>
+                <div style={{ flex: '1 1 110px' }}>
+                  <label className="form-label">Time</label>
                   <input
                     type="time"
-                    className="form-control"
+                    className="form-control-glass"
                     value={customTime}
                     onChange={(e) => setCustomTime(e.target.value)}
                   />
                 </div>
 
                 <div style={{ display: 'flex', gap: '6px' }}>
-                  <button type="submit" className="btn btn-primary btn-sm">
+                  <button type="submit" className="btn-pill btn-pill-orange" style={{ padding: '8px 14px' }}>
                     Add
                   </button>
                   <button
                     type="button"
                     onClick={() => setShowAddCustomSlot(false)}
-                    className="btn btn-secondary btn-sm"
+                    className="btn-pill btn-pill-glass"
+                    style={{ padding: '8px 12px' }}
                   >
                     Cancel
                   </button>
@@ -356,11 +320,11 @@ export const ReviewModal = ({
             ) : (
               <button
                 onClick={() => setShowAddCustomSlot(true)}
-                className="btn btn-ghost btn-sm"
-                style={{ marginTop: '10px', color: 'var(--color-primary)', fontWeight: '600' }}
+                className="btn-pill btn-pill-glass"
+                style={{ marginTop: '10px', fontSize: '0.75rem' }}
               >
-                <PlusIcon size={14} color="var(--color-primary)" />
-                + Add Custom Time Slot
+                <PlusIcon size={12} color="var(--color-accent-orange)" />
+                <span>+ Custom Slot</span>
               </button>
             )}
           </div>
@@ -368,42 +332,42 @@ export const ReviewModal = ({
 
         {/* Modal Footer Controls */}
         <div style={{
-          padding: '18px 28px',
-          borderTop: '1px solid var(--color-border)',
+          padding: '20px 28px',
+          borderTop: '1px solid rgba(255, 255, 255, 0.08)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          backgroundColor: '#ffffff'
+          flexWrap: 'wrap',
+          gap: '12px'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <button
               onClick={() => onOpenAskInfo(request)}
-              className="btn btn-secondary"
+              className="btn-pill btn-pill-glass"
             >
-              <MessageSquareIcon size={15} color="var(--color-primary)" />
-              Ask for Info
+              <MessageSquareIcon size={14} color="#8e8e93" />
+              <span>Ask for Info</span>
             </button>
             <button
               onClick={() => onRejectRequest(request.request_id)}
-              className="btn btn-ghost"
-              style={{ color: 'var(--color-danger)' }}
+              style={{ color: 'var(--color-accent-coral)', fontSize: '0.8125rem', padding: '6px 12px' }}
             >
               Reject
             </button>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <button onClick={onClose} className="btn btn-secondary">
+            <button onClick={onClose} className="btn-pill btn-pill-glass">
               Close
             </button>
             <button
               onClick={handleDispatch}
               disabled={candidateSlots.length === 0}
-              className="btn btn-primary btn-lg"
-              style={{ boxShadow: '0 4px 14px rgba(14, 116, 144, 0.35)' }}
+              className="btn-pill btn-pill-orange"
+              style={{ padding: '10px 24px', fontSize: '0.875rem' }}
             >
-              <SendIcon size={18} color="white" />
-              Approve & Dispatch Options (1-Hour Expiry)
+              <SendIcon size={16} color="#ffffff" />
+              Approve & Dispatch (1h)
             </button>
           </div>
         </div>

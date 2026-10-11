@@ -5,7 +5,7 @@ import { apiService } from '../services/apiService';
 export const useLiveVisits = ({ onNotification }) => {
   const [appointments, setAppointments] = useState(INITIAL_LIVE_APPOINTMENTS);
   const [filterDoctor, setFilterDoctor] = useState('all');
-  const [filterStatus, setFilterStatus] = useState('active'); // 'active', 'all', 'arrived', 'in_consultation', 'completed'
+  const [filterStatus, setFilterStatus] = useState('all'); // 'all', 'arrived', 'in_consultation', 'completed', 'no_show'
   const [selectedAppointmentForCompletion, setSelectedAppointmentForCompletion] = useState(null);
 
   // Metrics (Separation of Logic)
@@ -13,6 +13,7 @@ export const useLiveVisits = ({ onNotification }) => {
   const inConsultCount = useMemo(() => appointments.filter(a => a.status === 'in_consultation').length, [appointments]);
   const completedCount = useMemo(() => appointments.filter(a => a.status === 'completed').length, [appointments]);
   const confirmedCount = useMemo(() => appointments.filter(a => a.status === 'confirmed').length, [appointments]);
+  const noShowCount = useMemo(() => appointments.filter(a => a.status === 'no_show').length, [appointments]);
 
   // Filtered appointments list
   const filteredAppointments = useMemo(() => {
@@ -78,6 +79,7 @@ export const useLiveVisits = ({ onNotification }) => {
     inConsultCount,
     completedCount,
     confirmedCount,
+    noShowCount,
     filteredAppointments,
     updateVisitStatus,
     completeWithFollowUp,

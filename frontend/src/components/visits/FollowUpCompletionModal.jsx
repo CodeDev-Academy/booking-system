@@ -1,19 +1,19 @@
 import React, { useState } from 'react';
-import { XIcon, CalendarIcon, CheckCircleIcon, StethoscopeIcon } from '../common/Icons';
+import { XIcon, CheckCircleIcon } from '../common/Icons';
 import { INITIAL_DOCTORS } from '../../utils/mockData';
 
 export const FollowUpCompletionModal = ({
   appointment,
   isOpen,
   onClose,
-  onCompleteWithFollowUp
+  onCompleteWithFollowUp,
+  doctors = []
 }) => {
   if (!isOpen || !appointment) return null;
 
+  const doctorList = doctors.length > 0 ? doctors : INITIAL_DOCTORS;
   const [requireFollowUp, setRequireFollowUp] = useState(true);
-  const [doctorId, setDoctorId] = useState(appointment.doctor_id || INITIAL_DOCTORS[0].id);
-
-  // Set default follow-up date to 14 days from today
+  const [doctorId, setDoctorId] = useState(appointment.doctor_id || doctorList[0]?.id || 'doc-uuid-1');
   const defaultDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const [followUpDate, setFollowUpDate] = useState(defaultDate);
   const [clinicalNotes, setClinicalNotes] = useState('Routine 2-week healing evaluation & stitch check.');
@@ -30,64 +30,47 @@ export const FollowUpCompletionModal = ({
       doctorId: requireFollowUp ? doctorId : null,
       notes: clinicalNotes
     });
-    onClose();
   };
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '560px' }}>
+      <div className="modal-glass-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '540px' }}>
         {/* Header */}
         <div style={{
-          padding: '20px 24px',
-          borderBottom: '1px solid var(--color-border)',
+          padding: '24px',
+          borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          backgroundColor: 'var(--color-surface-subtle)'
+          justifyContent: 'space-between'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div style={{
-              width: '38px',
-              height: '38px',
-              borderRadius: '10px',
-              backgroundColor: 'var(--color-success-bg)',
-              color: 'var(--color-success-text)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}>
-              <CheckCircleIcon size={20} color="var(--color-success)" />
-            </div>
-            <div>
-              <h2 style={{ fontSize: '1.125rem', margin: 0 }}>Finalize Consultation Visit</h2>
-              <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', margin: 0 }}>
-                {appointment.patient_name} • {appointment.service_name}
-              </p>
-            </div>
+          <div>
+            <h2 style={{ fontSize: '1.25rem', color: '#ffffff', margin: 0 }}>Finalize Consultation Visit</h2>
+            <p style={{ fontSize: '0.75rem', color: '#8e8e93', margin: 0, marginTop: '2px' }}>
+              {appointment.patient_name} • {appointment.service_name}
+            </p>
           </div>
-          <button onClick={onClose} className="btn btn-ghost" style={{ padding: '6px' }}>
-            <XIcon size={18} color="var(--color-text-muted)" />
+          <button onClick={onClose} style={{ color: '#8e8e93', padding: '6px' }}>
+            <XIcon size={18} color="currentColor" />
           </button>
         </div>
 
         {/* Body */}
         <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          {/* Follow-up question banner */}
           <div style={{
-            backgroundColor: 'var(--color-bg-app)',
-            border: '1px solid var(--color-border)',
-            borderRadius: '12px',
+            backgroundColor: 'rgba(255, 255, 255, 0.03)',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            borderRadius: 'var(--radius-md)',
             padding: '16px',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between'
           }}>
             <div>
-              <div style={{ fontWeight: '600', fontSize: '0.9375rem', color: 'var(--color-text-main)' }}>
-                Does this patient require a doctor follow-up visit?
+              <div style={{ fontWeight: '600', fontSize: '0.9375rem', color: '#ffffff' }}>
+                Require Doctor Follow-Up Visit?
               </div>
-              <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-muted)' }}>
-                Auto-schedules automated SMS/WhatsApp reminders for the patient.
+              <div style={{ fontSize: '0.75rem', color: '#8e8e93' }}>
+                Auto-schedules automated WhatsApp/SMS check-ins.
               </div>
             </div>
 
@@ -96,85 +79,67 @@ export const FollowUpCompletionModal = ({
                 type="checkbox"
                 checked={requireFollowUp}
                 onChange={(e) => setRequireFollowUp(e.target.checked)}
-                style={{ width: '18px', height: '18px', accentColor: 'var(--color-primary)' }}
+                style={{ width: '18px', height: '18px', accentColor: 'var(--color-accent-orange)' }}
               />
-              <span style={{ fontWeight: '600', fontSize: '0.875rem' }}>Yes</span>
+              <span style={{ fontWeight: '600', fontSize: '0.875rem', color: '#ffffff' }}>Yes</span>
             </label>
           </div>
 
           {requireFollowUp && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              {/* Preset Quick Date Buttons */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               <div>
-                <label className="form-label">Recommended Follow-up Window:</label>
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '4px' }}>
-                  <button
-                    type="button"
-                    onClick={() => handleQuickDays(7)}
-                    className="btn btn-secondary btn-sm"
-                  >
-                    + 1 Week
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleQuickDays(14)}
-                    className="btn btn-secondary btn-sm"
-                  >
-                    + 2 Weeks
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleQuickDays(30)}
-                    className="btn btn-secondary btn-sm"
-                  >
-                    + 1 Month
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleQuickDays(90)}
-                    className="btn btn-secondary btn-sm"
-                  >
-                    + 3 Months
-                  </button>
+                <label className="form-label">Quick Follow-Up Window:</label>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '6px' }}>
+                  {[
+                    { label: '+1 Week', days: 7 },
+                    { label: '+2 Weeks', days: 14 },
+                    { label: '+1 Month', days: 30 }
+                  ].map(btn => (
+                    <button
+                      key={btn.label}
+                      type="button"
+                      onClick={() => handleQuickDays(btn.days)}
+                      className="btn-pill btn-pill-glass"
+                      style={{ padding: '6px 14px', fontSize: '0.75rem' }}
+                    >
+                      {btn.label}
+                    </button>
+                  ))}
                 </div>
               </div>
 
-              {/* Specific Date & Doctor */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                 <div className="form-group" style={{ margin: 0 }}>
-                  <label className="form-label">Follow-up Target Date</label>
+                  <label className="form-label">Target Date</label>
                   <input
                     type="date"
-                    className="form-control"
+                    className="form-control-glass"
                     value={followUpDate}
                     onChange={(e) => setFollowUpDate(e.target.value)}
-                    required
                   />
                 </div>
 
                 <div className="form-group" style={{ margin: 0 }}>
-                  <label className="form-label">Assigned Doctor</label>
+                  <label className="form-label">Doctor</label>
                   <select
-                    className="form-control"
+                    className="form-control-glass"
                     value={doctorId}
                     onChange={(e) => setDoctorId(e.target.value)}
                   >
-                    {INITIAL_DOCTORS.map(d => (
-                      <option key={d.id} value={d.id}>{d.name}</option>
+                    {doctorList.map(d => (
+                      <option key={d.id} value={d.id}>{d.name || d.full_name}</option>
                     ))}
                   </select>
                 </div>
               </div>
 
-              {/* Clinical Notes / Doctor Directions */}
               <div className="form-group" style={{ margin: 0 }}>
                 <label className="form-label">Doctor Directions & Clinical Notes</label>
                 <textarea
-                  className="form-control"
+                  className="form-control-glass"
                   rows={3}
                   value={clinicalNotes}
                   onChange={(e) => setClinicalNotes(e.target.value)}
-                  placeholder="e.g. Check gum healing, assess bite alignment, prescribe mouthwash refill."
                 />
               </div>
             </div>
@@ -183,24 +148,22 @@ export const FollowUpCompletionModal = ({
 
         {/* Footer */}
         <div style={{
-          padding: '16px 24px',
-          borderTop: '1px solid var(--color-border)',
+          padding: '20px 24px',
+          borderTop: '1px solid rgba(255, 255, 255, 0.08)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'flex-end',
-          gap: '10px',
-          backgroundColor: '#ffffff'
+          gap: '10px'
         }}>
-          <button onClick={onClose} className="btn btn-secondary">
+          <button onClick={onClose} className="btn-pill btn-pill-glass">
             Cancel
           </button>
           <button
             onClick={handleSave}
-            className="btn btn-success btn-lg"
-            style={{ minWidth: '160px' }}
+            className="btn-pill btn-pill-green"
           >
-            <CheckCircleIcon size={18} color="white" />
-            Complete Visit
+            <CheckCircleIcon size={16} color="currentColor" />
+            <span>Complete Visit</span>
           </button>
         </div>
       </div>

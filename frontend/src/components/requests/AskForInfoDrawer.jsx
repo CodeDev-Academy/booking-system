@@ -43,84 +43,54 @@ export const AskForInfoDrawer = ({ request, isOpen, onClose, onSendMessage }) =>
       onSendMessage(request.request_id, customMessage, request.channel);
       setIsSending(false);
       onClose();
-    }, 400);
+    }, 300);
   };
 
   return (
     <div className="slide-over-overlay" onClick={onClose}>
-      <div className="slide-over-panel" onClick={(e) => e.stopPropagation()}>
-        {/* Drawer Header */}
+      <div className="slide-over-glass-panel" onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
         <div style={{
-          padding: '20px 24px',
-          borderBottom: '1px solid var(--color-border)',
+          padding: '24px',
+          borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          backgroundColor: 'var(--color-surface-subtle)'
+          justifyContent: 'space-between'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div style={{
-              width: '36px',
-              height: '36px',
-              borderRadius: '8px',
-              backgroundColor: 'var(--color-primary-light)',
-              color: 'var(--color-primary)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}>
-              <MessageSquareIcon size={18} color="var(--color-primary)" />
-            </div>
-            <div>
-              <h3 style={{ fontSize: '1.0625rem', margin: 0 }}>Clinical Prompt / Message</h3>
-              <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', margin: 0 }}>
-                Direct dispatch to {request.patient_name} via {request.channel.toUpperCase()}
-              </p>
-            </div>
+          <div>
+            <h3 style={{ fontSize: '1.125rem', color: '#ffffff', margin: 0 }}>Clinical Prompt / Message</h3>
+            <p style={{ fontSize: '0.75rem', color: '#8e8e93', margin: 0, marginTop: '2px' }}>
+              Direct dispatch to {request.patient_name} via {request.channel.toUpperCase()}
+            </p>
           </div>
-          <button onClick={onClose} className="btn btn-ghost btn-sm" style={{ padding: '6px' }}>
-            <XIcon size={18} color="var(--color-text-muted)" />
+          <button onClick={onClose} style={{ color: '#8e8e93', padding: '6px' }}>
+            <XIcon size={18} color="currentColor" />
           </button>
         </div>
 
         {/* Content */}
         <div style={{ padding: '24px', flex: 1, display: 'flex', flexDirection: 'column', gap: '20px', overflowY: 'auto' }}>
-          {/* Patient Details Snapshot */}
-          <div style={{
-            backgroundColor: 'var(--color-bg-app)',
-            borderRadius: '12px',
-            padding: '14px',
-            border: '1px solid var(--color-border)'
-          }}>
-            <div style={{ fontSize: '0.8125rem', fontWeight: '600', color: 'var(--color-text-main)' }}>
-              Recipient: {request.patient_name} ({request.patient_phone})
-            </div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: '2px' }}>
-              Service: {request.service_name} • Channel: {request.channel}
-            </div>
-          </div>
-
           {/* Quick Preset Selector */}
           <div>
             <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <SparklesIcon size={14} color="var(--color-primary)" />
+              <SparklesIcon size={12} color="var(--color-accent-orange)" />
               Clinical Prompt Presets:
             </label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
               {PRESET_PROMPTS.map((preset) => (
                 <button
                   key={preset.id}
                   onClick={() => handleSelectPreset(preset)}
                   style={{
                     textAlign: 'left',
-                    padding: '10px 12px',
-                    borderRadius: '8px',
+                    padding: '10px 14px',
+                    borderRadius: 'var(--radius-md)',
                     fontSize: '0.8125rem',
-                    fontWeight: selectedPromptId === preset.id ? '600' : '500',
-                    backgroundColor: selectedPromptId === preset.id ? 'var(--color-primary-light)' : 'var(--color-surface)',
-                    border: selectedPromptId === preset.id ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
-                    color: selectedPromptId === preset.id ? 'var(--color-primary-dark)' : 'var(--color-text-main)',
-                    transition: 'all var(--transition-fast)'
+                    fontWeight: selectedPromptId === preset.id ? '700' : '500',
+                    backgroundColor: selectedPromptId === preset.id ? 'rgba(255, 107, 0, 0.15)' : 'rgba(255, 255, 255, 0.03)',
+                    border: selectedPromptId === preset.id ? '1px solid var(--color-accent-orange)' : '1px solid rgba(255, 255, 255, 0.06)',
+                    color: selectedPromptId === preset.id ? '#ffffff' : '#8e8e93',
+                    transition: 'all 0.15s'
                   }}
                 >
                   {preset.title}
@@ -133,45 +103,34 @@ export const AskForInfoDrawer = ({ request, isOpen, onClose, onSendMessage }) =>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
             <label className="form-label">Message Preview & Custom Edits:</label>
             <textarea
-              className="form-control"
+              className="form-control-glass"
               rows={6}
               value={customMessage}
               onChange={(e) => setCustomMessage(e.target.value)}
-              style={{
-                flex: 1,
-                resize: 'vertical',
-                lineHeight: 1.5,
-                fontSize: '0.875rem',
-                fontFamily: 'inherit'
-              }}
+              style={{ flex: 1, resize: 'none', lineHeight: 1.5, marginTop: '8px' }}
             />
-            <span style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)', marginTop: '6px' }}>
-              Message will be delivered immediately through {request.channel.toUpperCase()} webhook.
-            </span>
           </div>
         </div>
 
         {/* Drawer Footer */}
         <div style={{
-          padding: '16px 24px',
-          borderTop: '1px solid var(--color-border)',
+          padding: '20px 24px',
+          borderTop: '1px solid rgba(255, 255, 255, 0.08)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'flex-end',
-          gap: '10px',
-          backgroundColor: '#ffffff'
+          gap: '10px'
         }}>
-          <button onClick={onClose} className="btn btn-secondary">
+          <button onClick={onClose} className="btn-pill btn-pill-glass">
             Cancel
           </button>
           <button
             onClick={handleSend}
             disabled={isSending || !customMessage.trim()}
-            className="btn btn-primary"
-            style={{ minWidth: '150px' }}
+            className="btn-pill btn-pill-orange"
           >
-            <SendIcon size={16} color="white" />
-            {isSending ? 'Dispatching...' : `Send via ${request.channel}`}
+            <SendIcon size={14} color="#ffffff" />
+            <span>{isSending ? 'Sending...' : 'Dispatch Message'}</span>
           </button>
         </div>
       </div>

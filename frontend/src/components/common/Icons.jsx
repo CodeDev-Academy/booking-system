@@ -228,3 +228,11 @@ export const VolumeXIcon = createIcon(
     <line x1="17" y1="9" x2="23" y2="15" />
   </>
 );
+
+export const KeyIcon = createIcon(
+  <>
+    <path d="m21 2-2 2m-1.5 1.5L14 9l-1.5-1.5M7 14l-4 4v4h4l4-4" />
+    <circle cx="15.5" cy="8.5" r="3.5" />
+  </>
+);
+

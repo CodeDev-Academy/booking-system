@@ -121,16 +121,43 @@ export const INITIAL_STAFF = [
     last_login: "Today, 08:10 AM"
   },
   {
-    id: "staff-uuid-3",
+    id: "doc-uuid-1",
     full_name: "Dr. Ibrahim Bello",
     email: "dr.bello@medpulse.clinic",
     role: "doctor",
     desk: "Consultation Suite 1",
+    specialty: "General Dental Practitioner",
     phone: "+234 802 111 2233",
     is_active: true,
     duty_status: "on_duty",
     shift: "Full Day (08:30 - 16:30)",
     last_login: "Today, 08:20 AM"
+  },
+  {
+    id: "doc-uuid-2",
+    full_name: "Dr. Chidinma Okafor",
+    email: "dr.okafor@medpulse.clinic",
+    role: "doctor",
+    desk: "Consultation Suite 2",
+    specialty: "Orthodontics Specialist",
+    phone: "+234 803 444 5566",
+    is_active: true,
+    duty_status: "on_duty",
+    shift: "Full Day (09:00 - 17:00)",
+    last_login: "Today, 08:45 AM"
+  },
+  {
+    id: "doc-uuid-3",
+    full_name: "Dr. Zainab Al-Hassan",
+    email: "dr.alhassan@medpulse.clinic",
+    role: "doctor",
+    desk: "Consultation Suite 3",
+    specialty: "Oral & Maxillofacial Surgeon",
+    phone: "+234 805 777 8899",
+    is_active: true,
+    duty_status: "on_break",
+    shift: "Late Shift (10:00 - 18:00)",
+    last_login: "Today, 09:30 AM"
   },
   {
     id: "staff-uuid-4",
@@ -143,6 +170,30 @@ export const INITIAL_STAFF = [
     duty_status: "on_duty",
     shift: "Management",
     last_login: "Today, 07:30 AM"
+  },
+  {
+    id: "staff-uuid-5",
+    full_name: "Blessing Umeh",
+    email: "blessing.u@medpulse.clinic",
+    role: "nurse",
+    desk: "Clinical Triage & Sterilization",
+    phone: "+234 811 222 3344",
+    is_active: true,
+    duty_status: "on_duty",
+    shift: "Morning (07:30 - 15:30)",
+    last_login: "Today, 07:45 AM"
+  },
+  {
+    id: "staff-uuid-6",
+    full_name: "Musa Haruna",
+    email: "musa.h@medpulse.clinic",
+    role: "cleaner",
+    desk: "Facility & Clinic Hygiene",
+    phone: "+234 812 555 6677",
+    is_active: true,
+    duty_status: "on_duty",
+    shift: "Morning (07:00 - 16:00)",
+    last_login: "Today, 06:50 AM"
   }
 ];
 
@@ -449,3 +500,118 @@ export const INITIAL_ANALYTICS = {
     { name: "Emergency Triage", count: 8, percent: 5 }
   ]
 };
+
+export const INITIAL_PAST_APPOINTMENTS = [
+  {
+    appointment_id: "AP-1025",
+    patient_name: "Amina Yusuf",
+    patient_phone: "+234 801 234 5678",
+    doctor_id: "doc-uuid-1",
+    doctor_name: "Dr. Ibrahim Bello",
+    doctor_specialty: "General Dental Practitioner",
+    service_name: "Dental Consultation",
+    date: "2026-10-08",
+    time_label: "09:30 AM - 10:00 AM",
+    status: "completed",
+    room: "Suite 1 (Dental)",
+    notes: "Comprehensive oral exam done. Mild plaque noted. Ultrasonic scaling completed successfully.",
+    follow_up_scheduled: "2027-04-08 (6-Month Routine Recall)",
+    completed_at: "2026-10-08T10:05:00Z"
+  },
+  {
+    appointment_id: "AP-1024",
+    patient_name: "Tunde Bakare",
+    patient_phone: "+234 802 888 1122",
+    doctor_id: "doc-uuid-2",
+    doctor_name: "Dr. Chidinma Okafor",
+    doctor_specialty: "Orthodontics Specialist",
+    service_name: "Teeth Whitening & Hygiene",
+    date: "2026-10-07",
+    time_label: "11:00 AM - 11:45 AM",
+    status: "completed",
+    room: "Suite 2 (Aesthetics)",
+    notes: "In-office 45-min laser whitening completed. 3 shades improvement noted on VITA shade guide.",
+    follow_up_scheduled: "None required",
+    completed_at: "2026-10-07T11:50:00Z"
+  },
+  {
+    appointment_id: "AP-1023",
+    patient_name: "Chioma Okonkwo",
+    patient_phone: "+234 803 777 4433",
+    doctor_id: "doc-uuid-2",
+    doctor_name: "Dr. Chidinma Okafor",
+    doctor_specialty: "Orthodontics Specialist",
+    service_name: "Orthodontic Evaluation",
+    date: "2026-10-06",
+    time_label: "02:00 PM - 02:40 PM",
+    status: "completed",
+    room: "Suite 2 (Orthodontics)",
+    notes: "Diagnostic scans and impressions taken. Clear aligner treatment plan initiated.",
+    follow_up_scheduled: "2026-10-27 (Aligner Tray Fitting)",
+    completed_at: "2026-10-06T14:42:00Z"
+  },
+  {
+    appointment_id: "AP-1022",
+    patient_name: "Segun Adeleke",
+    patient_phone: "+234 805 111 9900",
+    doctor_id: "doc-uuid-1",
+    doctor_name: "Dr. Ibrahim Bello",
+    doctor_specialty: "General Dental Practitioner",
+    service_name: "Root Canal Therapy (Step 1)",
+    date: "2026-10-05",
+    time_label: "10:30 AM - 11:30 AM",
+    status: "completed",
+    room: "Suite 1 (Endodontics)",
+    notes: "Pulp chamber accessed. Canal instrumentation complete. Temporary IRM filling placed.",
+    follow_up_scheduled: "2026-10-19 (Step 2 Obturation)",
+    completed_at: "2026-10-05T11:35:00Z"
+  },
+  {
+    appointment_id: "AP-1021",
+    patient_name: "Fatima Aliyu",
+    patient_phone: "+234 807 555 6677",
+    doctor_id: "doc-uuid-3",
+    doctor_name: "Dr. Zainab Al-Hassan",
+    doctor_specialty: "Oral & Maxillofacial Surgeon",
+    service_name: "Dental Consultation",
+    date: "2026-10-04",
+    time_label: "01:00 PM - 01:30 PM",
+    status: "cancelled",
+    room: "Unassigned",
+    notes: "Patient requested cancellation 24h prior due to interstate work travel.",
+    cancellation_reason: "Patient interstate work travel",
+    completed_at: null
+  },
+  {
+    appointment_id: "AP-1020",
+    patient_name: "Emeka Nwosu",
+    patient_phone: "+234 809 333 2211",
+    doctor_id: "doc-uuid-3",
+    doctor_name: "Dr. Zainab Al-Hassan",
+    doctor_specialty: "Oral & Maxillofacial Surgeon",
+    service_name: "Emergency Toothache Triage",
+    date: "2026-10-03",
+    time_label: "08:30 AM - 08:50 AM",
+    status: "no_show",
+    room: "Suite 3",
+    notes: "Patient did not show up. Follow-up SMS welfare check dispatched by reception.",
+    cancellation_reason: "Unnotified missed visit",
+    completed_at: null
+  },
+  {
+    appointment_id: "AP-1019",
+    patient_name: "Grace Danladi",
+    patient_phone: "+234 802 444 6688",
+    doctor_id: "doc-uuid-1",
+    doctor_name: "Dr. Ibrahim Bello",
+    doctor_specialty: "General Dental Practitioner",
+    service_name: "Dental Consultation",
+    date: "2026-09-29",
+    time_label: "03:00 PM - 03:30 PM",
+    status: "completed",
+    room: "Suite 1 (Dental)",
+    notes: "Gingival health checkup. Clean bill of oral health. Recommended soft-bristled brush.",
+    follow_up_scheduled: "2027-03-29 (Routine Recall)",
+    completed_at: "2026-09-29T15:35:00Z"
+  }
+];

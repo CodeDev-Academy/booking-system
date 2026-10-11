@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LoginPage } from './components/auth/LoginPage';
 import { QuickPinLockModal } from './components/auth/QuickPinLockModal';
+import { Sidebar } from './components/common/Sidebar';
 import { Header } from './components/common/Header';
-import { Navigation } from './components/common/Navigation';
 
 // Presentational Modules (UI)
 import { RequestsModule } from './components/requests/RequestsModule';
@@ -11,9 +11,8 @@ import { LiveVisitsModule } from './components/visits/LiveVisitsModule';
 import { StaffDirectoryModule } from './components/staff/StaffDirectoryModule';
 import { AnalyticsModule } from './components/analytics/AnalyticsModule';
 import { ClinicSettingsModule } from './components/settings/ClinicSettingsModule';
-import { PatientSimulatorModule } from './components/simulator/PatientSimulatorModule';
 
-// Logic Custom Hooks (Business Logic)
+// Custom Hooks (Business Logic)
 import { useBookingRequests } from './hooks/useBookingRequests';
 import { useLiveVisits } from './hooks/useLiveVisits';
 import { useStaffDirectory } from './hooks/useStaffDirectory';
@@ -24,15 +23,14 @@ import { playNotificationChime } from './utils/audioChime';
 import './App.css';
 
 const MainApp = () => {
-  const { currentUser } = useAuth();
-  const [activeModule, setActiveModule] = useState('requests'); // requests, visits, staff, analytics, settings, simulator
+  const { currentUser, lockScreen } = useAuth();
+  const [activeModule, setActiveModule] = useState('requests'); // requests, visits, staff, analytics, settings
   const [chimeEnabled, setChimeEnabled] = useState(true);
   const [toast, setToast] = useState(null);
-  const [activeDispatchedOffers, setActiveDispatchedOffers] = useState([]);
 
   const showToast = (message) => {
     setToast(message);
-    setTimeout(() => setToast(null), 4000);
+    setTimeout(() => setToast(null), 3500);
   };
 
   const triggerChime = () => {
@@ -45,8 +43,7 @@ const MainApp = () => {
   const requestsController = useBookingRequests({
     onNewRequestNotification: triggerChime,
     onDispatchedOffer: (offer) => {
-      setActiveDispatchedOffers(prev => [...prev, offer]);
-      showToast(`Approved candidate slots for ${offer.patientName}! Dispatched with 1-hour expiry.`);
+      showToast(`Dispatched 1-hour slot options to ${offer.patientName}!`);
     }
   });
 
@@ -62,79 +59,69 @@ const MainApp = () => {
     onToast: showToast
   });
 
-  // If user is unauthenticated or deactivated, render Login Portal
+  // Dynamic Doctors List derived directly from Staff Directory
+  const activeDoctors = React.useMemo(() => {
+    return staffController.staffList
+      .filter(s => s.role === 'doctor' && s.is_active)
+      .map(s => ({
+        id: s.id,
+        name: s.full_name,
+        specialty: s.specialty || s.desk || 'Practitioner',
+        email: s.email,
+        phone: s.phone,
+        duty_status: s.duty_status
+      }));
+  }, [staffController.staffList]);
+
+  // If unauthenticated or deactivated, render Login Portal
   if (!currentUser) {
     return <LoginPage />;
   }
 
-  // --- Cross-Module Event Bridges (Patient Simulator Integration) ---
-  const handlePatientWebSubmit = (newReq) => {
-    requestsController.addExternalRequest(newReq);
-    showToast(`📥 Patient booking submitted via Web Widget! Ref: ${newReq.request_id}`);
+  // Simple Titles for Top Header
+  const getModuleTitle = () => {
+    switch (activeModule) {
+      case 'requests': return 'New Patient Requests';
+      case 'visits': return "Today's Visits";
+      case 'staff': return 'Staff Directory';
+      case 'analytics': return 'Reports & Analytics';
+      case 'settings': return 'Clinic Settings';
+      default: return 'Reception Desk';
+    }
   };
 
-  const handlePatientSelectSlot = (appointmentId, slot, pName, pPhone) => {
-    const newAppointment = {
-      appointment_id: appointmentId,
-      patient_name: pName,
-      patient_phone: pPhone,
-      doctor_id: slot.doctor_id,
-      doctor_name: slot.doctor_name,
-      service_name: "Dental Consultation",
-      start_datetime: slot.start_datetime,
-      end_datetime: slot.end_datetime,
-      time_label: slot.display_label,
-      status: 'confirmed',
-      arrival_at: null,
-      room: 'Confirmed Upcoming',
-      notes: 'Booked via patient phone simulator.'
-    };
-    visitsController.addConfirmedAppointment(newAppointment);
-    showToast(`🎉 Patient confirmed slot! Appointment ${appointmentId} placed on Live Schedule.`);
-  };
-
-  const handlePatientReRequest = (reqId, pName) => {
-    requestsController.reEngageExpired(reqId);
-    showToast(`⚡ Priority Alert: ${pName} re-requested fresh available times!`);
-  };
-
-  // Live badge counts from controllers
   const pendingRequestsCount = requestsController.requests.filter(
     r => ['awaiting_review', 're_requested'].includes(r.status)
   ).length;
 
-  const waitingVisitsCount = visitsController.arrivedCount;
-  const onDutyStaffCount = staffController.staffList.filter(s => s.duty_status === 'on_duty').length;
-
   return (
-    <div className="app-container">
+    <div className="dashboard-layout">
       {/* Quick PIN Auto-Lock Overlay */}
       <QuickPinLockModal />
 
-      {/* Header */}
-      <Header
-        chimeEnabled={chimeEnabled}
-        setChimeEnabled={setChimeEnabled}
-        onTestChime={triggerChime}
-      />
-
-      {/* Navigation */}
-      <Navigation
+      {/* Floating Dark Glass Sidebar */}
+      <Sidebar
         activeModule={activeModule}
         setActiveModule={setActiveModule}
         pendingRequestsCount={pendingRequestsCount}
-        waitingVisitsCount={waitingVisitsCount}
-        onDutyStaffCount={onDutyStaffCount}
+        onLockScreen={lockScreen}
       />
 
       {/* Main Content Area */}
-      <main className="main-content">
-        <div className="container">
+      <div className="dashboard-main-area">
+        {/* Sleek Minimal Top Header */}
+        <Header
+          activeTitle={getModuleTitle()}
+        />
+
+        {/* Dedicated Section View */}
+        <main style={{ flex: 1 }}>
           {activeModule === 'requests' && (
             <RequestsModule
               controller={requestsController}
+              doctors={activeDoctors}
               onSendMessage={(reqId, msg, ch) => {
-                showToast(`Clinical prompt delivered to patient via ${ch.toUpperCase()} webhook.`);
+                showToast(`Message sent via ${ch.toUpperCase()}.`);
               }}
             />
           )}
@@ -142,6 +129,7 @@ const MainApp = () => {
           {activeModule === 'visits' && (
             <LiveVisitsModule
               controller={visitsController}
+              doctors={activeDoctors}
             />
           )}
 
@@ -162,39 +150,35 @@ const MainApp = () => {
           {activeModule === 'settings' && (
             <ClinicSettingsModule
               controller={settingsController}
+              chimeEnabled={chimeEnabled}
+              setChimeEnabled={setChimeEnabled}
+              onTestChime={triggerChime}
             />
           )}
+        </main>
+      </div>
 
-          {activeModule === 'simulator' && (
-            <PatientSimulatorModule
-              onSubmitPatientRequest={handlePatientWebSubmit}
-              activeDispatchedOffers={activeDispatchedOffers}
-              onPatientSelectSlot={handlePatientSelectSlot}
-              onPatientReRequestNewTimes={handlePatientReRequest}
-            />
-          )}
-        </div>
-      </main>
-
-      {/* Global Toast Alert */}
+      {/* Translucent Dark Glass Toast Notification */}
       {toast && (
         <div style={{
           position: 'fixed',
           bottom: '24px',
           right: '24px',
-          backgroundColor: 'var(--color-primary-dark)',
-          color: 'white',
-          padding: '14px 22px',
-          borderRadius: '12px',
-          boxShadow: 'var(--shadow-xl)',
-          zIndex: 2000,
+          background: 'rgba(20, 21, 25, 0.92)',
+          backdropFilter: 'blur(16px)',
+          WebkitBackdropFilter: 'blur(16px)',
+          border: '1px solid rgba(255, 255, 255, 0.15)',
+          color: '#ffffff',
+          padding: '12px 20px',
+          borderRadius: 'var(--radius-pill)',
+          boxShadow: '0 20px 40px rgba(0, 0, 0, 0.6)',
+          zIndex: 3000,
           display: 'flex',
           alignItems: 'center',
           gap: '10px',
-          fontSize: '0.875rem',
-          maxWidth: '440px'
+          fontSize: '0.8125rem'
         }}>
-          <span>🔔</span>
+          <span style={{ color: 'var(--color-accent-orange)' }}>⚡</span>
           <div>{toast}</div>
         </div>
       )}
