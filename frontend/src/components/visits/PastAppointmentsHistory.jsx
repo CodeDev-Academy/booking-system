@@ -4,16 +4,23 @@ import {
   ClockIcon,
   CheckCircleIcon,
   UserCheckIcon,
-  PhoneIcon
+  PhoneIcon,
+  XIcon
 } from '../common/Icons';
 import { INITIAL_PAST_APPOINTMENTS } from '../../utils/mockData';
+import { PatientHistoryModal } from './PatientHistoryModal';
 
 export const PastAppointmentsHistory = ({ doctors = [] }) => {
   const [historyList, setHistoryList] = useState(() => {
     const saved = localStorage.getItem('clinic_past_appointments');
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const savedIds = new Set(parsed.map(s => s.appointment_id));
+          const missingDefaults = INITIAL_PAST_APPOINTMENTS.filter(s => !savedIds.has(s.appointment_id));
+          return [...parsed, ...missingDefaults];
+        }
       } catch (e) {
         console.error('Failed to parse saved past appointments:', e);
       }
@@ -24,6 +31,7 @@ export const PastAppointmentsHistory = ({ doctors = [] }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all'); // 'all', 'completed', 'no_show', 'cancelled'
   const [doctorFilter, setDoctorFilter] = useState('all');
+  const [selectedPatientName, setSelectedPatientName] = useState(null);
 
   // Filtered appointments
   const filteredList = useMemo(() => {
@@ -64,9 +72,10 @@ export const PastAppointmentsHistory = ({ doctors = [] }) => {
       case 'completed':
         return (
           <span className="glass-badge" style={{
-            backgroundColor: 'rgba(52, 199, 89, 0.15)',
+            backgroundColor: 'rgba(118, 226, 67, 0.12)',
             color: 'var(--color-accent-green)',
-            border: '1px solid rgba(52, 199, 89, 0.3)'
+            border: '1px solid rgba(118, 226, 67, 0.25)',
+            fontSize: '0.6875rem'
           }}>
             ✓ Completed
           </span>
@@ -74,9 +83,10 @@ export const PastAppointmentsHistory = ({ doctors = [] }) => {
       case 'no_show':
         return (
           <span className="glass-badge" style={{
-            backgroundColor: 'rgba(255, 59, 48, 0.15)',
+            backgroundColor: 'rgba(255, 77, 109, 0.12)',
             color: 'var(--color-accent-coral)',
-            border: '1px solid rgba(255, 59, 48, 0.3)'
+            border: '1px solid rgba(255, 77, 109, 0.25)',
+            fontSize: '0.6875rem'
           }}>
             ✕ Missed / No-Show
           </span>
@@ -84,72 +94,57 @@ export const PastAppointmentsHistory = ({ doctors = [] }) => {
       case 'cancelled':
         return (
           <span className="glass-badge" style={{
-            backgroundColor: 'rgba(255, 149, 0, 0.15)',
+            backgroundColor: 'rgba(255, 107, 0, 0.12)',
             color: 'var(--color-accent-orange)',
-            border: '1px solid rgba(255, 149, 0, 0.3)'
+            border: '1px solid rgba(255, 107, 0, 0.25)',
+            fontSize: '0.6875rem'
           }}>
             ⚠ Cancelled
           </span>
         );
       default:
-        return <span className="glass-badge">{status}</span>;
+        return <span className="glass-badge" style={{ fontSize: '0.6875rem' }}>{status}</span>;
     }
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-      {/* Top Aggregate Summary Strip */}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      {/* Sleek, Non-Bulky Summary KPI Strip */}
       <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-        gap: '12px'
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: '10px',
+        padding: '12px 18px',
+        backgroundColor: 'rgba(255, 255, 255, 0.02)',
+        borderRadius: 'var(--radius-lg)',
+        border: '1px solid var(--color-border-glass)'
       }}>
-        <div className="glass-card" style={{ padding: '16px 18px' }}>
-          <div style={{ fontSize: '0.6875rem', fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase' }}>
-            Archived Visits
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+          <div>
+            <span style={{ fontSize: '0.75rem', color: '#8e8e93' }}>Total Archive: </span>
+            <strong style={{ color: '#ffffff', fontSize: '0.9375rem' }}>{historyList.length}</strong>
           </div>
-          <div style={{ fontSize: '1.75rem', fontWeight: '800', color: '#ffffff', marginTop: '2px' }}>
-            {historyList.length}
+          <span style={{ color: 'rgba(255, 255, 255, 0.1)' }}>|</span>
+          <div>
+            <span style={{ fontSize: '0.75rem', color: '#8e8e93' }}>Completed: </span>
+            <strong style={{ color: 'var(--color-accent-green)', fontSize: '0.9375rem' }}>{completedCount}</strong>
           </div>
-          <div style={{ fontSize: '0.75rem', color: '#8e8e93', marginTop: '2px' }}>
-            Historical patient records
+          <span style={{ color: 'rgba(255, 255, 255, 0.1)' }}>|</span>
+          <div>
+            <span style={{ fontSize: '0.75rem', color: '#8e8e93' }}>Follow-Up Recalls: </span>
+            <strong style={{ color: 'var(--color-accent-teal)', fontSize: '0.9375rem' }}>{followUpCount}</strong>
           </div>
-        </div>
-
-        <div className="glass-card" style={{ padding: '16px 18px' }}>
-          <div style={{ fontSize: '0.6875rem', fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase' }}>
-            Completed Visits
-          </div>
-          <div style={{ fontSize: '1.75rem', fontWeight: '800', color: 'var(--color-accent-green)', marginTop: '2px' }}>
-            {completedCount}
-          </div>
-          <div style={{ fontSize: '0.75rem', color: '#8e8e93', marginTop: '2px' }}>
-            Successfully treated
+          <span style={{ color: 'rgba(255, 255, 255, 0.1)' }}>|</span>
+          <div>
+            <span style={{ fontSize: '0.75rem', color: '#8e8e93' }}>Missed / Cancelled: </span>
+            <strong style={{ color: 'var(--color-accent-coral)', fontSize: '0.9375rem' }}>{noShowCount + cancelledCount}</strong>
           </div>
         </div>
 
-        <div className="glass-card" style={{ padding: '16px 18px' }}>
-          <div style={{ fontSize: '0.6875rem', fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase' }}>
-            Follow-Up Recalls
-          </div>
-          <div style={{ fontSize: '1.75rem', fontWeight: '800', color: 'var(--color-accent-teal)', marginTop: '2px' }}>
-            {followUpCount}
-          </div>
-          <div style={{ fontSize: '0.75rem', color: '#8e8e93', marginTop: '2px' }}>
-            Future recalls scheduled
-          </div>
-        </div>
-
-        <div className="glass-card" style={{ padding: '16px 18px' }}>
-          <div style={{ fontSize: '0.6875rem', fontWeight: '700', color: '#8e8e93', textTransform: 'uppercase' }}>
-            Missed / Cancelled
-          </div>
-          <div style={{ fontSize: '1.75rem', fontWeight: '800', color: 'var(--color-accent-coral)', marginTop: '2px' }}>
-            {noShowCount + cancelledCount}
-          </div>
-          <div style={{ fontSize: '0.75rem', color: '#8e8e93', marginTop: '2px' }}>
-            {noShowCount} no-shows • {cancelledCount} cancelled
-          </div>
+        <div style={{ fontSize: '0.75rem', color: '#8e8e93' }}>
+          💡 <span style={{ color: 'var(--color-accent-orange)' }}>Click on any patient name</span> to view their full past journey dossier
         </div>
       </div>
 
@@ -159,17 +154,13 @@ export const PastAppointmentsHistory = ({ doctors = [] }) => {
         alignItems: 'center',
         justifyContent: 'space-between',
         flexWrap: 'wrap',
-        gap: '12px',
-        backgroundColor: 'rgba(255, 255, 255, 0.02)',
-        padding: '12px 16px',
-        borderRadius: 'var(--radius-lg)',
-        border: '1px solid var(--color-border-glass)'
+        gap: '12px'
       }}>
-        {/* Search input */}
+        {/* Search Input */}
         <div style={{ position: 'relative', flex: '1 1 260px', maxWidth: '380px' }}>
           <span style={{
             position: 'absolute',
-            left: '12px',
+            left: '14px',
             top: '50%',
             transform: 'translateY(-50%)',
             color: '#8e8e93',
@@ -181,8 +172,8 @@ export const PastAppointmentsHistory = ({ doctors = [] }) => {
             type="text"
             className="form-control-glass"
             style={{
-              paddingLeft: '34px',
-              paddingRight: searchQuery ? '32px' : '12px',
+              paddingLeft: '38px',
+              paddingRight: searchQuery ? '34px' : '12px',
               fontSize: '0.8125rem',
               borderRadius: 'var(--radius-pill)',
               backgroundColor: 'rgba(255, 255, 255, 0.03)'
@@ -196,35 +187,35 @@ export const PastAppointmentsHistory = ({ doctors = [] }) => {
               onClick={() => setSearchQuery('')}
               style={{
                 position: 'absolute',
-                right: '10px',
+                right: '12px',
                 top: '50%',
                 transform: 'translateY(-50%)',
                 background: 'none',
                 border: 'none',
                 color: '#8e8e93',
                 cursor: 'pointer',
-                fontSize: '0.875rem'
+                padding: '2px'
               }}
             >
-              ✕
+              <XIcon size={14} color="#8e8e93" />
             </button>
           )}
         </div>
 
-        {/* Filter pills & Doctor dropdown */}
+        {/* Status Filter Pills & Doctor Dropdown */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           {/* Status Pills */}
           <div style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '6px',
+            gap: '4px',
             background: 'rgba(255, 255, 255, 0.03)',
             padding: '3px',
             borderRadius: 'var(--radius-pill)',
             border: '1px solid var(--color-border-glass)'
           }}>
             {[
-              { id: 'all', label: 'All Records' },
+              { id: 'all', label: 'All' },
               { id: 'completed', label: 'Completed' },
               { id: 'no_show', label: 'No-Shows' },
               { id: 'cancelled', label: 'Cancelled' }
@@ -236,11 +227,11 @@ export const PastAppointmentsHistory = ({ doctors = [] }) => {
                   onClick={() => setStatusFilter(tab.id)}
                   className="btn-pill"
                   style={{
-                    padding: '5px 12px',
+                    padding: '5px 14px',
                     fontSize: '0.75rem',
                     fontWeight: isActive ? '700' : '500',
-                    backgroundColor: isActive ? 'rgba(255, 255, 255, 0.12)' : 'transparent',
-                    color: isActive ? '#ffffff' : '#8e8e93',
+                    backgroundColor: isActive ? '#ffffff' : 'transparent',
+                    color: isActive ? '#0c0d0e' : '#8e8e93',
                     border: 'none'
                   }}
                 >
@@ -250,11 +241,11 @@ export const PastAppointmentsHistory = ({ doctors = [] }) => {
             })}
           </div>
 
-          {/* Doctor filter dropdown */}
+          {/* Doctor Filter Dropdown */}
           <select
             className="form-control-glass"
             style={{
-              padding: '6px 12px',
+              padding: '6px 14px',
               fontSize: '0.75rem',
               borderRadius: 'var(--radius-pill)',
               minWidth: '150px'
@@ -262,21 +253,14 @@ export const PastAppointmentsHistory = ({ doctors = [] }) => {
             value={doctorFilter}
             onChange={(e) => setDoctorFilter(e.target.value)}
           >
-            <option value="all" style={{ background: '#1c1d22', color: '#fff' }}>All Doctors</option>
+            <option value="all">All Doctors ({doctors.length})</option>
             {doctors.map(d => (
-              <option key={d.id} value={d.id} style={{ background: '#1c1d22', color: '#fff' }}>
-                {d.name}
+              <option key={d.id} value={d.id}>
+                {d.name || d.full_name}
               </option>
             ))}
           </select>
         </div>
-      </div>
-
-      {/* Results Count Banner */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
-        <span style={{ fontSize: '0.8125rem', color: '#8e8e93' }}>
-          Showing <strong style={{ color: '#ffffff' }}>{filteredList.length}</strong> past appointment {filteredList.length === 1 ? 'record' : 'records'}
-        </span>
       </div>
 
       {/* Past Appointments List */}
@@ -286,156 +270,153 @@ export const PastAppointmentsHistory = ({ doctors = [] }) => {
           textAlign: 'center',
           color: '#8e8e93'
         }}>
-          <CheckCircleIcon size={36} color="var(--color-border-glass)" />
-          <h4 style={{ color: '#ffffff', marginTop: '12px', marginBottom: '4px' }}>No past records found</h4>
+          <CheckCircleIcon size={32} color="var(--color-border-glass)" />
+          <h4 style={{ color: '#ffffff', marginTop: '10px', marginBottom: '4px' }}>No records found</h4>
           <p style={{ fontSize: '0.8125rem', margin: 0 }}>
             {searchQuery ? `No appointments matching "${searchQuery}"` : 'No historical appointments found under this filter.'}
           </p>
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          {filteredList.map(appt => (
-            <div
-              key={appt.appointment_id}
-              className="glass-card"
-              style={{
-                padding: '18px 22px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '12px',
-                borderLeft: appt.status === 'completed'
-                  ? '3px solid var(--color-accent-green)'
-                  : appt.status === 'no_show'
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {filteredList.map(appt => {
+            const isCompleted = appt.status === 'completed';
+            const isNoShow = appt.status === 'no_show';
+
+            return (
+              <div
+                key={appt.appointment_id}
+                className="glass-card"
+                style={{
+                  padding: '16px 20px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: '14px',
+                  borderLeft: isCompleted
+                    ? '3px solid var(--color-accent-green)'
+                    : isNoShow
                     ? '3px solid var(--color-accent-coral)'
                     : '3px solid var(--color-accent-orange)'
-              }}
-            >
-              {/* Card Top: Code, Status, Date/Time */}
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                flexWrap: 'wrap',
-                gap: '10px'
-              }}>
+                }}
+              >
+                {/* Left Column: Date & Patient Details */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                  {/* Clean Date Pill */}
+                  <div style={{
+                    minWidth: '95px',
+                    padding: '6px 10px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                    borderRadius: 'var(--radius-md)',
+                    textAlign: 'center',
+                    border: '1px solid rgba(255, 255, 255, 0.08)'
+                  }}>
+                    <div style={{ fontSize: '0.8125rem', fontWeight: '700', color: '#ffffff' }}>
+                      {appt.date}
+                    </div>
+                    <div style={{ fontSize: '0.6875rem', color: '#8e8e93' }}>
+                      {appt.time_label?.split('-')[0] || '10:00 AM'}
+                    </div>
+                  </div>
+
+                  {/* Patient Name & Service Line */}
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      {/* Clickable Patient Name opens Dossier */}
+                      <button
+                        onClick={() => setSelectedPatientName(appt.patient_name)}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          padding: 0,
+                          cursor: 'pointer',
+                          fontWeight: '700',
+                          fontSize: '1rem',
+                          color: '#ffffff',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          textDecoration: 'underline',
+                          textDecorationColor: 'rgba(255, 107, 0, 0.4)',
+                          textUnderlineOffset: '3px'
+                        }}
+                        title="Click to view full patient journey dossier"
+                      >
+                        <span>{appt.patient_name}</span>
+                        <span style={{ fontSize: '0.6875rem', color: 'var(--color-accent-orange)', fontWeight: '600' }}>
+                          (View Dossier ➔)
+                        </span>
+                      </button>
+
+                      {getStatusBadge(appt.status)}
+                    </div>
+
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      fontSize: '0.8125rem',
+                      color: 'var(--color-text-secondary)',
+                      marginTop: '4px'
+                    }}>
+                      <span style={{ color: 'var(--color-accent-orange)', fontWeight: '500' }}>
+                        {appt.service_name}
+                      </span>
+                      <span>•</span>
+                      <span>{appt.doctor_name}</span>
+                      <span>•</span>
+                      <span>{appt.patient_phone}</span>
+                      {appt.room && (
+                        <>
+                          <span>•</span>
+                          <span>{appt.room}</span>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Clinical summary or recall tag */}
+                    {appt.notes && (
+                      <div style={{ fontSize: '0.75rem', color: '#8e8e93', marginTop: '4px', fontStyle: 'italic' }}>
+                        "{appt.notes.length > 85 ? `${appt.notes.slice(0, 85)}...` : appt.notes}"
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Right Column: Code and Action */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                   <span style={{
                     fontFamily: 'monospace',
-                    fontWeight: '800',
-                    fontSize: '0.875rem',
-                    color: '#ffffff',
-                    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                    fontSize: '0.75rem',
+                    color: '#8e8e93',
+                    backgroundColor: 'rgba(255, 255, 255, 0.05)',
                     padding: '3px 8px',
                     borderRadius: 'var(--radius-sm)'
                   }}>
                     {appt.appointment_id}
                   </span>
-                  {getStatusBadge(appt.status)}
-                </div>
 
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  color: '#8e8e93',
-                  fontSize: '0.8125rem'
-                }}>
-                  <ClockIcon size={14} color="#8e8e93" />
-                  <span>{appt.date} • {appt.time_label}</span>
+                  <button
+                    onClick={() => setSelectedPatientName(appt.patient_name)}
+                    className="btn-pill btn-pill-glass"
+                    style={{ fontSize: '0.75rem', padding: '6px 14px' }}
+                  >
+                    <span>Full History</span>
+                  </button>
                 </div>
               </div>
-
-              {/* Card Middle: Patient & Doctor & Service Grid */}
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                gap: '12px',
-                backgroundColor: 'rgba(255, 255, 255, 0.02)',
-                padding: '12px 14px',
-                borderRadius: 'var(--radius-md)',
-                border: '1px solid rgba(255, 255, 255, 0.04)'
-              }}>
-                <div>
-                  <div style={{ fontSize: '0.6875rem', color: '#8e8e93', textTransform: 'uppercase', fontWeight: '700' }}>
-                    Patient
-                  </div>
-                  <div style={{ fontSize: '0.9375rem', fontWeight: '700', color: '#ffffff', marginTop: '2px' }}>
-                    {appt.patient_name}
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: '#8e8e93', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
-                    <PhoneIcon size={12} color="#8e8e93" />
-                    <span>{appt.patient_phone}</span>
-                  </div>
-                </div>
-
-                <div>
-                  <div style={{ fontSize: '0.6875rem', color: '#8e8e93', textTransform: 'uppercase', fontWeight: '700' }}>
-                    Doctor & Suite
-                  </div>
-                  <div style={{ fontSize: '0.9375rem', fontWeight: '600', color: '#ffffff', marginTop: '2px' }}>
-                    {appt.doctor_name}
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: '#8e8e93', marginTop: '2px' }}>
-                    {appt.doctor_specialty || appt.room}
-                  </div>
-                </div>
-
-                <div>
-                  <div style={{ fontSize: '0.6875rem', color: '#8e8e93', textTransform: 'uppercase', fontWeight: '700' }}>
-                    Procedure
-                  </div>
-                  <div style={{ fontSize: '0.9375rem', fontWeight: '600', color: 'var(--color-accent-orange)', marginTop: '2px' }}>
-                    {appt.service_name}
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: '#8e8e93', marginTop: '2px' }}>
-                    {appt.room}
-                  </div>
-                </div>
-              </div>
-
-              {/* Card Bottom: Clinical Notes & Recall */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                {appt.notes && (
-                  <div style={{ fontSize: '0.8125rem', color: '#cccccc', lineHeight: '1.4' }}>
-                    <strong style={{ color: '#8e8e93' }}>Clinical Summary: </strong>
-                    {appt.notes}
-                  </div>
-                )}
-
-                {appt.follow_up_scheduled && appt.follow_up_scheduled !== 'None required' && (
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    fontSize: '0.75rem',
-                    color: 'var(--color-accent-teal)',
-                    backgroundColor: 'rgba(0, 210, 190, 0.08)',
-                    padding: '6px 10px',
-                    borderRadius: 'var(--radius-sm)',
-                    width: 'fit-content'
-                  }}>
-                    <UserCheckIcon size={14} color="var(--color-accent-teal)" />
-                    <span>Scheduled Recall: <strong>{appt.follow_up_scheduled}</strong></span>
-                  </div>
-                )}
-
-                {appt.cancellation_reason && (
-                  <div style={{
-                    fontSize: '0.75rem',
-                    color: 'var(--color-accent-coral)',
-                    backgroundColor: 'rgba(255, 59, 48, 0.08)',
-                    padding: '6px 10px',
-                    borderRadius: 'var(--radius-sm)',
-                    width: 'fit-content'
-                  }}>
-                    Reason for Cancellation / Miss: <strong>{appt.cancellation_reason}</strong>
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
+
+      {/* Patient Medical Journey Dossier Modal */}
+      <PatientHistoryModal
+        patientName={selectedPatientName}
+        isOpen={Boolean(selectedPatientName)}
+        onClose={() => setSelectedPatientName(null)}
+        allAppointments={historyList}
+      />
     </div>
   );
 };

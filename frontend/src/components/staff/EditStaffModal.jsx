@@ -229,7 +229,8 @@ export const EditStaffModal = ({
               {[
                 { id: 'on_duty', label: '🟢 On Duty' },
                 { id: 'on_break', label: '🟡 On Break' },
-                { id: 'on_leave', label: '🔴 On Leave' }
+                { id: 'on_leave', label: '🔴 On Leave' },
+                { id: 'off_duty', label: '⚪ Off Duty' }
               ].map(opt => (
                 <button
                   type="button"

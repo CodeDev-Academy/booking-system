@@ -9,7 +9,13 @@ export const useStaffDirectory = ({ onToast }) => {
     const saved = localStorage.getItem('clinic_staff_roster');
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Merge to ensure default doctors and support staff exist if missing from older saves
+          const savedIds = new Set(parsed.map(s => s.id));
+          const missingDefaults = INITIAL_STAFF.filter(s => !savedIds.has(s.id));
+          return [...parsed, ...missingDefaults];
+        }
       } catch (e) {
         console.error('Failed to parse saved staff roster from localStorage:', e);
       }

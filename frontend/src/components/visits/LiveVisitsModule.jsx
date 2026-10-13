@@ -6,9 +6,12 @@ import {
 } from '../common/Icons';
 import { FollowUpCompletionModal } from './FollowUpCompletionModal';
 import { PastAppointmentsHistory } from './PastAppointmentsHistory';
+import { PatientHistoryModal } from './PatientHistoryModal';
+import { INITIAL_PAST_APPOINTMENTS } from '../../utils/mockData';
 
 export const LiveVisitsModule = ({ controller, doctors = [] }) => {
   const [activeView, setActiveView] = useState('live'); // 'live' or 'history'
+  const [selectedPatientHistory, setSelectedPatientHistory] = useState(null);
   const {
     filterDoctor,
     setFilterDoctor,
@@ -220,9 +223,27 @@ export const LiveVisitsModule = ({ controller, doctors = [] }) => {
                 {/* Patient Information & Live Status Dot */}
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <span style={{ fontWeight: '700', fontSize: '1.0625rem', color: '#ffffff' }}>
-                      {apt.patient_name}
-                    </span>
+                    <button
+                      onClick={() => setSelectedPatientHistory(apt.patient_name)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        padding: 0,
+                        cursor: 'pointer',
+                        fontWeight: '700',
+                        fontSize: '1.0625rem',
+                        color: '#ffffff',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}
+                      title="Click to view full patient history dossier"
+                    >
+                      <span>{apt.patient_name}</span>
+                      <span style={{ fontSize: '0.6875rem', color: 'var(--color-accent-orange)', fontWeight: '600' }}>
+                        (History ➔)
+                      </span>
+                    </button>
 
                     {/* Clean Live Status Tag */}
                     {isNoShow && (
@@ -397,6 +418,14 @@ export const LiveVisitsModule = ({ controller, doctors = [] }) => {
         onClose={() => setSelectedAppointmentForCompletion(null)}
         onCompleteWithFollowUp={completeWithFollowUp}
         doctors={doctors}
+      />
+
+      {/* Patient Medical Journey Dossier Modal */}
+      <PatientHistoryModal
+        patientName={selectedPatientHistory}
+        isOpen={Boolean(selectedPatientHistory)}
+        onClose={() => setSelectedPatientHistory(null)}
+        allAppointments={[...controller.appointments, ...INITIAL_PAST_APPOINTMENTS]}
       />
     </div>
   );
