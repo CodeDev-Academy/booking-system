@@ -37,11 +37,6 @@ export const LoginView = () => {
   const [errorMessage, setErrorMessage] = useState('');
   const [lockoutSec, setLockoutSec] = useState(0);
 
-  // If already authenticated, redirect to Queue
-  if (isAuthenticated) {
-    return <Navigate to="/queue" replace />;
-  }
-
   // Active Lockout Countdown Timer
   useEffect(() => {
     if (!loginLockoutUntil) {
@@ -58,6 +53,11 @@ export const LoginView = () => {
     const interval = setInterval(updateTimer, 1000);
     return () => clearInterval(interval);
   }, [loginLockoutUntil]);
+
+  // If already authenticated, redirect to Queue
+  if (isAuthenticated) {
+    return <Navigate to="/queue" replace />;
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault();
