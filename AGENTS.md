@@ -89,17 +89,32 @@ It acts as a human-in-the-loop booking assistant where the system extracts and s
 ```
 clinic-booking-system/
 ├── AGENTS.md                  # Master architecture, instructions & memory
+├── PROGRESS.md                # Real-time phase milestone tracker
+├── TEST.md                    # Granular QA & test case matrix
+├── n8n.md                     # n8n workflows master functional blueprint
 ├── backend/                   # Django REST Framework Project
 │   ├── manage.py
 │   ├── core/                  # Django project settings & wsgi/asgi
 │   ├── appointments/          # Models, serializers, views, availability engine
 │   └── requirements.txt
-├── frontend/                  # React.js + Vanilla CSS
+├── frontend/                  # React.js + Vanilla CSS (Strict Logic vs Design Separation)
 │   ├── index.html
 │   ├── src/
-│   │   ├── components/        # RequestCards, SlotPicker, CalendarGrid, StatusToggles
-│   │   ├── pages/             # Dashboard, BookingForm, Analytics
-│   │   └── index.css          # Vanilla CSS Design System
+│   │   ├── api/               # API clients, JWT interceptor, SSE listener (LOGIC ONLY)
+│   │   ├── hooks/             # Headless React hooks for queue, holds, swimlanes (LOGIC ONLY)
+│   │   ├── services/          # Web Audio synth, mock data store, time utilities (LOGIC ONLY)
+│   │   ├── components/        # Pure presentational UI components (DESIGN ONLY)
+│   │   │   ├── layout/        # LeftRail, Header, PrivacyLockModal
+│   │   │   ├── queue/         # TriageQueuePane, QueueCard, AgingBadge
+│   │   │   ├── review/        # ActiveReviewStage, CandidateSlotCard, ShieldBanner
+│   │   │   ├── swimlanes/     # LiveVisitsGrid, VisitCard, FollowUpModal
+│   │   │   ├── admin/         # ClinicSettingsBento, StaffRosterTable
+│   │   │   └── simulator/     # SplitPitchSimulator, MobilePhoneIntakeFrame
+│   │   ├── styles/            # Vanilla CSS tokens and component styles (DESIGN ONLY)
+│   │   │   ├── tokens.css     # tasteskill.dev color, border, and typography tokens
+│   │   │   ├── layout.css     # Grid, anti-overflow guards, responsive rules
+│   │   │   └── components/    # Component-specific CSS sheets
+│   │   └── main.jsx
 │   └── package.json
 └── n8n/                       # Ready-to-import n8n Workflow JSONs
     ├── intake_webhook.json
@@ -107,3 +122,47 @@ clinic-booking-system/
     ├── reminder_dispatcher.json
     └── patient_response_handler.json
 ```
+
+---
+
+## 7. Multi-Agent Team Structure & Operational Responsibilities
+
+1. **Brain Agent — Architect & Backend (Lead Pair Architect)**:
+   - **Primary Ownership**: System Architecture, Backend Foundation (`backend/`), Relational Schema & ORM, Availability Engine & Concurrency Locks, Security & RBAC Governance, Project Monitoring, and Continuous Documentation Synchronization (`*.md` files).
+   - **Role**: Coordinates the roadmap, guarantees zero double-booking logic, guards database integrity, and leads Phase 1, Phase 2, and Phase 3.
+2. **Frontend Sub-Agent**:
+   - **Primary Ownership**: User Interface & UX (`frontend/`), React 18 component tree, Vanilla CSS design system (`index.css`), Real-time SSE listener, Audio Chime notifications, Receptionist Hub modules, and Client Pitch Simulator.
+3. **Review Sub-Agent**:
+   - **Primary Ownership**: Quality Assurance, Code Review, Security Auditing, Test Execution Verification against [TEST.md](file:///c:/Users/User/OneDrive/Desktop/Project/Clinic%20Booking%20system/TEST.md), Edge-Case & Concurrency stress validation.
+
+---
+
+## 8. Core Agent Behavioral Governance & Execution Constraints
+
+1. **Explicit User Command Required Before Building**:
+   - The agent MUST NEVER initiate code scaffolding, file generation, or system building until the user explicitly commands to start building.
+   - Planning, architectural alignment, documentation reviews, and schema vetting take precedence until given the explicit go-ahead.
+
+2. **Strict Step-by-Step Incremental Execution (Zero 'Big-Bang' Building)**:
+   - NEVER build entire subsystems or multiple phases in one go.
+   - All work must proceed strictly one small, verifiable step at a time (e.g., Task 1.1 first, verify; Task 1.2 next, verify).
+   - Each step must be completed, tested against [TEST.md](file:///c:/Users/User/OneDrive/Desktop/Project/Clinic%20Booking%20system/TEST.md), and signed off before proceeding to the subsequent step.
+
+3. **Frontend Design Governance (`tasteskill.dev` + `awesome-design-md`)**:
+   - **Strict Aesthetic Rule**: Every frontend component must strictly adhere to the `tasteskill.dev` and `awesome-design-md` design system:
+     - Palette: `#0f0f0f` canvas, `#121212` / `#141414` elevated card surfaces, hairline borders (`#1f1f1f` / `#2b2b2b`), signature ember/amber gradients (`#ffb547` $\rightarrow$ `#ff6b3d` $\rightarrow$ `#ff4f79`), emerald green accents (`#32c850`).
+     - Typography: Clean sans with `tabular-nums` for timers, counts, and dates.
+     - Spacing & Structure: Strict 4px/8px modular grid rhythm, optical padding.
+     - Responsive & Anti-Overflow Guard: Prevent all element overflow (`min-width: 0` on flex items, `overflow-x: hidden` on viewport roots, responsive auto-fit grids for tablet/mobile without horizontal clipping).
+   - **Zero Slop**: No generic centered cards, no clunky grey shadows, no raw unstyled defaults.
+
+4. **Strict Separation of Concerns (Logic vs Design)**:
+   - **Logic files and Design/Presentation files MUST NEVER be mixed**:
+     - **Logic Layer (`hooks/`, `services/`, `api/`)**: All state machines, API calls, SSE listeners, countdown math, and business validation live strictly in headless custom hooks and service modules.
+     - **Design/Presentation Layer (`components/`, `styles/`)**: Components are pure presentational functions that receive props and return clean markup with corresponding CSS. Zero direct `fetch()`, zero complex business logic in JSX.
+
+5. **Continuous Documentation Synchronization**:
+   - Whenever a feature, rule, workflow, or architectural decision is planned or modified, corresponding `.md` files ([n8n.md](file:///c:/Users/User/OneDrive/Desktop/Project/Clinic%20Booking%20system/n8n.md), [PROGRESS.md](file:///c:/Users/User/OneDrive/Desktop/Project/Clinic%20Booking%20system/PROGRESS.md), [TEST.md](file:///c:/Users/User/OneDrive/Desktop/Project/Clinic%20Booking%20system/TEST.md), [DATABASE_SCHEMA.md](file:///c:/Users/User/OneDrive/Desktop/Project/Clinic%20Booking%20system/DATABASE_SCHEMA.md), [DESIGN_DIRECTION.md](file:///c:/Users/User/OneDrive/Desktop/Project/Clinic%20Booking%20system/DESIGN_DIRECTION.md)) must be updated immediately to preserve single-source-of-truth accuracy.
+
+
+

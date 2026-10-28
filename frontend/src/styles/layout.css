@@ -1,0 +1,659 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+img, video {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* ==========================================================================
+   Cedarcare Clinic Design System — Base & Layout CSS (layout.css)
+   Mobile-first: Base for 360px screen with min-width media queries at 
+   640px, 768px, 1024px, 1280px only.
+   Strict 8-token spacing scale: --space-1, 2, 3, 4, 6, 8, 12, 16.
+   ========================================================================== */
+
+html, body {
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  margin: 0;
+  padding: 0;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+  background-color: var(--bg);
+  margin: 0;
+  padding: 0;
+}
+
+/* ==========================================================================
+   Anti-Overflow Guards (Crucial for multi-column dashboards & flex layouts)
+   ========================================================================== */
+.flex-item-guard,
+.main-stage,
+.content-viewport,
+.view-container,
+.queue-column,
+.swimlane-column,
+.container,
+.centered-container {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Fluid Containers (Rule 5) */
+.container,
+.view-container,
+.centered-container {
+  width: 100%;
+  max-width: 100%;
+  margin-inline: auto;
+  padding-inline: var(--space-4);
+  box-sizing: border-box;
+}
+
+/* Universal Form Elements & Dropdown Anti-Overflow Safeguards */
+select,
+.select-base,
+.settings-select,
+.field-input,
+.clinician-select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+input,
+.input-base,
+.settings-input,
+textarea {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* Ensure flex/grid children containing selects never overflow their parents */
+.form-field,
+.settings-form-group,
+.settings-input-wrapper,
+.clinician-dropdown-wrapper,
+.field-row > div,
+.search-field-part,
+.location-field-part,
+.colleague-select-row,
+.custom-slot-row > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 640px) {
+  select,
+  .select-base,
+  .settings-select,
+  .field-input,
+  .clinician-select {
+    font-size: 11px;
+    padding-inline: 8px;
+    min-height: 38px;
+  }
+}
+
+/* Sleek Light Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d1d5db transparent;
+}
+
+/* ==========================================================================
+   App Master Shell Layout (Mobile-first: Base for 360px screen)
+   ========================================================================== */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  background-color: var(--bg);
+  position: relative;
+}
+
+.main-stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  width: 100%;
+  background-color: var(--bg);
+  position: relative;
+}
+
+.content-viewport {
+  flex: 1;
+  width: 100%;
+  max-width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-4);
+  background-color: var(--bg);
+  position: relative;
+  box-sizing: border-box;
+}
+
+/* ==========================================================================
+   Accessible Keyboard Focus & 44px Minimum Tap Targets (Rule 9)
+   ========================================================================== */
+:focus-visible {
+  outline: 2px solid var(--color-ring, #0891b2) !important;
+  outline-offset: var(--color-ring-offset, 2px) !important;
+}
+
+button, a, input, select, textarea {
+  touch-action: manipulation;
+  font-family: inherit;
+}
+
+/* Rule 9: Buttons and links must have at least a 44px tap target on mobile */
+button,
+.btn-base,
+.icon-btn,
+.header-action-btn,
+.nav-item,
+.mode-switcher-pill,
+.workload-meter-btn,
+.date-cell-btn,
+.time-slot-btn,
+.doctor-select-card {
+  min-height: 44px;
+  box-sizing: border-box;
+}
+
+.icon-btn,
+.rail-toggle-btn,
+.header-sidebar-toggle-btn {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* Smooth press active state for tactical feedback */
+button:active:not(:disabled),
+.btn-base:active:not(:disabled),
+.icon-btn:active:not(:disabled),
+.header-action-btn:active,
+.quick-role-chip:active,
+.candidate-slot-card:active {
+  transform: scale(var(--btn-press-scale, 0.98));
+  transition: transform 80ms ease;
+}
+
+/* Pre-delivery WCAG reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ==========================================================================
+   Typography & Aesthetic Utilities (Rule 7: rem units and clamp() headings)
+   ========================================================================== */
+h1, .heading-1, .h1 {
+  font-size: clamp(1.75rem, 4vw + 1rem, 2.5rem);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+}
+
+h2, .heading-2, .h2 {
+  font-size: clamp(1.25rem, 2.5vw + 0.75rem, 1.75rem);
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+}
+
+h3, .heading-3, .h3 {
+  font-size: clamp(1rem, 1.5vw + 0.6rem, 1.35rem);
+  line-height: 1.3;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  letter-spacing: -0.01em;
+}
+
+.gradient-text-ember {
+  color: var(--text);
+  display: inline-block;
+  font-weight: 700;
+}
+
+.mono-tag {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.02em;
+}
+
+/* Hairline Elevated Surfaces */
+.surface-card {
+  background-color: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.surface-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-md);
+}
+
+.surface-card-interactive:hover {
+  border-color: var(--chrome-border);
+  transform: translateY(-1px);
+}
+
+/* Status Badges — Clean Capsule Pills with Micro-Dots */
+.badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1.25;
+  background-color: #ffffff;
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.badge-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dot-success { background-color: #16a34a; }
+.dot-amber { background-color: #d97706; }
+.dot-ember { background-color: #ea580c; }
+.dot-danger { background-color: #dc2626; }
+.dot-info { background-color: #0284c7; }
+.dot-neutral { background-color: #9ca3af; }
+.dot-purple { background-color: #9333ea; }
+
+.badge-success {
+  background-color: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+}
+
+.badge-amber {
+  background-color: #fffbeb;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.badge-ember {
+  background-color: #fff7ed;
+  color: #c2410c;
+  border: 1px solid #ffedd5;
+}
+
+.badge-info {
+  background-color: #f0f9ff;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+.badge-danger {
+  background-color: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.badge-purple {
+  background-color: #faf5ff;
+  color: #7e22ce;
+  border: 1px solid #e9d5ff;
+}
+
+.badge-primary {
+  background-color: #111114;
+  color: #ffffff;
+  border: 1px solid #111114;
+}
+
+.badge-neutral {
+  background-color: #f3f4f6;
+  color: #4b5563;
+  border: 1px solid #e5e7eb;
+}
+
+/* Buttons — Solid Obsidian Pill & Clean Hairline Buttons (Rule 6, 9) */
+.btn-base {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  border-radius: var(--radius-full);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+  user-select: none;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-4);
+  box-sizing: border-box;
+}
+
+.btn-primary {
+  background-color: #111114;
+  color: #ffffff;
+  border: 1px solid #111114;
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-primary:hover {
+  background-color: #26262b;
+  border-color: #26262b;
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+
+.btn-secondary {
+  background-color: #ffffff;
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-secondary:hover {
+  background-color: var(--surface-2);
+  border-color: var(--chrome-border);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-2);
+}
+
+.btn-ghost:hover {
+  background-color: var(--surface-2);
+  color: var(--text);
+}
+
+/* ==========================================================================
+   Mobile-First Base Controls & Layout Defaults (360px)
+   ========================================================================== */
+.view-header {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.view-actions {
+  display: flex;
+  flex-wrap: wrap;
+  width: 100%;
+  gap: var(--space-2);
+}
+
+.view-actions button,
+.view-actions .btn-base {
+  flex: 1 1 auto;
+  min-height: 44px;
+}
+
+.kpi-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-3);
+  width: 100%;
+}
+
+.calendar-view-tabs {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.calendar-view-tab-btn {
+  flex: 1 1 auto;
+  justify-content: center;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+}
+
+.calendar-modal-surface {
+  padding: var(--space-4);
+  width: min(580px, calc(100vw - var(--space-6)));
+  max-height: 94vh;
+}
+
+.form-group-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.calendar-control-toolbar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.toolbar-left-group,
+.toolbar-right-group {
+  display: flex;
+  flex-wrap: wrap;
+  width: 100%;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.date-nav-pill {
+  width: 100%;
+  justify-content: space-between;
+}
+
+.doctor-workload-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.doctor-horizon-pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-around;
+  width: 100%;
+  gap: var(--space-2);
+}
+
+.workload-meter-btn {
+  justify-content: center;
+  width: 100%;
+  min-height: 44px;
+}
+
+/* ==========================================================================
+   Breakpoint Scale: 640px, 768px, 1024px, 1280px (Rule 1)
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   Breakpoint 1: 640px (Large Mobile / Small Tablet)
+   -------------------------------------------------------------------------- */
+@media (min-width: 640px) {
+  .view-header {
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .view-actions {
+    width: auto;
+  }
+
+  .view-actions button,
+  .view-actions .btn-base {
+    flex: initial;
+  }
+
+  .kpi-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .calendar-view-tabs {
+    width: auto;
+  }
+
+  .calendar-view-tab-btn {
+    flex: initial;
+  }
+
+  .form-group-row {
+    flex-direction: row;
+    gap: var(--space-4);
+  }
+
+  .calendar-control-toolbar {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .toolbar-left-group,
+  .toolbar-right-group {
+    width: auto;
+  }
+
+  .date-nav-pill {
+    width: auto;
+  }
+
+  .doctor-workload-bar {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .doctor-horizon-pills {
+    width: auto;
+  }
+
+  .workload-meter-btn {
+    width: auto;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Breakpoint 2: 768px (Tablet)
+   -------------------------------------------------------------------------- */
+@media (min-width: 768px) {
+  .content-viewport {
+    padding: var(--space-6);
+  }
+
+  .kpi-row {
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-4);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Breakpoint 3: 1024px (Desktop)
+   -------------------------------------------------------------------------- */
+@media (min-width: 1024px) {
+  .app-shell {
+    flex-direction: row;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  .main-stage {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  .kpi-row {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Breakpoint 4: 1280px (Large Desktop)
+   -------------------------------------------------------------------------- */
+@media (min-width: 1280px) {
+  .container,
+  .view-container,
+  .centered-container {
+    max-width: 1600px;
+  }
+
+  .content-viewport {
+    padding: var(--space-6) var(--space-8);
+  }
+}

@@ -1,0 +1,239 @@
+{
+  "name": "02_Hold_And_Offer_Expiry_Sweeper",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/1 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "node-schedule-cron",
+      "name": "60-Second Sweeper Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [160, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.DJANGO_API_BASE_URL || 'http://backend:8000') + '/api/v1/webhooks/expiry-sweep/' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"triggered_by\": \"n8n_cron_sweeper\",\n  \"timestamp\": \"{{ $now.toISO() }}\"\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "node-post-sweep-endpoint",
+      "name": "Trigger Django Expiry Sweeper",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [380, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract swept batches from Django sweep response\nconst res = $input.item.json;\nconst expiredOffers = res.expired_offers || [];\nconst preExpiryNudges = res.pre_expiry_nudges || [];\nconst expiredHolds = res.expired_holds || [];\n\nconst itemsToProcess = [];\n\n// 1. Queue 45-Minute Pre-Expiry Nudges\nfor (const nudge of preExpiryNudges) {\n  itemsToProcess.push({\n    json: {\n      action_type: 'pre_expiry_nudge',\n      request_id: nudge.request_id || nudge.id,\n      patient_name: nudge.patient_name || 'Patient',\n      patient_phone: nudge.patient_phone || nudge.phone,\n      telegram_chat_id: nudge.telegram_chat_id,\n      service_name: nudge.service_name || 'Consultation',\n      minutes_left: nudge.minutes_remaining || 15\n    }\n  });\n}\n\n// 2. Queue 60-Minute Graceful Expiry & Re-Engagement Messages\nfor (const exp of expiredOffers) {\n  itemsToProcess.push({\n    json: {\n      action_type: 'graceful_expiry_recovery',\n      request_id: exp.request_id || exp.id,\n      patient_name: exp.patient_name || 'Patient',\n      patient_phone: exp.patient_phone || exp.phone,\n      telegram_chat_id: exp.telegram_chat_id,\n      service_name: exp.service_name || 'Consultation'\n    }\n  });\n}\n\nreturn itemsToProcess.length > 0 ? itemsToProcess : [{ json: { action_type: 'none_pending', swept_at: new Date().toISOString() } }];"
+      },
+      "id": "node-code-processor",
+      "name": "Parse Expiry & Nudge Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "rule-nudge",
+                    "leftValue": "={{ $json.action_type }}",
+                    "rightValue": "pre_expiry_nudge",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "rule-expiry",
+                    "leftValue": "={{ $json.action_type }}",
+                    "rightValue": "graceful_expiry_recovery",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        }
+      },
+      "id": "node-switch-action",
+      "name": "Route by Action Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [820, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + ($env.TELEGRAM_BOT_TOKEN || '') + '/sendMessage' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"chat_id\": \"{{ $json.telegram_chat_id || $json.patient_phone }}\",\n  \"text\": \"⏳ <b>Friendly Reminder</b>\\n\\nHello <b>{{ $json.patient_name }}</b>, your offered appointment times for <b>{{ $json.service_name }}</b> will expire in <b>15 minutes</b>.\\n\\nPlease tap your preferred time above to lock it in before the slot is released to others.\",\n  \"parse_mode\": \"HTML\"\n}",
+        "options": {}
+      },
+      "id": "node-send-nudge-msg",
+      "name": "Send 45m Pre-Expiry Nudge",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1080, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + ($env.TELEGRAM_BOT_TOKEN || '') + '/sendMessage' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"chat_id\": \"{{ $json.telegram_chat_id || $json.patient_phone }}\",\n  \"text\": \"🕊️ <b>Slot Offer Expired</b>\\n\\nHello <b>{{ $json.patient_name }}</b>, the previously offered times for <b>{{ $json.service_name }}</b> have expired to keep our schedule open for all patients.\\n\\nWe would still love to see you! Tap below to request fresh available times from our front desk:\",\n  \"parse_mode\": \"HTML\",\n  \"reply_markup\": {\n    \"inline_keyboard\": [\n      [\n        {\n          \"text\": \"🔄 See New Times\",\n          \"callback_data\": \"re_request_slots_{{ $json.request_id }}\"\n        }\n      ],\n      [\n        {\n          \"text\": \"💬 Chat with Reception\",\n          \"callback_data\": \"chat_reception_{{ $json.request_id }}\"\n        }\n      ]\n    ]\n  }\n}",
+        "options": {}
+      },
+      "id": "node-send-recovery-msg",
+      "name": "Send Graceful Expiry Recovery",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1080, 400]
+    }
+  ],
+  "connections": {
+    "60-Second Sweeper Schedule": {
+      "main": [
+        [
+          {
+            "node": "Trigger Django Expiry Sweeper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Django Expiry Sweeper": {
+      "main": [
+        [
+          {
+            "node": "Parse Expiry & Nudge Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Expiry & Nudge Items": {
+      "main": [
+        [
+          {
+            "node": "Route by Action Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Action Type": {
+      "main": [
+        [
+          {
+            "node": "Send 45m Pre-Expiry Nudge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Graceful Expiry Recovery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "medpulse-v1-02",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "medpulse-clinic-booking"
+  },
+  "id": "medpulse-02-expiry-sweeper",
+  "tags": [
+    {
+      "name": "Clinic Booking"
+    },
+    {
+      "name": "Cron"
+    },
+    {
+      "name": "Recovery"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "clinic_name": "Cedarcare Specialist Clinic",
+  "tagline": "Compassionate & Precision Dental and General Healthcare",
+  "address": "Plot 14, Victoria Island Medical Corridor, Lagos, Nigeria",
+  "phone": "+2348002332722",
+  "whatsapp_phone_id": "cedarcare_wa_bot",
+  "open_time": "08:00:00",
+  "close_time": "18:00:00",
+  "working_days": [1, 2, 3, 4, 5, 6],
+  "lunch_break_start": "13:00:00",
+  "lunch_break_end": "14:00:00",
+  "grid_increment_minutes": 15,
+  "booking_horizon_days": 14,
+  "min_advance_hours": 2,
+  "offer_expiry_minutes": 60,
+  "hold_expiry_minutes": 15,
+  "default_buffer_minutes": 10,
+  "emergency_slots_per_shift": 1,
+  "enable_24h_reminder": true,
+  "enable_2h_reminder": true,
+  "custom_config": {
+    "currency_symbol": "₦",
+    "currency_code": "NGN",
+    "timezone": "Africa/Lagos",
+    "messaging_gateway": "django_direct",
+    "telegram_bot_username": "@CedarcareClinicBot",
+    "receptionist_review_ttl_seconds": 180,
+    "idle_pin_lock_minutes": 20,
+    "theme_palette": {
+      "brand_primary": "#0f0f12",
+      "accent_emerald": "#32c850",
+      "accent_amber": "#ffb547",
+      "surface_canvas": "#f3f4f7",
+      "surface_card": "#ffffff"
+    }
+  }
+}

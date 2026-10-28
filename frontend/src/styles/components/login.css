@@ -1,0 +1,237 @@
+/* ==========================================================================
+   login.css — Dedicated Staff & Receptionist Login Portal Styles
+   Adheres strictly to tasteskill.dev & awesome-design-md principles:
+   porcelain canvas, elevated card surfaces, hairline borders, and ember accents.
+   ========================================================================== */
+
+.login-page-container {
+  min-height: 100vh;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-canvas, #0f0f0f);
+  background-image: 
+    radial-gradient(circle at 50% 0%, rgba(255, 181, 71, 0.08) 0%, transparent 60%),
+    radial-gradient(circle at 10% 90%, rgba(255, 79, 121, 0.04) 0%, transparent 40%);
+  padding: var(--space-6) var(--space-4);
+  overflow-x: hidden;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+.login-card-surface {
+  width: 100%;
+  max-width: 440px;
+  background: var(--surface-1, #121212);
+  border: 1px solid var(--border, #1f1f1f);
+  border-radius: var(--radius-lg);
+  padding: var(--space-8) var(--space-6);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  box-sizing: border-box;
+  position: relative;
+}
+
+/* Header & Clinic Branding */
+.login-header-group {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.login-clinic-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: rgba(255, 181, 71, 0.1);
+  border: 1px solid rgba(255, 181, 71, 0.25);
+  color: var(--amber-text, #ffb547);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.login-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text, #ffffff);
+  letter-spacing: -0.3px;
+}
+
+.login-subtitle {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-3, #888888);
+  line-height: 1.5;
+  max-width: 320px;
+}
+
+/* Alert / Error Banner */
+.login-alert-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.login-alert-danger {
+  background: rgba(255, 79, 121, 0.12);
+  border: 1px solid rgba(255, 79, 121, 0.3);
+  color: var(--rose-text, #ff4f79);
+}
+
+.login-alert-warning {
+  background: rgba(255, 181, 71, 0.12);
+  border: 1px solid rgba(255, 181, 71, 0.3);
+  color: var(--amber-text, #ffb547);
+}
+
+/* Form Groups & Inputs */
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.login-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.login-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2, #cccccc);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.login-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.login-input-icon {
+  position: absolute;
+  left: 12px;
+  color: var(--text-3, #777777);
+  pointer-events: none;
+}
+
+.login-input {
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-8);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2, #181818);
+  border: 1px solid var(--border, #2a2a2a);
+  color: var(--text, #ffffff);
+  font-size: var(--text-sm);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-sizing: border-box;
+}
+
+.login-input:focus {
+  border-color: var(--color-primary-cyan, #0891b2);
+  box-shadow: 0 0 0 3px var(--color-primary-cyan-border, rgba(8, 145, 178, 0.25));
+}
+
+.login-input::placeholder {
+  color: var(--text-3, #555555);
+}
+
+.login-toggle-password-btn {
+  position: absolute;
+  right: 10px;
+  background: none;
+  border: none;
+  color: var(--text-3, #777777);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease;
+}
+
+.login-toggle-password-btn:hover {
+  color: var(--text, #ffffff);
+}
+
+.login-toggle-password-btn:focus-visible {
+  outline: 2px solid var(--color-ring, #0891b2);
+  outline-offset: 1px;
+}
+
+.login-toggle-password-btn:hover {
+  color: var(--text, #ffffff);
+}
+
+/* Honeypot field (hidden offscreen to catch automated bots) */
+.login-honeypot {
+  position: absolute;
+  left: -9999px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Submit Button */
+.login-submit-btn {
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, #ffb547 0%, #ff6b3d 100%);
+  color: #0f0f0f;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  transition: transform 0.1s ease, filter 0.15s ease;
+  margin-top: var(--space-1);
+}
+
+.login-submit-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.login-submit-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.login-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Footer & Compliance Notice */
+.login-footer-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-3, #666666);
+  text-align: center;
+}

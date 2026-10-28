@@ -1,0 +1,515 @@
+{
+  "name": "04_Patient_Response_Interactive_Router",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "messaging/inbound",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-inbound-webhook",
+      "name": "Inbound Patient Response Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [160, 360],
+      "webhookId": "medpulse-messaging-inbound"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse incoming Telegram callback_query or text message\nconst item = $input.item.json;\nconst body = item.body || item;\n\nlet action = 'unknown';\nlet entityId = '';\nlet chatId = null;\nlet messageId = null;\nlet callbackQueryId = null;\nlet rawData = '';\n\nif (body.callback_query) {\n  const cq = body.callback_query;\n  callbackQueryId = cq.id;\n  chatId = (cq.message && cq.message.chat) ? cq.message.chat.id : cq.from.id;\n  messageId = cq.message ? cq.message.message_id : null;\n  rawData = cq.data || '';\n\n  if (rawData.startsWith('select_slot_')) {\n    action = 'select_slot';\n    entityId = rawData.replace('select_slot_', '');\n  } else if (rawData.startsWith('confirm_attend_')) {\n    action = 'confirm_attendance';\n    entityId = rawData.replace('confirm_attend_', '');\n  } else if (rawData.startsWith('cancel_')) {\n    action = 'cancel_booking';\n    entityId = rawData.replace('cancel_', '');\n  } else if (rawData.startsWith('re_request_slots_') || rawData.startsWith('re_request_')) {\n    action = 're_request_slots';\n    entityId = rawData.replace('re_request_slots_', '').replace('re_request_', '');\n  } else if (rawData.startsWith('reschedule_')) {\n    action = 'reschedule_request';\n    entityId = rawData.replace('reschedule_', '');\n  }\n} else if (body.message) {\n  // Regular text message or /start\n  const msg = body.message;\n  chatId = msg.chat ? msg.chat.id : msg.from.id;\n  const text = (msg.text || '').trim();\n  if (text.startsWith('/start')) {\n    action = 'start_command';\n  } else {\n    action = 'text_message';\n    entityId = text;\n  }\n}\n\nreturn {\n  json: {\n    action: action,\n    entity_id: entityId,\n    raw_data: rawData,\n    chat_id: chatId,\n    message_id: messageId,\n    callback_query_id: callbackQueryId\n  }\n};"
+      },
+      "id": "node-parse-callback",
+      "name": "Parse Callback & Intent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [380, 360]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "c-select",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "select_slot",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "c-confirm",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "confirm_attendance",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "c-cancel",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "cancel_booking",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "c-rereq",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "re_request_slots",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        }
+      },
+      "id": "node-switch-action-router",
+      "name": "Route by Action Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [600, 360]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.DJANGO_API_BASE_URL || 'http://backend:8000') + '/api/v1/slots/hold/' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"slot_offer_id\": \"{{ $json.entity_id }}\",\n  \"patient_phone\": \"{{ $json.chat_id }}\",\n  \"channel\": \"telegram\"\n}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "node-hold-slot-django",
+      "name": "Acquire Slot Hold in Django",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 140]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ ($env.DJANGO_API_BASE_URL || 'http://backend:8000') + '/api/v1/appointments/' + $json.entity_id + '/status/' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"status\": \"confirmed\",\n  \"updated_by\": \"patient_telegram_bot\"\n}",
+        "options": {}
+      },
+      "id": "node-patch-confirm-status",
+      "name": "Update Appointment to Confirmed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ ($env.DJANGO_API_BASE_URL || 'http://backend:8000') + '/api/v1/appointments/' + $json.entity_id + '/status/' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"status\": \"cancelled\",\n  \"cancellation_reason\": \"Cancelled by patient via Telegram\",\n  \"updated_by\": \"patient_telegram_bot\"\n}",
+        "options": {}
+      },
+      "id": "node-patch-cancel-status",
+      "name": "Update Appointment to Cancelled",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 460]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.DJANGO_API_BASE_URL || 'http://backend:8000') + '/api/v1/booking-requests/' + $json.entity_id + '/re-request/' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"re_requested_by\": \"patient_telegram_button\"\n}",
+        "options": {}
+      },
+      "id": "node-post-re-request",
+      "name": "Move Request to Priority Re-Request Tab",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 620]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + ($env.TELEGRAM_BOT_TOKEN || '') + '/sendMessage' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"chat_id\": \"{{ $('Parse Callback & Intent').item.json.chat_id }}\",\n  \"text\": \"✅ <b>Booking Confirmed!</b>\\n\\nYour appointment has been locked in:\\n\\n🔖 <b>Reference ID:</b> <code>{{ $json.appointment_id || $json.id }}</code>\\n📅 <b>Time:</b> {{ $json.start_datetime ? new Date($json.start_datetime).toLocaleString() : 'Scheduled Time' }}\\n\\nWe look forward to seeing you at MedPulse Clinic!\",\n  \"parse_mode\": \"HTML\"\n}",
+        "options": {}
+      },
+      "id": "node-send-confirmation-card",
+      "name": "Send Confirmation Card",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1140, 140]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + ($env.TELEGRAM_BOT_TOKEN || '') + '/sendMessage' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"chat_id\": \"{{ $('Parse Callback & Intent').item.json.chat_id }}\",\n  \"text\": \"✅ <b>Attendance Confirmed!</b>\\n\\nThank you for letting us know! We have confirmed your attendance with front desk.\\n\\nPlease arrive 10 minutes before your scheduled appointment time.\",\n  \"parse_mode\": \"HTML\"\n}",
+        "options": {}
+      },
+      "id": "node-send-attend-ack",
+      "name": "Send Attendance Confirmed Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1140, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + ($env.TELEGRAM_BOT_TOKEN || '') + '/sendMessage' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"chat_id\": \"{{ $('Parse Callback & Intent').item.json.chat_id }}\",\n  \"text\": \"❌ <b>Appointment Cancelled</b>\\n\\nYour appointment has been cancelled. If you wish to schedule a new time in the future, simply tap /start or submit a new inquiry.\",\n  \"parse_mode\": \"HTML\"\n}",
+        "options": {}
+      },
+      "id": "node-send-cancel-ack",
+      "name": "Send Cancelled Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1140, 460]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + ($env.TELEGRAM_BOT_TOKEN || '') + '/sendMessage' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"chat_id\": \"{{ $('Parse Callback & Intent').item.json.chat_id }}\",\n  \"text\": \"⚡ <b>Front Desk Notified</b>\\n\\nWe received your request for fresh available times! Our receptionist has prioritized your card and will send new available slot options shortly.\",\n  \"parse_mode\": \"HTML\"\n}",
+        "options": {}
+      },
+      "id": "node-send-rereq-ack",
+      "name": "Send Re-Request Priority Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1140, 620]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"processed\",\n  \"action\": \"{{ $('Parse Callback & Intent').item.json.action }}\"\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "node-respond-200-ok",
+      "name": "Respond 200 OK to Inbound Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1400, 360]
+    }
+  ],
+  "connections": {
+    "Inbound Patient Response Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Callback & Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Callback & Intent": {
+      "main": [
+        [
+          {
+            "node": "Route by Action Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Action Intent": {
+      "main": [
+        [
+          {
+            "node": "Acquire Slot Hold in Django",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Appointment to Confirmed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Appointment to Cancelled",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Move Request to Priority Re-Request Tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Acquire Slot Hold in Django": {
+      "main": [
+        [
+          {
+            "node": "Send Confirmation Card",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Appointment to Confirmed": {
+      "main": [
+        [
+          {
+            "node": "Send Attendance Confirmed Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Appointment to Cancelled": {
+      "main": [
+        [
+          {
+            "node": "Send Cancelled Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Move Request to Priority Re-Request Tab": {
+      "main": [
+        [
+          {
+            "node": "Send Re-Request Priority Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Confirmation Card": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 OK to Inbound Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Attendance Confirmed Reply": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 OK to Inbound Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Cancelled Reply": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 OK to Inbound Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Re-Request Priority Reply": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 OK to Inbound Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "medpulse-v1-04",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "medpulse-clinic-booking"
+  },
+  "id": "medpulse-04-response-handler",
+  "tags": [
+    {
+      "name": "Clinic Booking"
+    },
+    {
+      "name": "Router"
+    },
+    {
+      "name": "Interactive"
+    }
+  ]
+}

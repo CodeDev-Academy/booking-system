@@ -1,0 +1,264 @@
+/* ==========================================================================
+   Cedarcare Clinic Design System — Privacy Lock Modal Styles
+   Governed by tasteskill.dev frosted glass & awesome-design-md tactile numpad
+   ========================================================================== */
+
+.privacy-lock-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 8, 8, 0.85);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: var(--space-4);
+  animation: fadeIn 200ms ease-out;
+  user-select: none;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.privacy-lock-card {
+  width: 100%;
+  max-width: 360px;
+  background-color: var(--surface-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-elevated);
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Subtle Top Ember Gradient Hairline */
+.privacy-lock-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--gradient-ember);
+}
+
+/* Header & Avatar */
+.lock-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-6);
+}
+
+.lock-avatar-badge {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-full);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--amber);
+  font-size: var(--text-base);
+  font-weight: 700;
+  box-shadow: 0 0 16px -2px rgba(255, 181, 71, 0.2);
+  position: relative;
+}
+
+.lock-icon-corner {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: var(--surface-1);
+  border: 1px solid var(--line-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-2);
+}
+
+.lock-clinic-name {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+}
+
+.lock-title {
+  font-size: var(--text-xl);
+  font-weight: 700;
+  color: var(--text-white);
+  letter-spacing: -0.02em;
+  margin-top: -2px;
+}
+
+.lock-staff-subtext {
+  font-size: var(--text-xs);
+  color: var(--text-2);
+}
+
+/* 4-Dot PIN Indicators */
+.pin-dots-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+  height: 24px;
+}
+
+.pin-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--line-strong);
+  background: transparent;
+  transition: all var(--transition-fast);
+}
+
+.pin-dot.filled {
+  background: var(--gradient-ember);
+  border-color: var(--ember);
+  box-shadow: 0 0 10px var(--ember);
+  transform: scale(1.15);
+}
+
+.pin-dots-container.shake {
+  animation: pin-shake 400ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
+@keyframes pin-shake {
+  10%, 90% { transform: translate3d(-3px, 0, 0); }
+  20%, 80% { transform: translate3d(5px, 0, 0); }
+  30%, 50%, 70% { transform: translate3d(-6px, 0, 0); }
+  40%, 60% { transform: translate3d(6px, 0, 0); }
+}
+
+/* Tactile 3x4 Numpad Grid */
+.numpad-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+  width: 100%;
+  max-width: 270px;
+  margin-bottom: var(--space-4);
+}
+
+.numpad-btn {
+  height: 52px;
+  border-radius: var(--radius-md);
+  background-color: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text-white);
+  font-family: var(--font-sans);
+  font-size: var(--text-xl);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  outline: none;
+}
+
+.numpad-btn:hover:not(:disabled) {
+  background-color: var(--surface-hover);
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+
+.numpad-btn:active:not(:disabled) {
+  transform: scale(0.95);
+  background-color: var(--surface-active);
+}
+
+.numpad-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.numpad-btn.action-btn {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.numpad-btn.action-btn:hover:not(:disabled) {
+  color: var(--text-white);
+}
+
+/* Lockout Cooldown Banner */
+.lockout-banner {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  animation: fadeIn 200ms ease;
+}
+
+/* 401 Session Ejection Banner */
+.ejection-banner {
+  width: 100%;
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text);
+  font-size: var(--text-xs);
+  text-align: left;
+  margin-bottom: var(--space-4);
+  line-height: 1.4;
+}
+
+/* Footer & Switch Staff Link */
+.lock-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.demo-pin-hint {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.switch-staff-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--transition-fast);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.switch-staff-btn:hover {
+  color: var(--amber);
+}

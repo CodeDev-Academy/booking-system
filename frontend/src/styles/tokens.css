@@ -1,0 +1,155 @@
+/* ==========================================================================
+   Cedarcare Clinic Design System — Design Tokens (tokens.css)
+   Governed by tasteskill.dev + awesome-design-md (Linear/Cal aesthetic)
+   ========================================================================== */
+
+:root {
+  /* Canvas & Depth Surfaces (Option 1: Toned Alabaster / Milk Chalk) */
+  --bg: #ece7df;
+  --bg-depth: #e3ded6;
+  --bg-elevated: #ffffff;
+
+  /* Card Surfaces */
+  --surface-1: #ffffff;
+  --surface-2: #f6f3ee;
+  --surface-3: #ece7df;
+  --surface-hover: #ece7df;
+  --surface-active: #e3ded6;
+  --surface-subtle: rgba(0, 0, 0, 0.03);
+
+  /* High-Contrast Obsidian Surfaces (For timetable pills & focal cards) */
+  --surface-dark: #111114;
+  --surface-dark-elevated: #18181c;
+  --surface-dark-hover: #1f1f24;
+
+  /* Hairlines & Borders */
+  --line: #dfd9cf;
+  --line-subtle: rgba(0, 0, 0, 0.05);
+  --line-strong: #c8c1b4;
+  --chrome-border: #9b9487;
+  --line-dark: #27272a;
+  --focus-ring: rgba(8, 145, 178, 0.35);
+  --color-ring: #0891b2;
+  --color-ring-offset: 2px;
+
+  /* Healthcare Accents (ui-ux-pro-max: Calm Medical Cyan + Emerald Health) */
+  --color-primary-cyan: #0891b2;
+  --color-primary-cyan-hover: #0e7490;
+  --color-primary-cyan-soft: rgba(8, 145, 178, 0.08);
+  --color-primary-cyan-border: rgba(8, 145, 178, 0.25);
+
+  /* Text Hierarchy (High-contrast, WCAG 2.2 AAA compliant) */
+  --text: #0f172a;
+  --text-primary: #0f172a;
+  --text-2: #334155;
+  --text-secondary: #334155;
+  --text-3: #64748b;
+  --text-muted: #64748b;
+  --text-white: #ffffff;
+  --text-on-dark: #f8fafc;
+  --text-on-dark-muted: #94a3b8;
+
+  /* Primary Accent: Pitch Black / Obsidian (Pinterest reference) */
+  --primary: #111114;
+  --on-primary: #ffffff;
+
+  /* Interaction & Touch Targets */
+  --hit-target-min: 44px;
+  --btn-press-scale: 0.98;
+
+  /* Discreet Semantic Status Colors (Used sparingly for micro-dots and alerts) */
+  --amber: #d97706;
+  --amber-soft: rgba(217, 119, 6, 0.08);
+  --amber-border: rgba(217, 119, 6, 0.2);
+  --ember: #ea580c;
+  --ember-text: #c2410c;
+  --ember-soft: rgba(234, 88, 12, 0.08);
+  --ember-border: rgba(234, 88, 12, 0.2);
+  --rose: #e11d48;
+  --rose-soft: rgba(225, 29, 72, 0.08);
+  --rose-border: rgba(225, 29, 72, 0.2);
+
+  /* Gradients (Disciplined, non-decorative) */
+  --gradient-ember: linear-gradient(135deg, #1f2937 0%, #111114 100%);
+  --gradient-ember-vertical: linear-gradient(180deg, #1f2937 0%, #111114 100%);
+  --gradient-ember-subtle: linear-gradient(135deg, rgba(17, 17, 20, 0.04) 0%, rgba(17, 17, 20, 0.02) 100%);
+  --glow-ember: 0 4px 16px rgba(17, 17, 20, 0.12);
+  --glow-ember-sm: 0 2px 8px rgba(17, 17, 20, 0.08);
+
+  /* Semantic Colors */
+  --success: #16a34a;
+  --success-text: #15803d;
+  --success-soft: rgba(22, 163, 74, 0.08);
+  --success-border: rgba(22, 163, 74, 0.2);
+  --success-glow: 0 2px 8px rgba(22, 163, 74, 0.15);
+
+  --info: #0284c7;
+  --info-text: #0369a1;
+  --info-soft: rgba(2, 132, 199, 0.08);
+  --info-border: rgba(2, 132, 199, 0.2);
+
+  --warning: #d97706;
+  --warning-text: #b45309;
+  --warning-soft: rgba(217, 119, 6, 0.08);
+  --warning-border: rgba(217, 119, 6, 0.2);
+
+  --danger: #dc2626;
+  --danger-text: #b91c1c;
+  --danger-soft: rgba(220, 38, 38, 0.08);
+  --danger-border: rgba(220, 38, 38, 0.2);
+
+  /* Typography */
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Geist Mono', ui-monospace, monospace;
+
+  /* Font Sizes & Line Heights (rem units - Rule 7) */
+  --text-2xs: 0.625rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.875rem;
+  --text-md: 0.9375rem;
+  --text-lg: 1.0625rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
+
+  /* Fluid Clamp Headings (Rule 7) */
+  --heading-h1: clamp(1.75rem, 4vw + 1rem, 2.5rem);
+  --heading-h2: clamp(1.25rem, 2.5vw + 0.75rem, 1.75rem);
+  --heading-h3: clamp(1.1rem, 1.5vw + 0.6rem, 1.35rem);
+
+  /* Modular Spacing Scale (Rule 4: ONLY these 8 variables) */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* Radii (Smooth Pinterest curves) */
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --radius-full: 9999px;
+
+  /* Soft, clean floating shadows */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
+  --shadow-md: 0 4px 16px -2px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 12px 32px -4px rgba(0, 0, 0, 0.08);
+  --shadow-elevated: 0 20px 48px -12px rgba(0, 0, 0, 0.1);
+  --shadow-modal: 0 24px 64px -12px rgba(0, 0, 0, 0.18);
+
+  /* Transitions */
+  --transition-fast: 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-smooth: 240ms cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-bounce: 350ms cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* Layout Dimensions */
+  --left-rail-width: 240px;
+  --left-rail-collapsed: 68px;
+  --header-height: 56px;
+}

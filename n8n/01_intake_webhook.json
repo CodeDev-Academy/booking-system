@@ -1,0 +1,195 @@
+{
+  "name": "01_Patient_Inbound_Intake_Normalizer",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "intake",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-intake-webhook",
+      "name": "Patient Intake Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [180, 300],
+      "webhookId": "medpulse-patient-intake"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalizes input payload from Web Form, WhatsApp Flow, or Telegram Bot\nconst item = $input.item.json;\nconst body = item.body || item;\n\n// 1. Normalize Phone to E.164 (+234 standard for Nigeria / international fallback)\nlet phone = String(body.phone || body.patient_phone || '').trim().replace(/[^0-9+]/g, '');\nif (phone.startsWith('0') && phone.length === 11) {\n  phone = '+234' + phone.substring(1);\n} else if (!phone.startsWith('+') && phone.length >= 10) {\n  phone = '+' + phone;\n}\n\n// 2. Validate Service and Patient Name\nconst patientName = String(body.patient_name || body.name || 'Valued Patient').trim();\nconst serviceId = body.service_id || body.service || null;\nconst doctorId = body.doctor_id || body.preferred_doctor_id || null;\nconst channel = (body.channel || 'web').toLowerCase();\nconst telegramChatId = body.telegram_chat_id || body.chat_id || null;\nconst preferredWindow = body.preferred_time_window || 'morning';\nconst notes = body.notes || body.patient_notes || '';\n\n// 3. Preferred dates formatting (default to next 14 days if not provided)\nlet preferredDates = body.preferred_dates;\nif (!preferredDates || !Array.isArray(preferredDates) || preferredDates.length === 0) {\n  const today = new Date();\n  const tomorrow = new Date(today);\n  tomorrow.setDate(tomorrow.getDate() + 1);\n  const inTwoWeeks = new Date(today);\n  inTwoWeeks.setDate(inTwoWeeks.getDate() + 14);\n  preferredDates = [tomorrow.toISOString().split('T')[0], inTwoWeeks.toISOString().split('T')[0]];\n}\n\nreturn {\n  json: {\n    patient_name: patientName,\n    phone: phone,\n    service_id: serviceId,\n    preferred_doctor_id: doctorId,\n    preferred_dates: preferredDates,\n    preferred_time_window: preferredWindow,\n    channel: channel,\n    telegram_chat_id: telegramChatId,\n    patient_notes: notes,\n    raw_received_at: new Date().toISOString()\n  }\n};"
+      },
+      "id": "node-normalize-input",
+      "name": "Normalize Input & E.164 Phone",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.DJANGO_API_BASE_URL || 'http://backend:8000') + '/api/v1/booking-requests/' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"patient_name\": \"{{ $json.patient_name }}\",\n  \"phone\": \"{{ $json.phone }}\",\n  \"service_id\": {{ $json.service_id ? '\"' + $json.service_id + '\"' : 'null' }},\n  \"preferred_doctor_id\": {{ $json.preferred_doctor_id ? '\"' + $json.preferred_doctor_id + '\"' : 'null' }},\n  \"preferred_dates\": {{ JSON.stringify($json.preferred_dates) }},\n  \"preferred_time_window\": \"{{ $json.preferred_time_window }}\",\n  \"channel\": \"{{ $json.channel }}\",\n  \"patient_notes\": \"{{ $json.patient_notes }}\"\n}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "node-post-to-django",
+      "name": "Post to Django Booking Queue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [620, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-hours",
+              "leftValue": "={{ $now.hour }}",
+              "rightValue": 8,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "cond-hours-close",
+              "leftValue": "={{ $now.hour }}",
+              "rightValue": 18,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "node-hours-check",
+      "name": "Is Clinic Open Now?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [840, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"queued\",\n  \"request_id\": \"{{ $('Post to Django Booking Queue').item.json.request_id || $('Post to Django Booking Queue').item.json.id }}\",\n  \"queue_position\": \"{{ $('Post to Django Booking Queue').item.json.queue_position || 'Next in line' }}\",\n  \"message\": \"Thank you! Your request has been queued. Front desk will review available doctor slots shortly.\"\n}",
+        "options": {
+          "responseCode": 201
+        }
+      },
+      "id": "node-respond-open-ack",
+      "name": "Respond Open Hours ACK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1080, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"queued_after_hours\",\n  \"request_id\": \"{{ $('Post to Django Booking Queue').item.json.request_id || $('Post to Django Booking Queue').item.json.id }}\",\n  \"queue_position\": \"Priority #1 tomorrow morning\",\n  \"message\": \"Our front desk is currently closed for the evening. You are prioritized for 8:00 AM review tomorrow!\"\n}",
+        "options": {
+          "responseCode": 201
+        }
+      },
+      "id": "node-respond-after-hours-ack",
+      "name": "Respond After-Hours ACK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1080, 420]
+    }
+  ],
+  "connections": {
+    "Patient Intake Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input & E.164 Phone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input & E.164 Phone": {
+      "main": [
+        [
+          {
+            "node": "Post to Django Booking Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post to Django Booking Queue": {
+      "main": [
+        [
+          {
+            "node": "Is Clinic Open Now?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Clinic Open Now?": {
+      "main": [
+        [
+          {
+            "node": "Respond Open Hours ACK",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond After-Hours ACK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "medpulse-v1-01",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "medpulse-clinic-booking"
+  },
+  "id": "medpulse-01-intake-webhook",
+  "tags": [
+    {
+      "name": "Clinic Booking"
+    },
+    {
+      "name": "Intake"
+    }
+  ]
+}

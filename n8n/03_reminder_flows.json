@@ -1,0 +1,236 @@
+{
+  "name": "03_Pre_Visit_Reminders_And_Followups",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8,18 * * *"
+            }
+          ]
+        }
+      },
+      "id": "node-schedule-cron-reminders",
+      "name": "Twice Daily Reminder Schedule (8am, 6pm)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [160, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.DJANGO_API_BASE_URL || 'http://backend:8000') + '/api/v1/appointments/upcoming-reminders/' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026' }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "node-fetch-due-reminders",
+      "name": "Fetch Due Reminders from Django",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [380, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract reminders and follow-up tasks array from Django response\nconst res = $input.item.json;\nconst appointments = Array.isArray(res) ? res : (res.reminders || res.appointments || []);\nconst followUps = res.follow_ups || [];\n\nconst items = [];\n\nfor (const appt of appointments) {\n  items.push({\n    json: {\n      type: '24h_pre_visit',\n      appointment_id: appt.appointment_id || appt.id,\n      patient_name: appt.patient_name || 'Patient',\n      patient_phone: appt.patient_phone || appt.phone,\n      telegram_chat_id: appt.telegram_chat_id,\n      doctor_name: appt.doctor_name || (appt.doctor && appt.doctor.name) || 'Attending Physician',\n      service_name: appt.service_name || (appt.service && appt.service.name) || 'Consultation',\n      start_datetime: appt.start_datetime,\n      time_display: appt.time_display || new Date(appt.start_datetime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),\n      date_display: appt.date_display || new Date(appt.start_datetime).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })\n    }\n  });\n}\n\nfor (const task of followUps) {\n  items.push({\n    json: {\n      type: 'doctor_followup_recall',\n      task_id: task.id,\n      appointment_id: task.appointment_id,\n      patient_name: task.patient_name || 'Patient',\n      patient_phone: task.patient_phone,\n      telegram_chat_id: task.telegram_chat_id,\n      doctor_name: task.doctor_name || 'Doctor',\n      clinical_notes: task.notes || 'Recommended follow-up visit',\n      due_date: task.follow_up_date\n    }\n  });\n}\n\nreturn items.length > 0 ? items : [{ json: { type: 'none_pending', checked_at: new Date().toISOString() } }];"
+      },
+      "id": "node-parse-reminders",
+      "name": "Split into Reminder Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "cond-24h",
+                    "leftValue": "={{ $json.type }}",
+                    "rightValue": "24h_pre_visit",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "cond-recall",
+                    "leftValue": "={{ $json.type }}",
+                    "rightValue": "doctor_followup_recall",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        }
+      },
+      "id": "node-switch-reminder-type",
+      "name": "Route by Reminder Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [820, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + ($env.TELEGRAM_BOT_TOKEN || '') + '/sendMessage' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"chat_id\": \"{{ $json.telegram_chat_id || $json.patient_phone }}\",\n  \"text\": \"🩺 <b>Appointment Reminder</b>\\n\\nHello <b>{{ $json.patient_name }}</b>, this is a friendly reminder for your upcoming appointment:\\n\\n📅 <b>When:</b> {{ $json.date_display }} at {{ $json.time_display }}\\n👨‍⚕️ <b>Doctor:</b> Dr. {{ $json.doctor_name }}\\n🏥 <b>Service:</b> {{ $json.service_name }}\\n🔖 <b>Ref:</b> <code>{{ $json.appointment_id }}</code>\\n\\nPlease let us know if you can attend tomorrow:\",\n  \"parse_mode\": \"HTML\",\n  \"reply_markup\": {\n    \"inline_keyboard\": [\n      [\n        {\n          \"text\": \"✅ I'll Be There\",\n          \"callback_data\": \"confirm_attend_{{ $json.appointment_id }}\"\n        }\n      ],\n      [\n        {\n          \"text\": \"🔄 Reschedule\",\n          \"callback_data\": \"reschedule_{{ $json.appointment_id }}\"\n        },\n        {\n          \"text\": \"❌ Cancel\",\n          \"callback_data\": \"cancel_{{ $json.appointment_id }}\"\n        }\n      ]\n    ]\n  }\n}",
+        "options": {}
+      },
+      "id": "node-send-24h-reminder",
+      "name": "Send 24h Interactive Reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1080, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + ($env.TELEGRAM_BOT_TOKEN || '') + '/sendMessage' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"chat_id\": \"{{ $json.telegram_chat_id || $json.patient_phone }}\",\n  \"text\": \"🌟 <b>Doctor Recall Recommendation</b>\\n\\nHello <b>{{ $json.patient_name }}</b>, Dr. <b>{{ $json.doctor_name }}</b> recommended a follow-up consultation for you:\\n\\n📝 <i>\\\"{{ $json.clinical_notes }}\\\"</i>\\n\\nTap below to book a convenient time:\",\n  \"parse_mode\": \"HTML\",\n  \"reply_markup\": {\n    \"inline_keyboard\": [\n      [\n        {\n          \"text\": \"📅 Book Follow-Up Now\",\n          \"callback_data\": \"book_followup_{{ $json.task_id }}\"\n        }\n      ]\n    ]\n  }\n}",
+        "options": {}
+      },
+      "id": "node-send-recall-msg",
+      "name": "Send Follow-Up Recall Notice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1080, 420]
+    }
+  ],
+  "connections": {
+    "Twice Daily Reminder Schedule (8am, 6pm)": {
+      "main": [
+        [
+          {
+            "node": "Fetch Due Reminders from Django",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Due Reminders from Django": {
+      "main": [
+        [
+          {
+            "node": "Split into Reminder Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split into Reminder Items": {
+      "main": [
+        [
+          {
+            "node": "Route by Reminder Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Reminder Type": {
+      "main": [
+        [
+          {
+            "node": "Send 24h Interactive Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Follow-Up Recall Notice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "medpulse-v1-03",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "medpulse-clinic-booking"
+  },
+  "id": "medpulse-03-reminder-flows",
+  "tags": [
+    {
+      "name": "Clinic Booking"
+    },
+    {
+      "name": "Reminders"
+    },
+    {
+      "name": "Follow-Up"
+    }
+  ]
+}

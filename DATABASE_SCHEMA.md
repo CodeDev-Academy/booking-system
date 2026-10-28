@@ -42,12 +42,16 @@ erDiagram
         json working_days "[1,2,3,4,5,6]"
         time lunch_break_start
         time lunch_break_end
+        int grid_increment_minutes "default 15"
+        int booking_horizon_days "default 14"
+        int min_advance_hours "default 2"
         int offer_expiry_minutes "default 60"
         int hold_expiry_minutes "default 15"
         int default_buffer_minutes "default 10"
         int emergency_slots_per_shift "default 1"
         boolean enable_24h_reminder "default true"
         boolean enable_2h_reminder "default false"
+        json custom_config "Stores dynamic white-label key-values (currency, bot tokens, reminders, payment keys)"
         datetime updated_at
     }
 
@@ -60,6 +64,7 @@ erDiagram
         json working_days "e.g. [1,2,3,4,5]"
         time shift_start
         time shift_end
+        int max_daily_appointments "default 12 (burnout ceiling)"
         boolean is_active
         boolean is_on_leave
     }
@@ -101,9 +106,19 @@ erDiagram
         uuid preferred_doctor_id FK "nullable"
         json preferred_date_range "{'start': 'YYYY-MM-DD', 'end': 'YYYY-MM-DD'}"
         string preferred_time_window "morning | afternoon | evening"
-        string channel "web | whatsapp_flow"
+        string channel "web | whatsapp_flow | telegram"
         string status "awaiting_review | slots_offered | offer_expired | converted | rejected"
+        boolean channel_blocked "default false (triggered if bot is blocked / 403)"
+        string patient_notes "nullable text for unstructured notes/symptoms"
         datetime offer_expires_at
+        datetime created_at
+    }
+
+    IDEMPOTENCY_KEY {
+        uuid id PK
+        string key UK "update_id or message_id"
+        string source "telegram | whatsapp"
+        datetime expires_at
         datetime created_at
     }
 

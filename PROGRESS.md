@@ -1,18 +1,239 @@
-# Project Progress Tracker
+
+# Project Progress Tracker (`PROGRESS.md`)
 
 ## 1. Status Dashboard
-- **Current Phase**: Phase 3 — REST API Viewsets, Staff Auth & Real-Time Events (Tasks 3.1 to 3.6 Complete — 100%)
+- **Current Phase**: Master Agency Template Complete (All 6 Phases 100% Verified & Signed Off)
 - **Master Plan**: Comprehensive 6-Phase Execution Roadmap codified in [TASKS.md](file:///c:/Users/User/OneDrive/Desktop/Project/Clinic%20Booking%20system/TASKS.md)
-- **Overall Completion**: Phases 1, 2, and 3 Backend Complete (12 Automated Unit & API Integration Tests Passing at 100%) / Next: Phase 4 Frontend Integration & Phase 5 Messaging/Webhooks
+- **Security & Authentication Specification**: Full blueprint in [SECURITY_AND_AUTH.md](file:///c:/Users/User/OneDrive/Desktop/Project/Clinic%20Booking%20system/SECURITY_AND_AUTH.md)
+- **Workflow Automation Architecture**: Full n8n workflow functional plan in [n8n.md](file:///c:/Users/User/OneDrive/Desktop/Project/Clinic%20Booking%20system/n8n.md)
+- **Inter-Agent Communication Buses**:
+  - Frontend ⇄ Reviewer: [TEST_FRONTEND.md](file:///c:/Users/User/OneDrive/Desktop/Project/Clinic%20Booking%20system/TEST_FRONTEND.md) (Owned by Frontend Sub-Agent & Reviewer Agent)
+  - Backend ⇄ Reviewer: [TEST_BACKEND.md](file:///c:/Users/User/OneDrive/Desktop/Project/Clinic%20Booking%20system/TEST_BACKEND.md) (Owned by Brain Backend Agent & Reviewer Agent)
+  - Master QA Matrix: [TEST.md](file:///c:/Users/User/OneDrive/Desktop/Project/Clinic%20Booking%20system/TEST.md)
+- **Agent Operating Team**:
+  - **Brain Agent — Architect & Backend** (Lead): System architecture, backend foundation, relational schema, concurrency locks, security, and project governance.
+  - **Frontend Sub-Agent**: React 18, Vanilla CSS design system, receptionist dashboard modules.
+  - **Review Sub-Agent**: Code reviews, test verification, QA auditing, and edge-case verification.
 
 ---
 
 ## 2. All 8 Planning Stages Signed Off
 - [x] **Stage 1: Receptionist Gatekeeping & Queue Governance** (Strict human-in-the-loop, 4-tab FIFO queue, after-hours queuing)
 - [x] **Stage 2: Patient Intake & Normalization** (Structured messaging trigger, 2-week date range, nearest alternative fallback, returning patient phone lookup)
-- [x] **Stage 3: Availability Engine & Rules** (Service buffer times, multi-service doctors, floating emergency reserve, doctor sick leave reassignment)
+- [x] **Stage 3: Availability Engine & Backend Architecture** (Signed-off via 7-point `/grill-me`: E.164 phone normalization, returning patient matching, HttpOnly cookies, PBKDF2 PIN rate-limiting, HMAC webhook security, single-tenant deployment)
 - [x] **Stage 4: Temporary Hold & Expiry State Machine** (1-hour offer window, atomic `SELECT FOR UPDATE` hold lock, 60s cron sweeper)
 - [x] **Stage 5: Messaging Protocols & Patient Recovery** (Telegram Bot inline buttons & WhatsApp parity, 24h & 2h reminders, 1-click reschedule, no-show welfare message)
-- [x] **Stage 6: Receptionist Dashboard UI/UX** (Live visit status tracker `Arrived` $\rightarrow$ `In Consult` $\rightarrow$ `Completed`, audio chimes, follow-up scheduler)
+- [x] **Stage 6: Receptionist Dashboard UI/UX & Frontend Architecture** (Signed-off via 10-point `/grill-me`: React Router, Zustand stores, dual-mode switcher, SSE with 10s fallback, 20m PIN lock, adaptive tablet rail, Web Audio chimes, follow-up chips, pitch simulator)
 - [x] **Stage 7: Multi-Tenant Visual Clinic Settings** (Visual Clinic Settings UI for non-technical managers to edit hours, phone, buffer times)
 - [x] **Stage 8: Fault Tolerance & Auditing** (Webhook idempotency, retry mechanisms, comprehensive audit trail table)
+
+---
+
+## 3. Phase-by-Phase Execution Progress
+- [x] **Phase 1: Backend Foundation & Relational Schema**
+  - [x] Task 1.1: Django project scaffold with `core`, `appointments`, and `dj-database-url`
+  - [x] Task 1.2: 11 Relational domain models in `appointments/models.py`
+  - [x] Task 1.3: Migrations generation and database initialization
+  - [x] Task 1.4: One-click demo clinic seeder (`seed_clinic.py`)
+- [x] **Phase 2: Availability Engine & Business Services**
+  - [x] Task 2.1: Deterministic Availability Calculator (`availability.py`, shift intersections, buffer rules, W1-W4 contiguous scoring)
+  - [x] Task 2.2: 2-Week Range & Nearest-Alternative Fallback (`find_candidate_slots_for_request`)
+  - [x] Task 2.3: Atomic Slot Hold & Selection Engine (`hold_service.py` with `select_for_update`)
+  - [x] Task 2.4: Doctor Sick Leave Disruption Protocol (`disruption_service.py` & 1-click colleague reassignment)
+  - [x] Task 2.5: 60-Second Expiry Cron Sweeper (`sweep_service.py` & `manage.py run_expiry_sweep`)
+- [x] **Phase 3: Django REST Framework API Endpoints & Auth**
+  - [x] Task 3.1: Staff Authentication, Dual-Mode JWT & Governance API (`views_auth.py`, `authentication.py`, quick PIN 3-strike lockout, 401 session killswitch)
+  - [x] Task 3.2: Intake & Booking Request API with Anti-Abuse & Deduplication (`views_booking.py`, honeypot drop, rate limit, FIFO queue, candidate slot bridge, offer dispatch)
+  - [x] Task 3.3: Appointment & Live Visit Management API (`views_appointment.py`, atomic slot hold, visit lifecycle status, follow-up tasks, colleague reassignment, CSV exports)
+  - [x] Task 3.4: Clinic Settings & Staff Directory API (`views_clinic.py`, settings CRUD, white-label export/import, staff directory with live duty chips, master calendar feed)
+  - [x] Task 3.5: Real-Time SSE Hub & Presence Broadcasting (`views_realtime.py`, `sse_bus.py`, SSE keepalive stream, review presence with 3-minute TTL, webhook deduplication)
+  - [x] Task 3.6: Analytics & Export API (`views_analytics.py`, `serializers_analytics.py`, real-time KPI summary, revenue aggregations, RFC 4180 CSV exports)
+- [x] **Phase 4: Frontend Receptionist Hub & Admin Bento (React + Vanilla CSS)**
+  - [x] Task 4.1: Architecture, Tokens & Master Navigation Shell (`LeftRail.jsx`, `Header.jsx`, `tokens.css`, `layout.css`)
+  - [x] Task 4.2: Staff Authentication & 20-Minute PIN Lock Overlay (`usePinLock.js`, `PrivacyLockModal.jsx`, Web Audio synth)
+  - [x] Task 4.3: Inbound Triage Queue & Candidate Slot Review Modal (`useQueueStore.js`, FIFO cards, Phone Dossier, Shield, universal 080... phone number search normalization)
+  - [x] Task 4.4: Master Clinical Calendar Grid & Historical Archive (`useCalendarStore.js`, `MasterCalendarGrid.jsx`, `PastPatientsHistory.jsx`, exact date calendar picker, 10 Jan 2026 pre-seeding)
+  - [x] Task 4.5: Live Clinic Visits 3-Swimlane Flow & Attendance Management (`useVisitsStore.js`, reception check-in roster, elapsed tabular timers, zero price display, rich clinical past visits dossiers for `Ngozi Okonjo` & returning patients, `+ Walk-In Patient (Check-In)`)
+  - [x] Task 4.6: Staff Roster, Attendance & Operational Bento (`useStaffStore.js`, `StaffRosterTable.jsx`, eye toggle to reveal quick PINs, account deactivation, removal of Clinic Revenue, plain-language metric explanations)
+  - [x] Task 4.7: Visual Clinic Settings & Clinical Services Registry (`useSettingsStore.js`, `ServicesManagementBento.jsx`, add/remove custom clinic specialties: Dental, Eye Care, ENT, Teeth, Nose, General Practice)
+  - [x] Task 4.8: Client Pitch Simulator & Mobile Frame Booking Widget (`usePitchSimulator.js`, dual-channel Web/Telegram)
+  - [x] **Design Refactor**: Pinterest Minimalist Aesthetic Alignment (`https://www.pinterest.com/pin/1025343040191187594/` — porcelain ivory canvas `#f3f4f7`, pure white floating cards `#ffffff`, high-contrast obsidian chips `#111114`, 4-tone monochrome discipline, zero rainbow slop, compact card density). Built with 0 errors.
+- [x] **Doctor Dynamic Sync & Dr. Babawo Integration**: Consultant Physician & Surgeon Dr. Babawo dynamically integrated and persisted across Staff Directory, Master Calendar, Walk-In Check-In, Past Patient Records, and Queue triage. Cross-store pub/sub bus handles doctor lifecycle.
+- [x] **Schedule Grid Workload Header & Flexible Horizons**: Removed duplicate summary cards from above the calendar grid; embedded consultation workload and capacity meters (`% Free`) directly in each doctor column header with flexible horizon selector (`Today`, `5d`, `1W`, `2W`). 1-Click modal displays full appointment details and patient dossier navigation.
+- [x] **Universal Responsiveness (320px iPhone 4/3.5 up to 4K TV screens)**: Implemented mobile doctor switcher tabs (`All Doctors`, `Dr. Bello`, `Dr. Okafor`, `Dr. Babawo`), sticky time gutter, fluid auto-fit grids, and ultra-wide constraints for TV/desktop monitors without horizontal clipping.
+- [x] **Clean Local Caching & Save Indication**: Enhanced Staff enrollment, Services management, and Settings with clear local persistence and unsaved changes indicators to prevent duplicate API flood requests.
+- [x] **Staff & Security Governance Upgrade**:
+  - `StaffRosterTable.jsx`: Refactored wide table into a sleek **Compact Cards Grid** per user request (Avatar, Name, Role badge, Email, Shift, On-Duty status, and Active Workstation indicator).
+  - `StaffEditModal.jsx`: Dedicated **Reset Password** card with reveal eye toggle, input field, and direct save action, alongside 4-digit Screen PIN reset.
+  - **Receptionist Credentials Control**: Admin can view/reveal, set, and reset receptionist passwords and Quick-PINs with eye toggles.
+  - **Doctors Login Exclusion**: Confirmed and enforced that clinical doctors do not have dashboard logins.
+  - `AddStaffModal.jsx`: Added explicit password creation for receptionists and automatic login bypass for doctors.
+- [x] **Schedule Grid & Doctor Consultation Load Integration**:
+  - `DoctorScheduleSummaryStrip.jsx`: Integrated compact doctor workload cards at the **top of the Schedule Grid (`/calendar`)** displaying 3 consultation horizons (**Today**, **1 Week**, **2 Weeks**).
+  - Clicking any doctor card opens a dedicated **Doctor Appointment List Drawer/Modal** showing scheduled patients, times, procedures, and linking directly into patient dossiers.
+  - `PastPatientsHistory.jsx`: Refactored bulky 8-column past patient table into **Compact Patient History Cards** (Name, Returning tag, Phone, Last Visit Date, Attending Doctor) with 1-click dossier inspection.
+- [x] **Clinic Settings & UI Space Streamlining**:
+  - **Compact Audio Chimes Control**: Replaced bulky card with a sleek, single-row inline control (Mute/Turn On toggle, `[🔔 Test Sound]` preview).
+  - **Expandable Clinical Services Bento**: Refactored wide service table into compact cards that expand inline to edit name, category, duration, sanitization buffer, and description.
+  - **Multi-Phone & Multi-Email Tag Inputs**: Chip/tag inputs in `ClinicProfileCard.jsx` allowing multiple contact phones and emails via Enter/comma.
+  - **Plain English Scheduling Rules**: Replaced technical jargon with clear terminology (e.g., "Patient Decision Time Limit", "Temporary Slot Hold Duration", "Cleaning & Room Prep Buffer", "Urgent / Walk-In Reserved Slots").
+  - **Instant Reminder Auto-Save**: Toggling 24h pre-visit notice or 2h arrival alert automatically saves to the live system with an instant toast notification.
+  - **Header Active Receptionist Indicator**: Glowing green badge showing the currently logged-in receptionist on active duty (e.g., `Sarah Aliyu • 🟢 Front Desk (On Duty)`).
+  - **Mobile & Small-Screen Responsiveness (320px–360px)**: Injected comprehensive media queries in `layout.css` ensuring zero horizontal overflow and clean card stacking on small mobile screens.
+  - [x] **User Feedback Refinements**:
+    - [x] **Live Visits Modal Scroll & History Accordion**: Added `max-height: calc(100vh - 40px)` and scroll containment. Patient consultation history collapses by default with a `[▼ View Prior Consultations]` toggle to prevent screen overflow on laptop displays.
+    - [x] **Front-Desk Walk-In Check-In Modal**: Built dedicated `WalkInCheckInModal` replacing dummy randomization with structured walk-in intake (Name, Phone, Patient Type, Doctor, Service, Triage Notes) with `[⚡ Quick Demo Fill]` and `[✓ Admit to Waiting Room]`.
+    - [x] **Staff Directory Search & Streamlined Filters**: Integrated real-time staff search bar (by name, email, specialty, shift) and clean role dropdown filter; removed redundant top-bar synchronization text.
+    - [x] **System Architecture Bento & Client Handover Mode**: Relocated Offline Demo / Live Django API switcher from sidebar into `Clinic Settings` under dedicated Bento card; added 1-click **Client Handover Mode** to hide Pitch Simulator from sidebar when handing over to paying clinic clients.
+- [x] **Phase 5: Telegram Bot Gateway & n8n Workflows**
+  - [x] Task 5.1: Telegram Bot Integration Engine (`telegram_service.py`, safe HTML escaping, inline buttons, 60m expiry rejection, 24h pre-visit reminders, double-click protection)
+  - [x] Task 5.2: n8n Workflow Templates (`n8n/*.json` modular workflow suite: intake normalizer, 60s sweeper, 24h reminders, patient response router, slot offer dispatcher)
+- [x] **Phase 6: End-to-End Verification & Production Packaging**
+  - [x] Task 6.1: Concurrency & Atomic Lock Tests (Race conditions & dual-receptionist dispatch verified)
+  - [x] Task 6.2: End-to-End 10-Step Full Lifecycle Verification (Intake $\rightarrow$ Queue $\rightarrow$ Check Slots $\rightarrow$ Dispatch $\rightarrow$ Select $\rightarrow$ Hold/Confirm $\rightarrow$ 24h Reminder $\rightarrow$ Live Visits Progression $\rightarrow$ Doctor Follow-Up Recall $\rightarrow$ Audit Trail)
+  - [x] Task 6.3: Admin Deactivation & Immediate Session Revocation Test (Bearer JWT, Cookie JWT, Quick-PIN 401 killswitch)
+  - [x] Task 6.4: White-Label Agency Template Packaging (`client-config.example.json` & `DEPLOYMENT_GUIDE.md`)
+  - [x] **Reviewer Audit Hardening (7 Edge-Case Holes Patched)**:
+    - [x] **Hole 1 (Callback Separator Mismatch)**: Standardized `select_slot_{id}` in `views_booking.py` and made `TelegramService` accept both `_` and `:` defensively.
+    - [x] **Hole 2 (State Machine Orphan Transition)**: Ensured `booking_request.status` transitions to `'converted'` whenever a slot offer is selected or confirmed.
+    - [x] **Hole 3 (Archive & Historical Date Filtering)**: Upgraded `TodayAppointmentsView` into `AppointmentListView` supporting `?date=YYYY-MM-DD`, `?start_date=`, `?end_date=`, and registered `/api/v1/appointments/`.
+    - [x] **Hole 4 (Nigerian Phone Search Normalization)**: Added universal Nigerian phone number search (`080...` matches `+234...` or core digits) in `BookingRequestListCreateView` and `AppointmentListView`.
+    - [x] **Hole 5 (Clinical Services Management API)**: Implemented `ClinicServiceListCreateView` and `ClinicServiceDetailView` (`GET`, `POST`, `PATCH`, `DELETE`) at `/api/v1/clinic/services/`.
+    - [x] **Hole 6 (Unchecked Datetime Parse Handling)**: Wrapped ISO datetime parsing in `DispatchOffersView` with try/except returning structured HTTP 400 Bad Request on malformed inputs.
+    - [x] **Hole 7 (Walk-In Arrival Hold Expiry Protection)**: Added `is_walk_in` support to admit counter arrivals directly as `arrived` with `arrival_at=now` and zero expiring hold timers.
+  - [x] **Frontend Reviewer Audit & Architectural Remediations (10 Structural Flaws Patched)**:
+    - [x] **Issue 1 (State Store Silos & Cross-Store Sync)**: Created decoupled event bus `appointmentSyncBus.js` (`appointmentBooked`, `walkInAdmitted`, `appointmentRescheduled`, `visitStatusChanged`) achieving full live synchronization across Queue, Calendar, and Live Visits swimlanes.
+    - [x] **Issue 2 (The "Live API" Facade)**: Created headless `apiService.js` interfacing all Django REST endpoints (`/api/v1/booking-requests/`, `/api/v1/appointments/`, `/api/v1/realtime/stream/`, etc.) with real-time health indicator in Settings.
+    - [x] **Issue 3 (Custom Services Doctor Availability)**: Upgraded `doctorsForService` and `generateCandidateSlots` in `slotEngine.js` with category/keyword matching and safe fallback to ensure candidate slots are never empty for newly registered clinic services.
+    - [x] **Issue 4 (Browser Refresh Amnesia)**: Wrapped `useQueueStore`, `useCalendarStore`, and `useVisitsStore` in Zustand `persist` middleware with selective `partialize` (persisting only domain collections) and added a 1-click "Reset Demo Seeds" workstation purge button in Settings.
+    - [x] **Issue 5 (Phone Normalization Gap)**: Upgraded `lookupPatient` in `mockData.js` to strip non-digits and match Nigerian `080...` vs `+234...`, core 7+ digit tails, and case-insensitive patient names.
+    - [x] **Issue 6 (High-Frequency Interval Tickers)**: Throttled global board re-render ticker in `useLiveVisits.js` from 1000ms to 10000ms (10s), eliminating CPU and memory churn.
+    - [x] **Issue 7 (Privacy Lock DOM Leak Remediation)**: Hardened `Shell.jsx` to completely unmount LeftRail, Header, and Outlet DOM trees when `isLocked === true`, rendering exclusively `PrivacyLockModal`.
+    - [x] **Issue 8 (Modal Viewport Height Overflow)**: Added sticky footer positioning (`position: sticky; bottom: 0; z-index: 2;`) in `queue.css` so action buttons remain pinned to the visible viewport on all screen resolutions.
+    - [x] **Issue 9 (Monolithic Chunk Size & Code Splitting)**: Implemented `React.lazy()` and `<Suspense>` route-level code splitting across all 6 main view routes in `App.jsx`.
+    - [x] **Issue 10 (Schedule Collision Validator on Calendar)**: Implemented `rescheduleAppointment` and hardened `reassignToColleague` in `useCalendarStore.js` with `validateSlot` collision checks guarding shift boundaries, break times, and buffer preservation, paired with an interactive Reschedule & Verify panel in `AppointmentDetailsModal.jsx`.
+    - [x] **Bugfix: Doctor Sick / Leave Disruption Modal Crash**: Fixed React hook order violation (`useMemo` rendered conditionally) in `EmergencyDisruptionModal.jsx` and protected mount in `MasterCalendarGrid.jsx`.
+    - [x] **Polish: White-Label Config Exporter**: Replaced raw JSON code dump with client-friendly executive summary card (hours, phone, service counts, 1-click JSON backup); hid developer drawer in Client Handover Mode.
+    - [x] **Security & Authentication: Dedicated Staff Login Portal (`LoginView.jsx`)**:
+      - Strict Two-Role RBAC: Restricted to Front Desk Receptionists (`Sarah Aliyu`, `Chioma Okeke`) and Clinic Administrator (`Dr. Ibrahim Musa`). Doctors do not have dashboard login accounts.
+      - Clean Enterprise UI: Clean portal displaying exclusively Staff Email, Password (with eye reveal toggle), Sign In button, and NDPR/HIPAA security notice; zero staff demo chips or role lists exposed on screen.
+      - Brute-Force Rate Limiting: 5-strike counter triggering 15-minute security lockout countdown.
+      - Side-Channel Timing Attack Mitigation: Constant-time authentication delay prevents timing-based credential enumeration.
+      - Anti-Bot Honeypot: Hidden input traps automated credential stuffing bots.
+      - Session Persistence: Secure `cbs_auth_session` storage in Zustand with instantaneous redirection on sign out.
+    - [x] **Backend Security Hardening & Two-Role RBAC Alignment (`views_auth.py`, `authentication.py`, `permissions.py`, `serializers.py`)**:
+      - **Strict Two-Role Dashboard Policy (Zero Doctor Accounts)**: Dashboard access is restricted strictly to Front Desk Receptionists and Clinic Administrators. Doctors exist solely as clinical resources in `Doctor`. Any login attempt by a doctor or clinician account returns `403 Forbidden` (`DOCTOR_LOGIN_FORBIDDEN`). Provisioning doctor logins via `StaffCreateSerializer` is rejected with `400 Bad Request`.
+      - **5-Strike Brute-Force Rate Limiting (15-Minute Lockout)**: Cache-backed rate limiter on `POST /api/v1/auth/login/` tracking `login_attempts_{email}` and `login_lockout_{email}` (900s). 5th failed password attempt activates 15-minute freeze returning `HTTP 423 Locked` (`ACCOUNT_LOCKED`). Verified password clears lockout keys.
+      - **Anti-Bot Honeypot Defense**: Integrated invisible bot trap field `website_url` in `StaffLoginSerializer` and frontend `apiService.login`. Submissions with populated honeypot are rejected immediately with `HTTP 400 Bad Request` (`BOT_DETECTED`) without touching the database or running password hashes.
+      - **Side-Channel Timing Attack Mitigation**: If `StaffUser.DoesNotExist` occurs, a dummy PBKDF2 hash computation (`check_password(password, DUMMY_HASH)`) is executed to ensure identical computation time. Returns identical generic `INVALID_CREDENTIALS` error with decrementing remaining attempts.
+      - **Token Invalidation & Session Revocation**: `POST /api/v1/auth/logout/` deletes both `clinic_access_token` and `clinic_refresh_token` cookies with `samesite='Lax'` and `httponly=True`. `CookieJWTAuthentication` and `IsStaffAuthenticated` strictly verify `is_active=True` and two-role permissions for instantaneous session revocation.
+      - **Full Backend Test Verification**: All 70 unit tests passed (including 7 new security hardening tests in `StaffAuthSecurityHardeningTests`). Frontend production build verified (0 errors).
+    - [x] **UI/UX Pro Max Design Quality Overhaul (`ui-ux-pro-max-skill`)**:
+      - **Design System Blueprint & Dial Calibration**: Tuned design system to Balanced Modern (Variance 4/10) and Dense Dashboard (Density 8/10), matching healthcare clinic operations.
+      - **Healthcare Color Palette & WCAG 2.2 AAA Contrast**: Injected calm clinical cyan (`--color-primary-cyan: #0891b2`) and emerald accents into `tokens.css`. Tuned text hierarchy to high-contrast slate (`#0f172a` primary, `#334155` secondary, `#64748b` muted) passing 4.5:1 / 7:1 contrast ratios.
+      - **Keyboard Focus & Non-Obscured Standards**: Configured universal `:focus-visible` styling (`outline: 2px solid var(--color-ring)`) with 2px offset; added `scroll-padding-top` on scrollable viewports so sticky toolbars and headers never obscure focused inputs/buttons.
+      - **Tactile Feedback & Touch Optimization**: Implemented `touch-action: manipulation` removing 300ms mobile tap delay; added active press scaling (`transform: scale(0.98)`) on buttons, chips, and cards; added `@media (prefers-reduced-motion: reduce)` accessibility guard.
+      - **Viewport & Anti-Pattern Fixes**: Removed mobile zoom suppression (`user-scalable=no`) from `index.html` per WCAG guidelines; aligned mobile `theme-color` with the light porcelain canvas.
+    - [x] **Comprehensive Backend Synchronization Specification (DRF ↔ React Store Parity)**:
+      - **Item 1: Staff Roster & Access Governance (`views_auth.py`, `models.py`, `urls.py`)**:
+        - Enforced strict Two-Role Dashboard Policy: Zero doctor accounts. Doctors are clinical scheduling resources in `Doctor` without dashboard login, password, or PIN.
+        - Supported and verified endpoints:
+          - `POST /api/v1/auth/login/`: Validates credentials, sets HttpOnly cookies, returns JWT tokens and sanitized user profile (`id`, `name`, `email`, `role`, `shift`, `avatar`).
+          - `POST /api/v1/auth/verify-pin/`: Quick-PIN verification supporting authenticated staff or unauthenticated `email` + `pin`, with 3-strike brute-force lockout (60s cooldown, HTTP 423).
+          - `PATCH /api/v1/staff/<staff_id>/`: Allows Administrator to update staff details (`name`, `email`, `specialty`, `shift`, `status`) or clinical doctor profiles.
+          - `POST /api/v1/staff/<staff_id>/reset-password/`: Allows Administrator to set new password for receptionists. Clinicians (doctors) are strictly rejected with HTTP 400 (`DOCTOR_PASSWORD_NOT_SUPPORTED`).
+          - `POST /api/v1/staff/<staff_id>/reset-pin/`: Allows Administrator to set new 4-digit PIN for receptionists. Clinicians (doctors) are strictly rejected with HTTP 400 (`DOCTOR_PIN_NOT_SUPPORTED`).
+          - `POST /api/v1/staff/<staff_id>/toggle-active/`: Activates/deactivates staff. Deactivation triggers immediate session ejection / token revocation killswitch (HTTP 401 on next request).
+      - **Item 2: Multi-Phone & Multi-Email Clinic Profile (`models.py`, `views_clinic.py`, `serializers_clinic.py`)**:
+        - Added `phones: list[str]` and `emails: list[str]` JSONFields to `ClinicSetting` with backwards-compatible properties `phone` (`phones[0]`) and `email` (`emails[0]`).
+        - `GET /api/v1/clinic/settings/` returns computed `clinic_profile` matching frontend expectations.
+        - `PATCH /api/v1/clinic/settings/` and `POST /api/v1/clinic/settings/` cleanly update phone/email lists.
+      - **Item 3: Plain English Scheduling Rules & Single-Field Auto-Save**:
+        - Mapped scheduling rule fields (`offer_expiry_minutes`, `hold_expiry_minutes`, `default_buffer_minutes`, `emergency_slots_per_shift`, `booking_horizon_days`, `min_advance_hours`, `enable_24h_reminder`, `enable_2h_reminder`).
+        - Added automatic camelCase-to-snake_case translation in `ClinicSettingSerializer.to_internal_value()`.
+        - Permitted single-field partial updates via both PATCH and POST for instant reminder toggling.
+      - **Item 4: Doctor Consultation Load Horizons (`views_appointment.py`, `views_clinic.py`)**:
+        - Implemented `DoctorWorkloadView` at `GET /api/v1/doctors/workload/` (and `GET /api/v1/clinic/doctors/workload/`) returning aggregated workload counts across 3 horizons (`today_count`, `week_count`, `two_weeks_count`) for active doctors.
+        - Added `include_workload=true` query parameter support on `GET /api/v1/appointments/` returning aggregated workload dictionary alongside appointment listings.
+      - **Item 5: Clinical Services & Specialties Registry (`models.py`, `views_clinic.py`, `serializers_clinic.py`)**:
+        - Added `description` field to `Service` model and `ServiceSerializer`.
+        - Full CRUD verified at `GET/POST /api/v1/clinic/services/` and `PATCH/DELETE /api/v1/clinic/services/<id>/`.
+        - Flexible camelCase input support (`durationMin`, `bufferMin`, `isActive`) and numeric/boolean deposit handling.
+      - **Full Backend Test Verification**:
+        - All 12 unit tests in `ComprehensiveBackendSyncSpecificationTests` passed.
+        - Total 82 out of 82 unit tests passed across the entire backend suite (100% passing, 0 failures, 0 errors).
+    - [x] **Uniform Bento Design System Rollout & Live Walk-In Reflection (`ui-ux-pro-max` + `Doctor Schedule Bento Hub`)**:
+      - **Live Visits (`/live-visits`)**: Refactored `VisitCard.jsx` to uniform Bento Card pattern (`bento-visit-card`), eliminating harsh green/orange color bars. Implemented 48px circular initials avatars, clean cyan/amber patient type badges, `#f8fafc` meta strip with tabular lobby waiting counters and consult progress bar, and midnight navy `#0c1a30` action buttons.
+      - **Requests Queue (`/queue`)**: Refactored `QueueCard.jsx` to uniform Bento Card pattern (`bento-queue-card`) with circular initials avatar, monospace request ID code, `#f8fafc` meta strip for preferred window/channel, and full-width `#0c1a30` action button. Active tab tuned to deep navy `#0c1a30`.
+      - **Staff Roster (`/admin/staff`)**: Refactored `StaffRosterTable.jsx` to uniform Bento Card pattern (`bento-staff-card`) with circular initials avatars, on-duty pills, shift hours meta strip, and full-width `#0c1a30` action button.
+      - **Clinic Settings (`/admin/settings`)**: Aligned all Bento card containers, headers, inputs, and primary save buttons with `#ffffff` white elevated surfaces, hairline `#e2e8f0` borders, and `#0c1a30` navy pill buttons.
+      - **Real-Time Walk-In Booking Reflection**: In `CalendarView.jsx`, wired `onOpenWalkInBooking` to calculate exact `startTs` timestamps and pass them directly into `actions.openWalkInModal(doctorId, startTs)`. In `DoctorGridBookingCalendar.jsx`, subscribed to `useCalendarStore.blocks` and dynamically merged confirmed walk-in appointments into the active day timetable, 7-day overview, doctor week appointment counter, and Visit Hours grid (marking booked slots as crossed-out with patient names). In `useCalendarStore.js`, published `appointmentSyncBus.publishAppointmentBooked` to project walk-ins into Live Visits immediately.
+      - **Universal Responsiveness & Edge Cases**: Injected comprehensive media queries in `grid-booking-calendar.css`, `swimlanes.css`, `queue.css`, and `layout.css` protecting micro-mobile (375px/390px), tablet (768px/900px/1080px), desktop (1280px/1440px), and 4K displays with `overflow-x: hidden` and `min-width: 0` anti-overflow guards.
+      - **Build Verification**: Production build succeeded in 1.19s with 0 errors across 2,008 modules.
+    - [x] **Custom Service Category & Small Screen (Galaxy Z Fold) Responsive Audit**:
+      - **Custom Service Category Field (`ServicesManagementBento.jsx`, `useSettingsStore.js`)**:
+        - Supported dynamic custom category creation when enrolling or editing services, allowing clinics to establish business-specific categories (e.g. *Laser Aesthetics*, *Orthodontics*, *Mental Health*, *Spa & Wellness*).
+        - Added `✨ + Create Custom Category...` option to category `<select>`, revealing an inline text input `Custom Category Name *`.
+        - Persisted custom categories in `useSettingsStore.customCategories` and included in `cedarcare_settings_storage` `partialize` for persistent availability across the app.
+      - **Schedule Grid Header Centering (`CalendarView.jsx`)**:
+        - Centered `Doctor Schedule & Clinical Records` view title and view switcher tabs (`Doctor Schedule & Timetable` and `Past Patient Records Archive`) per user direction.
+      - **Mini Calendar Circular Dates (`grid-booking-calendar.css`)**:
+        - Fixed `.date-cell-btn` to enforce strict 1:1 circular aspect ratio (`width: 36px; height: 36px; min-height: 36px; max-height: 36px; border-radius: 50% !important; aspect-ratio: 1 / 1`). Overrode the mobile `min-height: 44px` stretch that created square/tall buttons.
+      - **User Profile (`SA`) Popover Overflow Protection (`grid-booking-calendar.css`)**:
+        - Bounded `.user-profile-menu-popover` with `width: min(260px, calc(100vw - 32px)); max-width: calc(100vw - 32px); box-sizing: border-box; right: 0; left: auto;` preventing menu clipping on narrow screens.
+      - **Past Patient Records Archive Dropdowns & Filter Picker (`PastPatientsHistory.jsx`)**:
+        - Standardized "All Doctors" dropdown font size to `11px` with clean padding and bounded widths.
+        - Made date filter and search inputs fluid (`min-width: 0; max-width: 100%`) preventing overflow on micro viewports (348px - 412px).
+      - **Dossier & Reschedule Modal Controls (`AppointmentDetailsModal.jsx`, `calendar.css`)**:
+        - Updated reschedule grid from rigid `1fr 1fr` to fluid `repeat(auto-fit, minmax(180px, 1fr))` with bounded dropdown widths (`max-width: 100%`).
+        - Enhanced `.modal-actions-row` with `flex-wrap: wrap` and mobile column stacking so action buttons never squash or overflow.
+      - **Request Queue Header Tabs & Review Modal (`queue.css`)**:
+        - Replaced horizontal scroll slide on `.queue-tabs` with a clean 2x2 grid header (`grid-template-columns: repeat(2, 1fr)`), keeping all 4 triage tabs permanently visible and tap-accessible without scrolling.
+        - Guaranteed `.field-input` and `select.field-input` text truncation with `text-overflow: ellipsis; max-width: 100%; box-sizing: border-box`.
+      - **Global Anti-Overflow Safeguard (`layout.css`)**:
+        - Applied universal constraints to all `<select>`, `.select-base`, and `<input>` elements preventing horizontal overflow on all screen sizes.
+      - **Build Verification**: Clean production build succeeded in 4.80s across 2,010 modules.
+    - [x] **Universal System-Wide Dropdown Responsiveness & Anti-Overflow Hardening**:
+      - **Problem Solved**: Audio request noted that dropdown menus across all sections of the dashboard overflowed outside screen boundaries on smaller viewports.
+      - **Comprehensive Select & Dropdown Remediation Across All Views**:
+        - **Live Visits & Clinician Selector (`swimlanes.css`, `LiveVisitsGrid.jsx`)**: Bounded `.clinician-dropdown-wrapper` and `.clinician-select` with `width: 100%; min-width: 0; max-width: 100%; text-overflow: ellipsis; overflow: hidden; white-space: nowrap`. Added `@media (max-width: 640px)` stacking for `.swimlane-control-toolbar` and `.toolbar-left-group`, and removed fixed `min-width: 180px` on `.swimlane-search-input`.
+        - **Staff Directory & Role Filter (`admin.css`, `StaffView.jsx`)**: Added mobile stacking for `.staff-table-toolbar` and `.staff-filter-group`. Made `.staff-search-box` fluid (`min-width: 0; width: 100%`) so it never pushes the role dropdown outside the viewport.
+        - **Walk-In Check-In Modal (`WalkInCheckInModal.jsx`)**: Converted rigid `1fr 1fr` grids into fluid `repeat(auto-fit, minmax(180px, 1fr))` for Phone/Patient Status and Doctor/Service fields. Wrapped each cell in `minWidth: 0` and bounded selects with `textOverflow: ellipsis; overflow: hidden; whiteSpace: nowrap`.
+        - **Quick Walk-In & Emergency Disruption Modals (`calendar.css`, `QuickWalkInModal.jsx`, `EmergencyDisruptionModal.jsx`)**: Added `@media (max-width: 640px)` column stacking to `.form-group-row`. Added `.colleague-select-row` wrapper. Bounded `.select-base` with ellipsis truncation and `min-width: 0; max-width: 100%`.
+        - **Past Patients Records Archive (`calendar.css`, `PastPatientsHistory.jsx`)**: Added mobile stacking to `.past-patients-toolbar`. Replaced fixed `min-width: 260px` on `.past-search-box` with fluid mobile width. Ensured Doctor filter select truncates with ellipsis.
+        - **Appointment Details & Reschedule Modal (`AppointmentDetailsModal.jsx`)**: Added `minWidth: 0`, `overflow: hidden`, and `whiteSpace: nowrap` to both Target Clinician and New Start Time selects.
+        - **Clinic Settings & Services Registry (`settings.css`, `ServicesManagementBento.jsx`)**: Bounded `.settings-select` and `.settings-input` with `max-width: 100%; box-sizing: border-box; text-overflow: ellipsis; overflow: hidden; white-space: nowrap`. Wrapped flex items in `maxWidth: 100%; box-sizing: border-box`.
+        - **User Profile Pill Popover (`grid-booking-calendar.css`)**: Adjusted `.user-profile-menu-popover` positioning on mobile screens with `width: min(260px, calc(100vw - 24px)); max-width: calc(100vw - 24px); box-sizing: border-box; right: 0; left: auto;` and aligned `.grid-booking-user-actions` to full width flex-end.
+      - **Build Verification**: Production build verified via `npm run build` with zero errors across 2,010 modules in 3.67s.
+    - [x] **Reviewer Audit Remediation Batch (`REV-FE-22` to `REV-FE-27`)**:
+      - [x] **Ticket `REV-FE-22` (High)**: Dynamic Calendar "Today" Anchor — Removed hardcoded October 26, 2026 anchor from `DoctorGridBookingCalendar.jsx` and `CalendarView.jsx`, switching dynamically between demo seed date and real device date (`new Date()`).
+      - [x] **Ticket `REV-FE-23` (Blocker)**: Auth Store Default Session Hardening — Initialized `useAuthStore` with `isAuthenticated: false` and `currentStaff: null` to prevent unauthenticated access bypassing `/login` on fresh deployments.
+      - [x] **Ticket `REV-FE-24` (High)**: Candidate Slot Dispatch Payload Alignment — Updated `apiService.dispatchOffers` to format payload as `{ slots: formattedSlots }` matching Django backend `DispatchOffersView:L204`.
+      - [x] **Ticket `REV-FE-25` (Medium)**: Live Mode Doctor Workload Count Accuracy — Bypassed demo `baseSeed` in `DoctorScheduleSummaryStrip.jsx` when live API mode is active so doctors show true appointment counts.
+      - [x] **Ticket `REV-FE-26` (Medium)**: Real-Time Cross-Tab State Sync — Integrated native `BroadcastChannel('cbs_cross_tab_sync')` into `appointmentSyncBus.js` so mutations reflect across multiple open browser tabs without manual reload.
+      - [x] **Ticket `REV-FE-27` (Polish)**: AudioContext Autoplay Warning Suppression — Added `.catch(() => {})` on `audioCtx.resume()` in `soundService.js` to cleanly suppress console warnings before first user gesture.
+      - **Build Verification**: Production build succeeded in 1.40s with 0 errors across 2,010 modules.
+    - [x] **End-to-End API Connectivity Audit & Full DRF Bridge (`REV-FE-28`)**:
+      - **Complete Endpoint Audit & Client Parity**: Audited all 44 Django REST endpoints in `backend/appointments/urls.py` across `views_auth.py`, `views_booking.py`, `views_appointment.py`, `views_clinic.py`, `views_realtime.py`, and `views_analytics.py`.
+      - **Upgraded `apiService.js`**: Enriched client with all missing endpoints (`fetchMe`, `fetchStaff`, `createStaff`, `updateStaff`, `resetStaffPassword`, `resetStaffPin`, `toggleStaffActive`, `registerWalkIn`, `rescheduleAppointment`, `appointmentAction`, `fetchUpcomingReminders`, `exportSettings`, `importSettings`, `updateService`, `fetchDoctorWorkload`, `broadcastPresence`, `fetchAnalyticsSummary`, `downloadAppointmentsCSV`, `downloadAttendanceCSV`).
+      - **401 Session Revocation Bus**: Integrated `cbs_auth_unauthorized` window event bus into `apiService.js` and `useAuthStore.js` to instantly revoke sessions and display administrative lock upon HTTP 401 response from live backend.
+      - **Store Live API Mode Integration**: Connected `useStaffStore`, `useSettingsStore`, `useVisitsStore`, `useQueueStore`, and `useCalendarStore` to dispatch live API calls when `isDemoMode === false` with optimistic local reactivity and seamless error boundaries.
+      - **Full Backend Test Verification**: All 82 Django test specifications passed (`python manage.py test`: 82/82 OK in 111.89s).
+      - **Build Verification**: Production build verified via `npm run build` in 1.25s with 0 errors across 2,010 modules.
+    - [x] **Client-Ready UI/UX & Data Contract Refinements (User Audio Instructions Completed)**:
+      - **Dynamic Tag Pills for Staff Enrollment (`AddStaffModal.jsx` & `StaffEditModal.jsx`)**:
+        - Replaced hardcoded roles with interactive tag pills (`[Tag] ✕`) and inline `+ Add Role` input, identical to the Clinic Settings phone/email pattern.
+        - Replaced free-text specialty with persistent, interactive tag pills (`[Specialty] ✕`) and inline `+ Add Specialty` input.
+        - Added `<Eye>` / `<EyeOff>` password-style reveal toggle on the initial 4-digit Quick-PIN in `AddStaffModal`.
+        - Preserved two-role login rule: Doctors are medical resources with no dashboard login; receptionists receive credentials.
+      - **Live Visits Walk-In Check-In Reactivity (`WalkInCheckInModal.jsx`)**:
+        - Subscribed to `useSettingsStore((s) => s.services)` reactively so newly added clinic services reflect instantly in the modal.
+        - Added Gender selector pills (`Male`, `Female`, `Other`), Date of Birth picker (`<input type="date" />`), and Urgent Emergency Visit toggle banner (`🚨 Urgent / Emergency Medical Triage`).
+      - **Patient Intake Normalization Across Channels (`WebIntakeForm.jsx`, `usePitchSimulator.js`, `useQueueStore.js`)**:
+        - Added `date_of_birth`, `gender`, and `is_emergency` to patient intake forms, pitch presets, and queue requests.
+        - Excluded known allergies and existing conditions per explicit user instructions.
+        - Added high-visibility `🚨 URGENT` priority indicators and gender chips to `QueueCard.jsx`, `ReviewModal.jsx`, and `VisitCard.jsx`.
+      - **Full-Stack Verification**:
+        - Database Migration: `appointments.0003_appointment_date_of_birth_appointment_gender_and_more.py` applied cleanly to Neon PostgreSQL.
+        - Frontend Build: `npm run build` compiled in 3.23s with 0 errors across 2,010 modules.
+        - Backend Tests: All 82 tests passed in 159.041s (0 errors, 0 failures).

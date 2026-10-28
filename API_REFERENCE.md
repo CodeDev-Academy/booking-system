@@ -78,6 +78,16 @@ Receptionist approves selected slots and initiates the 60-minute (1-hour) offer 
 
 ---
 
+### `POST /api/v1/booking-requests/{request_id}/channel-failed/`
+Invoked by n8n when Telegram returns `403 Forbidden` (patient blocked bot) or WhatsApp delivery fails. Sets `channel_blocked = true` and generates a priority alert badge on the receptionist dashboard: `[⚠️ Call Patient]`.
+
+---
+
+### `POST /api/v1/booking-requests/{request_id}/append-note/`
+Invoked when patient sends unstructured audio notes, photos, or free text. Appends notes/media link to `patient_notes` so the receptionist sees them directly inside the Review Modal.
+
+---
+
 ## 2. Slot Selection & Holds
 
 ### `POST /api/v1/slots/hold/`
@@ -142,3 +152,86 @@ Validates 4-digit Quick PIN after 20-minute idle screen lock.
 - `POST /api/v1/webhooks/whatsapp/inbound/` (Direct Meta Cloud API webhook)
 - `POST /api/v1/webhooks/expiry-sweep/` (Invoked every 1m by n8n cron worker)
 - `POST /api/v1/webhooks/re-engagement/` (Triggered upon offer expiry to send `[🔄 See New Times]`)
+
+---
+
+## 6. Master Clinical Calendar & Dynamic Settings
+
+### `GET /api/v1/calendar/schedule/`
+Aggregates all 4 schedule layers (doctor shifts, confirmed appointments, active temporary holds, and open free slots) in a single optimized query.
+
+**Query Parameters:**
+- `start_date`: `YYYY-MM-DD` (e.g. `2026-10-12`)
+- `end_date`: `YYYY-MM-DD` (e.g. `2026-10-18`)
+- `doctor_id`: *(Optional)* Filter by doctor UUID
+- `service_id`: *(Optional)* Service UUID to automatically dim gaps smaller than treatment duration + buffer
+
+### `GET /api/v1/clinic/settings/`
+Returns complete clinic configuration including operating hours, state machine timers, and custom white-label parameters.
+
+### `PATCH /api/v1/clinic/settings/`
+Updates clinic operating hours, default buffers, offer windows, or custom white-label settings without requiring database migrations.
+
+### `GET /api/v1/clinic/settings/export/`
+Downloads the entire clinic configuration as a clean `client-config.json` template.
+
+### `POST /api/v1/clinic/settings/import/`
+Uploads a `client-config.json` to immediately re-brand and configure a new clinic instance in seconds.
+
+---
+
+## 7. Analytics & Reporting
+
+### `GET /api/v1/analytics/summary/`
+Returns real-time clinical and operational KPIs for the Receptionist Dashboard and Admin Bento grid.
+
+**Query Parameters:**
+- `start_date`: *(Optional)* `YYYY-MM-DD`
+- `end_date`: *(Optional)* `YYYY-MM-DD`
+
+**Response Payload (`200 OK`):**
+```json
+{
+  "totalAppointments": 42,
+  "attendanceRatePct": 97.4,
+  "noShowRatePct": 2.6,
+  "avgTriageVelocityMin": 3.8,
+  "todayRevenue": 480000.0,
+  "todayRevenueFormatted": "₦480,000",
+  "breakdown": {
+    "total": 42,
+    "confirmed": 12,
+    "arrived": 4,
+    "in_consultation": 2,
+    "completed": 20,
+    "no_show": 1,
+    "cancelled": 2,
+    "held": 1
+  },
+  "revenueByCategory": {
+    "Dental Care": 270000.0,
+    "Surgeries": 140000.0,
+    "General": 70000.0
+  },
+  "hourlyDistribution": [
+    { "hour": "08:00", "count": 4, "heightPct": 40 },
+    { "hour": "09:00", "count": 7, "heightPct": 70 },
+    { "hour": "10:00", "count": 10, "heightPct": 100 }
+  ],
+  "topServices": [
+    { "name": "Dental Consultation", "count": 18 },
+    { "name": "Teeth Whitening", "count": 14 }
+  ],
+  "topDoctors": [
+    { "name": "Dr. Bello Ibrahim", "specialty": "Dental Surgery", "completed_count": 12 }
+  ]
+}
+```
+
+### `GET /api/v1/analytics/export/appointments/`
+Streams clean RFC 4180 CSV file of all clinic appointments.
+
+### `GET /api/v1/analytics/export/attendance/`
+Streams clean RFC 4180 CSV summary of doctor attendance and completion rates.
+
+

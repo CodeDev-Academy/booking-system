@@ -1,0 +1,199 @@
+/* ==========================================================================
+   Cedarcare Clinic Design System — Base View Styles (views.css)
+   Mobile-first: Base 360px with min-width media queries only.
+   Strict 8-token spacing scale: --space-1, 2, 3, 4, 6, 8, 12, 16.
+   ========================================================================== */
+
+.view-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+  max-width: 100%;
+  margin: 0 auto;
+  padding-inline: var(--space-4);
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+@media (min-width: 1280px) {
+  .view-container {
+    max-width: 1600px;
+    gap: var(--space-6);
+  }
+}
+
+.view-header {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+@media (min-width: 640px) {
+  .view-header {
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+}
+
+.view-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.view-heading {
+  font-size: clamp(1.5rem, 3.5vw + 0.5rem, 2.25rem);
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.view-description {
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  margin: 0;
+}
+
+.view-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+@media (min-width: 640px) {
+  .view-actions {
+    gap: var(--space-3);
+  }
+}
+
+/* Quick Metrics Row */
+.kpi-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-3);
+  width: 100%;
+}
+
+@media (min-width: 640px) {
+  .kpi-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 768px) {
+  .kpi-row {
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-4);
+  }
+}
+
+@media (min-width: 1024px) {
+  .kpi-row {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.kpi-card {
+  background-color: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition-fast);
+  min-width: 0;
+}
+
+.kpi-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.kpi-label {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.kpi-value {
+  font-size: clamp(1.25rem, 2.5vw + 0.5rem, 1.625rem);
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+  font-feature-settings: "tnum";
+}
+
+.kpi-subtext {
+  font-size: var(--text-xs);
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* Task Placeholder Stage Card */
+.stage-placeholder-card {
+  background: var(--surface-1);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-xl);
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: var(--space-3);
+  box-shadow: var(--shadow-sm);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+@media (min-width: 768px) {
+  .stage-placeholder-card {
+    padding: var(--space-8);
+  }
+}
+
+.stage-badge-phase {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.stage-placeholder-title {
+  font-size: clamp(1.1rem, 1.5vw + 0.5rem, 1.25rem);
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.stage-placeholder-desc {
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  max-width: 540px;
+  line-height: 1.5;
+  margin: 0;
+}

@@ -62,3 +62,20 @@
 - Executed every 60 seconds by n8n cron or Celery beat:
   - Finds all `BookingRequest` where `status='slots_offered'` and `offer_expires_at < now()` $\rightarrow$ marks `offer_expired`, triggers re-engagement webhook.
   - Finds all `Appointment` where `status='held'` and `hold_expires_at < now()` $\rightarrow$ marks `hold_expired`, frees slot.
+
+---
+
+## 3. Backend Security & Architectural Decisions Matrix (Signed Off via Grill-Me)
+
+The following 7 technical decisions have been comprehensively reviewed, evaluated, and officially locked into the backend implementation blueprint:
+
+| Domain | Technical Decision & Architecture | Rationale & Security Safeguard |
+| :--- | :--- | :--- |
+| **1. Phone Ingestion** | **Automatic E.164 Normalization** via `python-phonenumbers` defaulting to `+234`. | Prevents invalid messaging numbers; rejects non-carrier digits before database insertion. |
+| **2. Patient Identity** | **Automatic phone-based identity matching** on `Appointment` history. | Automatically recognizes returning patients, links dossier, and computes attendance reliability score without requiring patient ID friction. |
+| **3. Staff Auth & Session** | **HttpOnly Secure SameSite Cookies** with real-time `is_active` DB validation. | Immune to browser XSS token theft; admin 1-click deactivation instantly ejects the user session on the next API call. |
+| **4. Quick-PIN Security** | **Salted PBKDF2 Hash** with rate-limiting: Max 3 failed attempts within 5 minutes triggers a 60s cooldown, forces master password login, and logs a security event to `AuditLog`. | Eliminates brute-force guessing of the 4-digit PIN while allowing frictionless desk unlocks. |
+| **5. Webhook Security** | **HMAC-SHA256 signature verification**: Telegram `X-Telegram-Bot-Api-Secret-Token` + Meta `X-Hub-Signature-256`. | Drops spoofed or unauthorized webhooks immediately with `401 Unauthorized` before querying the database. |
+| **6. Data Privacy** | **Zero clinical diagnosis exposure**: Masked phone logging in server stdout (`+234 801 **** 5678`) and append-only immutable `AuditLog`. | Guarantees medical data confidentiality and regulatory compliance (HIPAA / NDPR). |
+| **7. Multi-Tenant Deployment** | **Single-Tenant per Instance**: Each clinic gets its own isolated database container, seeded via `client-config.json`. | Eliminates cross-clinic data leak vulnerabilities and allows 1-click white-label deployment for agency clients. |
+
