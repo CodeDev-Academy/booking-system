@@ -1,4 +1,4 @@
-import { DOCTORS, SERVICES, TIME_WINDOWS, CLINIC_RULES, at } from './mockData';
+import { DOCTORS, SERVICES, TIME_WINDOWS, CLINIC_RULES, BASE_OFFSET, DEFAULT_RANGE_DAYS, at } from './mockData';
 import { useSettingsStore } from '../stores/useSettingsStore';
 import { useStaffStore } from '../stores/useStaffStore';
 
@@ -130,7 +130,14 @@ export const generateCandidateSlots = (request, busyBlocks, count = 3) => {
   const now = Date.now();
   const bufferMin = service.bufferMin !== undefined ? service.bufferMin : 10;
 
-  for (let day = request.dateRange.fromOffset; day <= request.dateRange.toOffset && picked.length < count; day += 1) {
+  const dateRange = request?.dateRange || {
+    fromOffset: BASE_OFFSET,
+    toOffset: BASE_OFFSET + DEFAULT_RANGE_DAYS - 1,
+  };
+  const fromOffset = typeof dateRange.fromOffset === 'number' ? dateRange.fromOffset : BASE_OFFSET;
+  const toOffset = typeof dateRange.toOffset === 'number' ? dateRange.toOffset : fromOffset + DEFAULT_RANGE_DAYS - 1;
+
+  for (let day = fromOffset; day <= toOffset && picked.length < count; day += 1) {
     const dayOfWeek = new Date(at(day, 0)).getDay();
     // Sunday (0) is closed
     if (dayOfWeek === 0) continue;

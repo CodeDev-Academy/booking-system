@@ -5,6 +5,8 @@ import {
   buildMockAppointments,
   buildBusyBlocks,
   CLINIC_RULES,
+  BASE_OFFSET,
+  DEFAULT_RANGE_DAYS,
 } from '../services/mockData';
 import { generateCandidateSlots, getService, makeSlot } from '../services/slotEngine';
 import { useAuthStore } from './useAuthStore';
@@ -83,30 +85,36 @@ export const useQueueStore = create(
     }));
 
     if (!useAppModeStore.getState().isDemoMode) {
-      const lookupKey = request.code || request.id;
-      apiService
-        .checkSlots(lookupKey)
-        .then((res) => {
-          const remoteSlots = res?.candidate_slots || res?.slots || [];
-          if (Array.isArray(remoteSlots) && remoteSlots.length > 0) {
-            const service = getService(request.serviceId);
-            const mapped = remoteSlots.map((s, idx) => ({
-              id: s.id || `slot-live-${idx + 1}-${Date.now()}`,
-              doctorId: s.doctor_id || request.preferredDoctorId || 'doc-bello',
-              doctorName: s.doctor_name,
-              start: new Date(s.start_datetime).getTime(),
-              durationMin: s.duration_minutes || (service ? service.durationMin : 30),
-              bufferMin: s.buffer_minutes !== undefined ? s.buffer_minutes : (service ? service.bufferMin : 10),
-              custom: false,
-            }));
-            set((state) => ({
-              slotsByRequest: { ...state.slotsByRequest, [id]: mapped },
-            }));
-          }
-        })
-        .catch(() => {
-          // Keep instant local slots if backend request ID is demo-only
-        });
+      const isLocalMock = !request.backendUuid && (
+        String(request.id).startsWith('req-004') ||
+        String(request.code || '').startsWith('REQ-2026-004')
+      );
+      if (!isLocalMock) {
+        const lookupKey = request.backendUuid || request.code || request.id;
+        apiService
+          .checkSlots(lookupKey)
+          .then((res) => {
+            const remoteSlots = res?.candidate_slots || res?.slots || [];
+            if (Array.isArray(remoteSlots) && remoteSlots.length > 0) {
+              const service = getService(request.serviceId);
+              const mapped = remoteSlots.map((s, idx) => ({
+                id: s.id || `slot-live-${idx + 1}-${Date.now()}`,
+                doctorId: s.doctor_id || request.preferredDoctorId || 'doc-bello',
+                doctorName: s.doctor_name,
+                start: new Date(s.start_datetime).getTime(),
+                durationMin: s.duration_minutes || (service ? service.durationMin : 30),
+                bufferMin: s.buffer_minutes !== undefined ? s.buffer_minutes : (service ? service.bufferMin : 10),
+                custom: false,
+              }));
+              set((state) => ({
+                slotsByRequest: { ...state.slotsByRequest, [id]: mapped },
+              }));
+            }
+          })
+          .catch(() => {
+            // Keep instant local slots if backend request ID is unreachable
+          });
+      }
     }
   },
 
@@ -137,6 +145,10 @@ export const useQueueStore = create(
             : null,
           preferredDoctorId: item.preferred_doctor || null,
           timeWindow: item.preferred_time_window || 'morning',
+          dateRange: {
+            fromOffset: BASE_OFFSET,
+            toOffset: BASE_OFFSET + DEFAULT_RANGE_DAYS - 1,
+          },
           channel: item.channel === 'whatsapp_flow' ? 'telegram' : (item.channel || 'web'),
           status: statusVal,
           reRequested: item.status === 're_requested' || Boolean(item.re_requested),
@@ -211,9 +223,17 @@ export const useQueueStore = create(
     });
 
     if (!useAppModeStore.getState().isDemoMode) {
-      apiService.askInfo(requestId, message).catch((err) => {
-        console.warn('Backend askInfo failed:', err);
-      });
+      const request = get().requests.find((r) => r.id === requestId);
+      const isLocalMock = !request?.backendUuid && (
+        String(requestId).startsWith('req-004') ||
+        String(request?.code || '').startsWith('REQ-2026-004')
+      );
+      if (!isLocalMock) {
+        const lookupKey = request?.backendUuid || request?.code || requestId;
+        apiService.askInfo(lookupKey, message).catch((err) => {
+          console.warn('Backend askInfo failed:', err);
+        });
+      }
     }
   },
 
@@ -250,9 +270,16 @@ export const useQueueStore = create(
     }));
 
     if (!useAppModeStore.getState().isDemoMode) {
-      apiService.dispatchOffers(requestId, updatedSlots).catch((err) => {
-        console.warn('Backend dispatchOffers failed:', err);
-      });
+      const isLocalMock = !request?.backendUuid && (
+        String(requestId).startsWith('req-004') ||
+        String(request?.code || '').startsWith('REQ-2026-004')
+      );
+      if (!isLocalMock) {
+        const lookupKey = request?.backendUuid || request?.code || requestId;
+        apiService.dispatchOffers(lookupKey, updatedSlots).catch((err) => {
+          console.warn('Backend dispatchOffers failed:', err);
+        });
+      }
     }
 
     soundService.playChime();
@@ -296,22 +323,28 @@ export const useQueueStore = create(
     appointmentSyncBus.publishAppointmentBooked(newAppt);
 
     if (!useAppModeStore.getState().isDemoMode) {
-      const startIso = new Date(chosenSlot.start).toISOString();
-      const endIso = new Date(chosenSlot.start + 30 * MIN).toISOString();
-      apiService
-        .holdSlot({
-          doctor_id: chosenSlot.doctorId,
-          service_id: req.serviceId,
-          name: req.patientName,
-          phone: req.phone,
-          start_datetime: startIso,
-          end_datetime: endIso,
-          is_instant_confirm: true,
-          booking_request_id: requestId,
-        })
-        .catch((err) => {
-          console.warn('Backend slot hold failed:', err);
-        });
+      const isLocalMock = !req?.backendUuid && (
+        String(requestId).startsWith('req-004') ||
+        String(req?.code || '').startsWith('REQ-2026-004')
+      );
+      if (!isLocalMock) {
+        const startIso = new Date(chosenSlot.start).toISOString();
+        const endIso = new Date(chosenSlot.start + 30 * MIN).toISOString();
+        apiService
+          .holdSlot({
+            doctor_id: chosenSlot.doctorId,
+            service_id: req.serviceId,
+            name: req.patientName,
+            phone: req.phone,
+            start_datetime: startIso,
+            end_datetime: endIso,
+            is_instant_confirm: true,
+            booking_request_id: req.backendUuid || req.code || requestId,
+          })
+          .catch((err) => {
+            console.warn('Backend slot hold failed:', err);
+          });
+      }
     }
 
     soundService.playChime();

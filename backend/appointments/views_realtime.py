@@ -12,9 +12,18 @@ from rest_framework.permissions import AllowAny
 
 from .models import IdempotencyKey, ClinicSetting, AuditLog
 from .permissions import IsStaffAuthenticated
+from rest_framework.renderers import BaseRenderer, JSONRenderer
 from .services.sse_bus import bus, broadcast_event, sse_event_stream
 from .services.telegram_service import TelegramService
 from .serializers_realtime import PresenceUpdateSerializer, InboundWebhookSerializer
+
+
+class ServerSentEventRenderer(BaseRenderer):
+    media_type = 'text/event-stream'
+    format = 'sse'
+
+    def render(self, data, accepted_media_type=None, renderer_context=None):
+        return data
 
 
 class EventStreamView(APIView):
@@ -24,6 +33,7 @@ class EventStreamView(APIView):
     Implements anti-buffering headers (X-Accel-Buffering: no) and 15s heartbeats.
     """
     permission_classes = [AllowAny]
+    renderer_classes = [ServerSentEventRenderer, JSONRenderer]
 
     def get(self, request):
         limit = None
