@@ -266,7 +266,7 @@ export const LoginView = () => {
 
             <button
               type="button"
-              onClick={() => handleQuickFill('admin@cedarcare.ng', 'password123')}
+              onClick={() => handleQuickFill('admin@cedarcare.ng', 'adminpassword123')}
               className="btn-base btn-secondary btn-sm"
               style={{
                 fontSize: '11px',
@@ -280,7 +280,7 @@ export const LoginView = () => {
               title="Fill Dr. Ibrahim Musa (Clinic Admin)"
             >
               <span style={{ fontWeight: 600, color: 'var(--text)' }}>🩺 Dr. Ibrahim (Admin)</span>
-              <span style={{ fontSize: '10px', color: 'var(--text-3)' }}>password123</span>
+              <span style={{ fontSize: '10px', color: 'var(--text-3)' }}>adminpassword123</span>
             </button>
           </div>
         </div>

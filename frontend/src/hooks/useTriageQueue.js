@@ -53,9 +53,14 @@ export const useTriageQueue = () => {
   }, []);
 
   useEffect(() => {
-    if (!isDemoMode && store.syncFromBackend) {
+    if (isDemoMode || !store.syncFromBackend) return undefined;
+    // Initial fetch on mount
+    store.syncFromBackend();
+    // Safety polling guard every 10 seconds to auto-reflect new Telegram requests
+    const pollId = setInterval(() => {
       store.syncFromBackend();
-    }
+    }, 10000);
+    return () => clearInterval(pollId);
   }, [isDemoMode, store.syncFromBackend]);
 
   // Auto-dismiss toast (4s)

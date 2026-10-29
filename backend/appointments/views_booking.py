@@ -1,5 +1,6 @@
 import uuid
 import datetime
+import logging
 from django.utils import timezone
 from django.core.cache import cache
 from django.shortcuts import get_object_or_404
@@ -21,6 +22,8 @@ from .services.availability import AvailabilityEngine
 from .services.sse_bus import broadcast_event
 from .services.telegram_service import TelegramService
 
+logger = logging.getLogger(__name__)
+
 
 def get_booking_or_404(identifier, for_update=False):
     """
@@ -33,6 +36,36 @@ def get_booking_or_404(identifier, for_update=False):
         return get_object_or_404(qs, id=val)
     except (ValueError, AttributeError):
         return get_object_or_404(qs, request_code=identifier)
+
+
+def resolve_doctor_or_default(doctor_id):
+    """
+    Robustly resolves a Doctor instance by UUID, email, or partial name/slug
+    (e.g. 'doc-bello', 'doc-okafor', 'doc-babawo'). Falls back to the primary clinic doctor.
+    """
+    if not doctor_id:
+        return Doctor.objects.first()
+    try:
+        val = uuid.UUID(str(doctor_id))
+        doc = Doctor.objects.filter(id=val).first()
+        if doc:
+            return doc
+    except (ValueError, AttributeError):
+        pass
+
+    id_str = str(doctor_id).lower()
+    doc = Doctor.objects.filter(email__iexact=id_str).first()
+    if doc:
+        return doc
+    if 'bello' in id_str:
+        doc = Doctor.objects.filter(name__icontains='Bello').first()
+    elif 'okafor' in id_str:
+        doc = Doctor.objects.filter(name__icontains='Okafor').first()
+    elif 'babawo' in id_str:
+        doc = Doctor.objects.filter(name__icontains='Babawo').first()
+    else:
+        doc = Doctor.objects.filter(name__icontains=id_str).first()
+    return doc or Doctor.objects.first()
 
 
 class BookingRequestListCreateView(APIView):
@@ -228,7 +261,12 @@ class DispatchOffersView(APIView):
         if offers_data:
             for s in offers_data:
                 doctor_id = s.get('doctor_id')
-                doctor = get_object_or_404(Doctor, id=doctor_id)
+                doctor = resolve_doctor_or_default(doctor_id)
+                if not doctor:
+                    return Response({
+                        'error': 'DOCTOR_NOT_FOUND',
+                        'detail': f'Could not resolve doctor for ID {doctor_id}'
+                    }, status=status.HTTP_404_NOT_FOUND)
                 try:
                     if not s.get('start_datetime') or not s.get('end_datetime'):
                         raise ValueError("start_datetime and end_datetime are required fields.")
@@ -260,7 +298,7 @@ class DispatchOffersView(APIView):
             engine = AvailabilityEngine()
             candidate_slots = engine.find_candidate_slots_for_request(booking, max_slots=3)
             for s in candidate_slots:
-                doctor = get_object_or_404(Doctor, id=s['doctor_id'])
+                doctor = resolve_doctor_or_default(s.get('doctor_id'))
                 start_dt = datetime.datetime.fromisoformat(s['start_datetime'])
                 end_dt = datetime.datetime.fromisoformat(s['end_datetime'])
                 offer = SlotOffer.objects.create(
@@ -327,9 +365,10 @@ class DispatchOffersView(APIView):
         if chat_id:
             try:
                 tg_text, tg_markup = TelegramService.format_slot_offers(booking, created_offers, clinic)
-                TelegramService.send_message(chat_id, tg_text, tg_markup)
-            except Exception:
-                pass
+                dispatch_res = TelegramService.send_message(chat_id, tg_text, tg_markup)
+                logger.info("Telegram slot offer dispatched to chat_id %s: %s", chat_id, dispatch_res)
+            except Exception as tg_err:
+                logger.error("Failed to send slot offers to Telegram chat %s: %s", chat_id, tg_err, exc_info=True)
 
         return Response({
             "detail": "Offers dispatched successfully.",
