@@ -250,10 +250,10 @@ export const useAuthStore = create(
         set({ loginFailedAttempts: 0, loginLockoutUntil: 0 });
       },
 
-      // Log Out: Clear Session & Return to Login Portal
-      logout: async () => {
+      // Log Out: Clear Session & Return to Login Portal (Optimistic & Instant)
+      logout: () => {
         try {
-          await apiService.logout();
+          apiService.logout();
         } catch {
           // Ignore network errors on logout
         }
