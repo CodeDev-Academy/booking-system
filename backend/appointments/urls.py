@@ -157,7 +157,9 @@ urlpatterns = [
     path('realtime/presence/', PresenceBroadcastView.as_view(), name='realtime-presence'),
     path('webhooks/messaging/inbound/', InboundWebhookView.as_view(), name='webhook-messaging-inbound'),
     path('webhooks/telegram/inbound/', InboundWebhookView.as_view(), name='webhook-telegram-inbound'),
+    path('webhooks/telegram/', InboundWebhookView.as_view(), name='webhook-telegram'),
     path('webhooks/whatsapp/inbound/', InboundWebhookView.as_view(), name='webhook-whatsapp-inbound'),
+    path('telegram/webhook/', InboundWebhookView.as_view(), name='telegram-webhook-alias'),
 
     # Task 3.6: Analytics KPI Summary API & CSV Exports
     path('analytics/summary/', AnalyticsSummaryView.as_view(), name='analytics-summary'),
