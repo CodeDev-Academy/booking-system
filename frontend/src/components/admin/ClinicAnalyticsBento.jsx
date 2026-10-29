@@ -146,7 +146,23 @@ export const ClinicAnalyticsBento = ({
 
         <div className="bento-chart-container" style={{ marginTop: '6px' }}>
           <div className="mini-bars-row">
-            {HOURLY_DISTRIBUTION.map((item) => (
+            {(Array.isArray(metrics?.hourlyDistribution) && metrics.hourlyDistribution.length > 0
+              ? metrics.hourlyDistribution.map((item) => {
+                  const maxCount = Math.max(
+                    1,
+                    ...metrics.hourlyDistribution.map((h) => h.count || 0)
+                  );
+                  return {
+                    hour: item.hour,
+                    count: item.count || 0,
+                    heightPct:
+                      item.heightPct !== undefined
+                        ? item.heightPct
+                        : Math.max(10, Math.round(((item.count || 0) / maxCount) * 100)),
+                  };
+                })
+              : HOURLY_DISTRIBUTION
+            ).map((item) => (
               <div key={item.hour} className="mini-bar-col" title={`${item.hour}: ${item.count} appointments`}>
                 <div className="mini-bar-track">
                   <div

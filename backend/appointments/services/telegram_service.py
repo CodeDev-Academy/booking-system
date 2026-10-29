@@ -7,6 +7,7 @@ from django.utils import timezone
 from django.conf import settings
 from django.db import transaction
 
+import datetime
 from ..models import (
     ClinicSetting,
     BookingRequest,
@@ -14,6 +15,7 @@ from ..models import (
     Appointment,
     AuditLog,
     IdempotencyKey,
+    Service,
 )
 from .hold_service import HoldService, SlotConflictException
 from .sse_bus import broadcast_event
@@ -341,6 +343,17 @@ class TelegramService:
                     chat_id=chat_id
                 )
 
+            # Case 5: Interactive Clinic Service Booking (book_svc_{service_id})
+            elif callback_data.startswith(('book_svc_', 'book_svc:')):
+                svc_id = callback_data.replace('book_svc_', '').replace('book_svc:', '').strip()
+                return cls._handle_service_booking(
+                    service_id=svc_id,
+                    callback_id=callback_id,
+                    chat_id=chat_id,
+                    from_user=from_user,
+                    clinic=clinic
+                )
+
             # Fallback for unrecognized button callbacks
             cls.answer_callback_query(callback_id, text="Action received.")
             return {'status': 'acknowledged', 'action': callback_data}
@@ -349,17 +362,22 @@ class TelegramService:
         elif 'message' in payload:
             msg = payload['message']
             chat_id = msg.get('chat', {}).get('id')
+            from_user = msg.get('from', {})
             text = (msg.get('text') or '').strip()
 
-            if text.startswith('/start'):
-                clinic_name = html.escape(clinic.clinic_name)
-                welcome = (
-                    f"🏥 <b>Welcome to {clinic_name}!</b>\n\n"
-                    f"I am your automated booking assistant. I help you coordinate appointments with our doctors.\n\n"
-                    f"To request a consultation, you can book on our website or reply with your desired service."
-                )
-                cls.send_message(chat_id, welcome)
-                return {'status': 'welcomed', 'chat_id': chat_id}
+            clinic_name = html.escape(clinic.clinic_name)
+            services = list(Service.objects.filter(is_active=True).order_by('name')[:6])
+            service_buttons = []
+            for svc in services:
+                service_buttons.append([{"text": f"🩺 {svc.name} ({svc.duration_minutes}m)", "callback_data": f"book_svc_{svc.id}"}])
+
+            welcome = (
+                f"🏥 <b>Welcome to {clinic_name}!</b>\n\n"
+                f"I am your automated booking assistant. I help you coordinate appointments directly with our doctors.\n\n"
+                f"Please choose a service below to request appointment times from our front desk:"
+            )
+            cls.send_message(chat_id, welcome, reply_markup={"inline_keyboard": service_buttons})
+            return {'status': 'welcomed', 'chat_id': chat_id, 'service_menu_sent': True}
 
         return {'status': 'ignored'}
 
@@ -490,7 +508,8 @@ class TelegramService:
             appt = Appointment.objects.get(id=appointment_id)
             appt.status = 'confirmed'
             appt.confirmed_at = timezone.now()
-            appt.save(update_fields=['status', 'confirmed_at'])
+            appt.hold_expires_at = None
+            appt.save(update_fields=['status', 'confirmed_at', 'hold_expires_at'])
             if appt.booking_request and appt.booking_request.status != 'converted':
                 appt.booking_request.status = 'converted'
                 appt.booking_request.save(update_fields=['status', 'updated_at'])
@@ -527,3 +546,66 @@ class TelegramService:
         except (Appointment.DoesNotExist, ValueError):
             cls.answer_callback_query(callback_id, text="Appointment not found.", show_alert=True)
             return {'status': 'error'}
+
+    @classmethod
+    def _handle_service_booking(cls, service_id, callback_id, chat_id, from_user, clinic):
+        """Creates an inbound BookingRequest from patient Telegram selection."""
+        try:
+            service = Service.objects.get(id=service_id)
+        except (Service.DoesNotExist, ValueError):
+            cls.answer_callback_query(callback_id, text="Service not found.", show_alert=True)
+            return {'status': 'error', 'detail': 'Service not found.'}
+
+        first_name = (from_user.get('first_name') or '').strip()
+        last_name = (from_user.get('last_name') or '').strip()
+        patient_name = f"{first_name} {last_name}".strip()
+        if not patient_name:
+            patient_name = from_user.get('username') or 'Telegram Patient'
+
+        phone_suffix = str(chat_id)[-8:] if len(str(chat_id)) >= 8 else "001122"
+        patient_phone = f"+23480{phone_suffix}"
+
+        target_date = (timezone.now() + datetime.timedelta(days=1)).date().isoformat()
+
+        booking = BookingRequest.objects.create(
+            patient_name=patient_name,
+            patient_phone=patient_phone,
+            patient_type='new',
+            service=service,
+            preferred_date_range={'start': target_date, 'end': target_date},
+            preferred_time_window='morning',
+            channel='telegram',
+            status='awaiting_review',
+            patient_notes=f"Patient booked via Telegram @babawo_bot. telegram_chat_id:{chat_id}",
+        )
+
+        AuditLog.objects.create(
+            entity_name='BookingRequest',
+            entity_id=booking.id,
+            action='TELEGRAM_REQUEST_CREATED',
+            performed_by=f"Telegram:{chat_id}",
+            changes={'service': service.name, 'patient_name': patient_name, 'request_code': booking.request_code}
+        )
+
+        broadcast_event('request.created', {
+            'request_id': booking.request_code,
+            'patient_name': booking.patient_name,
+            'service': service.name,
+            'channel': 'telegram',
+            'created_at': booking.created_at.isoformat()
+        })
+
+        cls.answer_callback_query(callback_id, text=f"Requested {service.name}!")
+
+        confirm_msg = (
+            f"📋 <b>Booking Request Submitted!</b>\n\n"
+            f"Hello <b>{html.escape(patient_name)}</b>, our reception has received your appointment request:\n\n"
+            f"🩺 <b>Service:</b> {html.escape(service.name)}\n"
+            f"📌 <b>Request Code:</b> <code>{booking.request_code}</code>\n"
+            f"⏱️ <b>Status:</b> <i>Awaiting Front-Desk Review</i>\n\n"
+            f"Our front desk is reviewing doctor schedules right now. As soon as reception approves candidate times, "
+            f"you will receive interactive slot buttons right here in Telegram to lock in your visit!"
+        )
+        cls.send_message(chat_id, confirm_msg)
+
+        return {'status': 'booking_request_created', 'request_id': booking.request_code}

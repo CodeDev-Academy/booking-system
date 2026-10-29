@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useCalendarStore } from '../stores/useCalendarStore';
 import { useVisitsStore } from '../stores/useVisitsStore';
+import { useAppModeStore } from '../stores/appModeStore';
 import {
   DOCTORS,
   SERVICES,
@@ -22,6 +23,7 @@ export const INCREMENT_MIN = 15;
 
 export const useCalendar = () => {
   const store = useCalendarStore();
+  const isDemoMode = useAppModeStore((s) => s.isDemoMode);
   const [now, setNow] = useState(() => Date.now());
 
   // Second-level ticker for real-time hold countdowns
@@ -29,6 +31,12 @@ export const useCalendar = () => {
     const timer = setInterval(() => setNow(Date.now()), TICK_SECOND_MS);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!isDemoMode && store.syncFromBackend) {
+      store.syncFromBackend();
+    }
+  }, [isDemoMode, store.syncFromBackend]);
 
   // Auto-dismiss in-app toast
   useEffect(() => {

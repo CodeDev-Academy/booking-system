@@ -2043,6 +2043,55 @@ class Phase5TelegramTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data['telegram_result']['status'], 'welcomed')
 
+    def test_telegram_interactive_service_booking_and_dispatch(self):
+        """
+        Patient clicks a service button (book_svc_<id>) in Telegram -> creates BookingRequest
+        with telegram_chat_id in patient_notes, and receptionist can dispatch offers without error.
+        """
+        payload = {
+            'update_id': 100200308,
+            'channel': 'telegram',
+            'callback_query': {
+                'id': 'cq_book_svc_1',
+                'data': f'book_svc_{self.service.id}',
+                'from': {'id': 98765432, 'first_name': 'Musa', 'last_name': 'Yusuf'},
+                'message': {'message_id': 562, 'chat': {'id': 98765432}}
+            }
+        }
+        res = self.client.post('/api/v1/webhooks/telegram/inbound/', payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['telegram_result']['status'], 'booking_request_created')
+        req_code = res.data['telegram_result']['request_id']
+
+        created_req = BookingRequest.objects.get(request_code=req_code)
+        self.assertEqual(created_req.patient_name, 'Musa Yusuf')
+        self.assertEqual(created_req.channel, 'telegram')
+        self.assertIn('telegram_chat_id:98765432', created_req.patient_notes)
+        self.assertIn('start', created_req.preferred_date_range)
+
+        # Receptionist dispatches slot offers to this Telegram request
+        receptionist = StaffUser.objects.create(
+            full_name='Desk Staff',
+            email='desk.tg@clinic.com',
+            role='receptionist',
+            is_active=True,
+        )
+        receptionist.set_password('Pass123!')
+        receptionist.save()
+        self.client.force_authenticate(user=receptionist)
+
+        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        slot_end = slot_start + datetime.timedelta(minutes=30)
+        dispatch_res = self.client.post(f'/api/v1/booking-requests/{created_req.id}/dispatch-offers/', {
+            'slots': [{
+                'doctor_id': str(self.doctor.id),
+                'start_datetime': slot_start.isoformat(),
+                'end_datetime': slot_end.isoformat(),
+            }]
+        }, format='json')
+        self.assertEqual(dispatch_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(dispatch_res.data['status'], 'slots_offered')
+
 
 class Phase6ConcurrencyAndE2ETests(APITestCase):
     """

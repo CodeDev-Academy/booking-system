@@ -77,9 +77,93 @@ export const useQueueStore = create(
     const { requests, busyBlocks } = get();
     const request = requests.find((r) => r.id === id);
     if (!request) return;
+    const localSlots = generateCandidateSlots(request, busyBlocks);
     set((state) => ({
-      slotsByRequest: { ...state.slotsByRequest, [id]: generateCandidateSlots(request, busyBlocks) },
+      slotsByRequest: { ...state.slotsByRequest, [id]: localSlots },
     }));
+
+    if (!useAppModeStore.getState().isDemoMode) {
+      const lookupKey = request.code || request.id;
+      apiService
+        .checkSlots(lookupKey)
+        .then((res) => {
+          const remoteSlots = res?.candidate_slots || res?.slots || [];
+          if (Array.isArray(remoteSlots) && remoteSlots.length > 0) {
+            const service = getService(request.serviceId);
+            const mapped = remoteSlots.map((s, idx) => ({
+              id: s.id || `slot-live-${idx + 1}-${Date.now()}`,
+              doctorId: s.doctor_id || request.preferredDoctorId || 'doc-bello',
+              doctorName: s.doctor_name,
+              start: new Date(s.start_datetime).getTime(),
+              durationMin: s.duration_minutes || (service ? service.durationMin : 30),
+              bufferMin: s.buffer_minutes !== undefined ? s.buffer_minutes : (service ? service.bufferMin : 10),
+              custom: false,
+            }));
+            set((state) => ({
+              slotsByRequest: { ...state.slotsByRequest, [id]: mapped },
+            }));
+          }
+        })
+        .catch(() => {
+          // Keep instant local slots if backend request ID is demo-only
+        });
+    }
+  },
+
+  syncFromBackend: async () => {
+    if (useAppModeStore.getState().isDemoMode) return;
+    try {
+      const data = await apiService.fetchBookingRequests();
+      const list = Array.isArray(data) ? data : data?.results || [];
+      if (list.length === 0) return;
+
+      const mappedRemote = list.map((item) => {
+        const statusVal = item.status === 're_requested' ? 'awaiting_review' : item.status;
+        const serviceNameLower = (item.service_name || '').toLowerCase();
+        let matchedServiceId = 'svc-dental';
+        if (serviceNameLower.includes('extract')) matchedServiceId = 'svc-extract';
+        else if (serviceNameLower.includes('check') || serviceNameLower.includes('general')) matchedServiceId = 'svc-checkup';
+
+        return {
+          id: item.request_code || item.id,
+          backendUuid: item.id,
+          code: item.request_code || item.id,
+          patientName: item.patient_name || 'Clinic Patient',
+          phone: item.patient_phone || '+2348000000000',
+          patientType: item.patient_type || 'new',
+          serviceId: matchedServiceId,
+          customService: item.service_name
+            ? { id: item.service || matchedServiceId, name: item.service_name, durationMin: 30, bufferMin: 10 }
+            : null,
+          preferredDoctorId: item.preferred_doctor || null,
+          timeWindow: item.preferred_time_window || 'morning',
+          channel: item.channel === 'whatsapp_flow' ? 'telegram' : (item.channel || 'web'),
+          status: statusVal,
+          reRequested: item.status === 're_requested' || Boolean(item.re_requested),
+          reviewingBy: null,
+          createdAt: item.created_at ? new Date(item.created_at).getTime() : Date.now(),
+          expiredAt: item.offer_expires_at ? new Date(item.offer_expires_at).getTime() : Date.now(),
+          offerExpiresAt: item.offer_expires_at ? new Date(item.offer_expires_at).getTime() : null,
+          isEmergency: Boolean(item.is_emergency),
+          gender: item.gender || '',
+          dateOfBirth: item.date_of_birth || null,
+          symptoms: item.patient_notes || '',
+        };
+      });
+
+      set((state) => {
+        const existingByCode = new Map(state.requests.map((r) => [r.code || r.id, r]));
+        mappedRemote.forEach((rem) => {
+          existingByCode.set(rem.code || rem.id, {
+            ...(existingByCode.get(rem.code || rem.id) || {}),
+            ...rem,
+          });
+        });
+        return { requests: Array.from(existingByCode.values()) };
+      });
+    } catch (err) {
+      console.warn('Queue syncFromBackend fallback:', err);
+    }
   },
 
   patchSlot: (requestId, slotId, patch) =>

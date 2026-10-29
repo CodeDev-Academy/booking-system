@@ -46,11 +46,11 @@ class SweepService:
                 }
             )
 
-        # 2. Sweep expired 15-minute temporary holds
+        # 2. Sweep expired 15-minute temporary holds (excluding appointments already converted by patient selection)
         expired_holds = Appointment.objects.select_for_update().filter(
             status='held',
             hold_expires_at__lt=now
-        )
+        ).exclude(booking_request__status='converted')
         expired_hold_codes = []
         for appt in expired_holds:
             appt.status = 'hold_expired'

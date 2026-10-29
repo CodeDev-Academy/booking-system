@@ -303,6 +303,9 @@ export const useAuthStore = create(
         }
 
         if (pinAttempt === correctPin) {
+          if (!useAppModeStore.getState().isDemoMode) {
+            apiService.unlockPin(pinAttempt, currentStaff?.email || '').catch(() => {});
+          }
           set({
             isLocked: false,
             failedAttempts: 0,

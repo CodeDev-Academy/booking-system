@@ -187,7 +187,97 @@ export const useSettingsStore = create(
         text: `${label} has been ${nextVal ? 'Activated & Saved' : 'Deactivated & Saved'} to live system.`,
       },
     }));
+
+    if (!useAppModeStore.getState().isDemoMode) {
+      apiService.updateSettings({ [field]: nextVal }).catch((err) => {
+        console.warn('Backend toggleNotification failed:', err);
+      });
+    }
+
     soundService.playChime();
+  },
+
+  syncFromBackend: async () => {
+    if (useAppModeStore.getState().isDemoMode) return;
+    try {
+      const [settingsData, servicesData] = await Promise.all([
+        apiService.fetchSettings().catch(() => null),
+        apiService.fetchServices().catch(() => null),
+      ]);
+
+      if (settingsData) {
+        const customCfg = settingsData.custom_config || {};
+        const phonesArr =
+          Array.isArray(settingsData.phones) && settingsData.phones.length > 0
+            ? settingsData.phones
+            : settingsData.phone
+            ? [settingsData.phone]
+            : get().clinicProfile.phones;
+        const emailsArr =
+          Array.isArray(settingsData.emails) && settingsData.emails.length > 0
+            ? settingsData.emails
+            : settingsData.email
+            ? [settingsData.email]
+            : get().clinicProfile.emails;
+
+        set((state) => ({
+          clinicProfile: {
+            ...state.clinicProfile,
+            clinicName: settingsData.clinic_name || state.clinicProfile.clinicName,
+            tagline: settingsData.tagline || state.clinicProfile.tagline,
+            address: settingsData.address || state.clinicProfile.address,
+            phones: phonesArr,
+            phone: phonesArr[0] || state.clinicProfile.phone,
+            emails: emailsArr,
+            email: emailsArr[0] || state.clinicProfile.email,
+            whatsappPhoneId: settingsData.whatsapp_phone_id || state.clinicProfile.whatsappPhoneId,
+            telegramBot: customCfg.telegram_bot || state.clinicProfile.telegramBot,
+            timezone: customCfg.timezone || state.clinicProfile.timezone,
+            currency: customCfg.currency || state.clinicProfile.currency,
+            currencySymbol: customCfg.currency_symbol || state.clinicProfile.currencySymbol,
+          },
+          schedulingRules: {
+            ...state.schedulingRules,
+            offerExpiryMinutes:
+              settingsData.offer_expiry_minutes ?? state.schedulingRules.offerExpiryMinutes,
+            holdExpiryMinutes:
+              settingsData.hold_expiry_minutes ?? state.schedulingRules.holdExpiryMinutes,
+            defaultBufferMinutes:
+              settingsData.default_buffer_minutes ?? state.schedulingRules.defaultBufferMinutes,
+            emergencySlotsPerShift:
+              settingsData.emergency_slots_per_shift ?? state.schedulingRules.emergencySlotsPerShift,
+            bookingHorizonDays:
+              settingsData.booking_horizon_days ?? state.schedulingRules.bookingHorizonDays,
+            gridIncrementMinutes:
+              settingsData.grid_increment_minutes ?? state.schedulingRules.gridIncrementMinutes,
+            minAdvanceHours:
+              settingsData.min_advance_hours ?? state.schedulingRules.minAdvanceHours,
+          },
+          notificationRules: {
+            ...state.notificationRules,
+            enable24hReminder:
+              settingsData.enable_24h_reminder ?? state.notificationRules.enable24hReminder,
+            enable2hReminder:
+              settingsData.enable_2h_reminder ?? state.notificationRules.enable2hReminder,
+          },
+        }));
+      }
+
+      if (Array.isArray(servicesData) && servicesData.length > 0) {
+        const mappedServices = servicesData.map((svc) => ({
+          id: svc.id,
+          name: svc.name,
+          category: svc.category || 'General Practice',
+          durationMin: svc.duration_minutes || svc.durationMin || 30,
+          bufferMin: svc.buffer_minutes ?? svc.bufferMin ?? 10,
+          description: svc.description || '',
+          isActive: svc.is_active !== undefined ? svc.is_active : true,
+        }));
+        set({ services: mappedServices });
+      }
+    } catch (err) {
+      console.warn('Settings syncFromBackend fallback:', err);
+    }
   },
 
   saveSettings: async () => {

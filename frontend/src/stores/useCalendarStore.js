@@ -226,6 +226,22 @@ export const useCalendarStore = create(
     // Broadcast booking across stores (Live Visits, Queue, Calendar)
     appointmentSyncBus.publishAppointmentBooked(newApptBlock);
 
+    if (!useAppModeStore.getState().isDemoMode) {
+      apiService
+        .registerWalkIn({
+          doctorId,
+          serviceId,
+          patientName: newApptBlock.patientName,
+          phone: newApptBlock.patientPhone,
+          startTs,
+          endTs,
+          notes: newApptBlock.notes,
+        })
+        .catch((err) => {
+          console.warn('Backend walk-in registration from calendar failed:', err);
+        });
+    }
+
     soundService.playChime();
     return { success: true };
   },
@@ -346,6 +362,11 @@ export const useCalendarStore = create(
           : d
       ),
     }));
+    if (!useAppModeStore.getState().isDemoMode) {
+      apiService
+        .updateDoctorDutyStatus(doctorId, { duty_mode: 'on_sick_leave', reason })
+        .catch(() => {});
+    }
     get().openDisruptionModal(doctorId);
     soundService.playAlert();
   },
@@ -363,7 +384,86 @@ export const useCalendarStore = create(
         text: `${getDoctor(doctorId)?.name || 'Doctor'} marked back On Duty.`,
       },
     }));
+    if (!useAppModeStore.getState().isDemoMode) {
+      apiService
+        .updateDoctorDutyStatus(doctorId, { duty_mode: 'on_duty' })
+        .catch(() => {});
+    }
     soundService.playChime();
+  },
+
+  syncFromBackend: async () => {
+    if (useAppModeStore.getState().isDemoMode) return;
+    try {
+      const startIso = new Date().toISOString().split('T')[0];
+      const endIso = new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0];
+      const data = await apiService.fetchCalendarSchedule(startIso, '', endIso);
+      const docSchedules = data?.doctors || [];
+      if (!Array.isArray(docSchedules) || docSchedules.length === 0) return;
+
+      const remoteBlocks = [];
+      docSchedules.forEach((docItem) => {
+        const docNameLower = (docItem.doctor_name || '').toLowerCase();
+        let mappedDocId = docItem.doctor_id;
+        if (docNameLower.includes('bello')) mappedDocId = 'doc-bello';
+        else if (docNameLower.includes('okafor') || docNameLower.includes('chin')) mappedDocId = 'doc-okafor';
+        else if (docNameLower.includes('babawo')) mappedDocId = 'doc-babawo';
+
+        (docItem.appointments || []).forEach((apt) => {
+          const startTs = new Date(apt.start_datetime).getTime();
+          const endTs = new Date(apt.end_datetime).getTime();
+          const durationMin = Math.max(15, Math.round((endTs - startTs) / MIN));
+          const bufferMin = apt.buffer_minutes !== undefined ? apt.buffer_minutes : 10;
+          const aptId = apt.appointment_code || apt.id;
+
+          remoteBlocks.push({
+            id: aptId,
+            appointmentId: aptId,
+            doctorId: mappedDocId,
+            serviceId: 'svc-dental',
+            patientName: apt.patient_name || 'Patient',
+            patientPhone: apt.patient_phone || '+2348000000000',
+            type: apt.status === 'held' ? 'hold' : 'appointment',
+            status: apt.status || 'confirmed',
+            label:
+              apt.status === 'held'
+                ? `Hold: ${apt.patient_name}`
+                : `Booked: ${apt.patient_name}`,
+            start: startTs,
+            end: endTs,
+            durationMin,
+            bufferMin,
+            holdExpiresAt: apt.hold_expires_at ? new Date(apt.hold_expires_at).getTime() : null,
+            channel: 'telegram',
+          });
+        });
+      });
+
+      if (remoteBlocks.length > 0) {
+        set((state) => {
+          const existingIds = new Set(state.blocks.map((b) => b.appointmentId || b.id));
+          const additions = [];
+          remoteBlocks.forEach((rb) => {
+            if (!existingIds.has(rb.appointmentId)) {
+              additions.push(rb);
+              additions.push({
+                id: `${rb.id}-buffer`,
+                appointmentId: rb.appointmentId,
+                doctorId: rb.doctorId,
+                type: 'buffer',
+                label: `${rb.bufferMin}m Sterilization Buffer`,
+                start: rb.end,
+                end: rb.end + rb.bufferMin * MIN,
+                durationMin: rb.bufferMin,
+              });
+            }
+          });
+          return additions.length > 0 ? { blocks: [...state.blocks, ...additions] } : state;
+        });
+      }
+    } catch (err) {
+      console.warn('Calendar syncFromBackend fallback:', err);
+    }
   },
 
   // Reassign affected appointments to a colleague with Schedule Collision Validation

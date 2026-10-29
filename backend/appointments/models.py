@@ -326,14 +326,24 @@ class BookingRequest(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.request_code:
+            from django.db import IntegrityError, transaction
             current_year = timezone.now().year
             count = BookingRequest.objects.filter(created_at__year=current_year).count() + 1
-            candidate = f"REQ-{current_year}-{count:04d}"
-            while BookingRequest.objects.filter(request_code=candidate).exists():
-                count += 1
+            for attempt in range(10):
                 candidate = f"REQ-{current_year}-{count:04d}"
-            self.request_code = candidate
-        super().save(*args, **kwargs)
+                while BookingRequest.objects.filter(request_code=candidate).exists():
+                    count += 1
+                    candidate = f"REQ-{current_year}-{count:04d}"
+                self.request_code = candidate
+                try:
+                    with transaction.atomic():
+                        return super().save(*args, **kwargs)
+                except IntegrityError:
+                    self.request_code = ''
+                    count += 1
+                    if attempt == 9:
+                        raise
+        return super().save(*args, **kwargs)
 
 
 class SlotOffer(models.Model):
@@ -413,13 +423,23 @@ class Appointment(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.appointment_code:
+            from django.db import IntegrityError, transaction
             count = Appointment.objects.count() + 1
-            candidate = f"AP-{count:04d}"
-            while Appointment.objects.filter(appointment_code=candidate).exists():
-                count += 1
+            for attempt in range(10):
                 candidate = f"AP-{count:04d}"
-            self.appointment_code = candidate
-        super().save(*args, **kwargs)
+                while Appointment.objects.filter(appointment_code=candidate).exists():
+                    count += 1
+                    candidate = f"AP-{count:04d}"
+                self.appointment_code = candidate
+                try:
+                    with transaction.atomic():
+                        return super().save(*args, **kwargs)
+                except IntegrityError:
+                    self.appointment_code = ''
+                    count += 1
+                    if attempt == 9:
+                        raise
+        return super().save(*args, **kwargs)
 
 
 class FollowUpTask(models.Model):

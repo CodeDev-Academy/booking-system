@@ -42,6 +42,7 @@ const reliabilityTone = (pct) => (pct >= 90 ? 'success' : pct >= 70 ? 'amber' : 
  */
 export const useTriageQueue = () => {
   const store = useQueueStore();
+  const isDemoMode = useAppModeStore((s) => s.isDemoMode);
   const setQueueCounts = useAppModeStore((s) => s.setQueueCounts);
   const [now, setNow] = useState(() => Date.now());
   const [searchQuery, setSearchQuery] = useState('');
@@ -50,6 +51,12 @@ export const useTriageQueue = () => {
     const id = setInterval(() => setNow(Date.now()), TICK_MS);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!isDemoMode && store.syncFromBackend) {
+      store.syncFromBackend();
+    }
+  }, [isDemoMode, store.syncFromBackend]);
 
   // Auto-dismiss toast (4s)
   useEffect(() => {
@@ -192,7 +199,7 @@ export const useTriageQueue = () => {
     const registry = lookupPatient(phone.value || r.phone, r.patientName);
     
     // Dynamic doctors from Staff Directory (fallback to DOCTORS)
-    const staffMembers = (useStaffStore.getState && useStaffStore.getState().staffMembers) || [];
+    const staffMembers = (useStaffStore.getState && useStaffStore.getState().staffList) || [];
     const activeStaffDoctors = staffMembers
       .filter((s) => s.role === 'doctor' && s.isActive)
       .map((d) => ({ id: d.id, name: d.name, specialty: d.specialty }));

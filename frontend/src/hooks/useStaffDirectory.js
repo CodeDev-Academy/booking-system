@@ -1,16 +1,39 @@
-import { useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useStaffStore } from '../stores/useStaffStore';
+import { useAppModeStore } from '../stores/appModeStore';
+import { apiService } from '../services/apiService';
 
 const TOAST_TIMEOUT_MS = 4000;
 
 export const useStaffDirectory = () => {
   const store = useStaffStore();
+  const isDemoMode = useAppModeStore((s) => s.isDemoMode);
+  const [liveAnalytics, setLiveAnalytics] = useState(null);
 
   useEffect(() => {
     if (!store.toast) return undefined;
     const t = setTimeout(store.dismissToast, TOAST_TIMEOUT_MS);
     return () => clearTimeout(t);
   }, [store.toast, store.dismissToast]);
+
+  useEffect(() => {
+    if (isDemoMode) {
+      setLiveAnalytics(null);
+      return undefined;
+    }
+    let active = true;
+    apiService
+      .fetchAnalyticsSummary()
+      .then((data) => {
+        if (active && data) {
+          setLiveAnalytics(data);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [isDemoMode]);
 
   const {
     staffList,
@@ -57,10 +80,15 @@ export const useStaffDirectory = () => {
       doctorsActive,
       receptionistsCount,
       totalPatientsHandled,
-      attendanceRatePct: 97.4,
-      avgTriageVelocityMin: 3.8,
+      attendanceRatePct:
+        liveAnalytics?.attendanceRatePct !== undefined ? liveAnalytics.attendanceRatePct : 97.4,
+      avgTriageVelocityMin:
+        liveAnalytics?.avgTriageVelocityMin !== undefined && liveAnalytics.avgTriageVelocityMin > 0
+          ? liveAnalytics.avgTriageVelocityMin
+          : 3.8,
+      hourlyDistribution: liveAnalytics?.hourlyDistribution || null,
     };
-  }, [staffList]);
+  }, [staffList, liveAnalytics]);
 
   return {
     staffList: filteredStaff,

@@ -440,9 +440,15 @@ export const apiService = {
     return request('/doctors/workload/');
   },
 
-  async fetchCalendarSchedule(date = '', doctorId = '') {
+  async fetchCalendarSchedule(date = '', doctorId = '', endDate = '') {
     const params = new URLSearchParams();
-    if (date) params.append('date', date);
+    if (date) {
+      params.append('date', date);
+      params.append('start_date', date);
+    }
+    if (endDate) {
+      params.append('end_date', endDate);
+    }
     if (doctorId) params.append('doctor_id', doctorId);
     const query = params.toString();
     return request(`/calendar/schedule/${query ? `?${query}` : ''}`);
@@ -456,18 +462,35 @@ export const apiService = {
     let eventSource = null;
     let isClosed = false;
 
+    const handleIncomingEvent = (eventType, rawData) => {
+      if (isClosed) return;
+      try {
+        const parsed = JSON.parse(rawData);
+        if (onEvent) onEvent({ type: eventType || parsed.type || 'message', data: parsed, ...parsed });
+      } catch {
+        if (onEvent) onEvent({ type: eventType || 'heartbeat', raw: rawData });
+      }
+    };
+
     try {
       eventSource = new EventSource(sseUrl);
 
-      eventSource.onmessage = (event) => {
-        if (isClosed) return;
-        try {
-          const parsed = JSON.parse(event.data);
-          if (onEvent) onEvent(parsed);
-        } catch {
-          if (onEvent) onEvent({ type: 'heartbeat', raw: event.data });
-        }
-      };
+      eventSource.onmessage = (event) => handleIncomingEvent('message', event.data);
+
+      const namedEvents = [
+        'connected',
+        'request.created',
+        'offer.dispatched',
+        'slot.held',
+        'presence.reviewing',
+        'appointment.updated',
+        'calendar.slot_updated',
+      ];
+      namedEvents.forEach((evtName) => {
+        eventSource.addEventListener(evtName, (event) => {
+          handleIncomingEvent(evtName, event.data);
+        });
+      });
 
       eventSource.onerror = (err) => {
         if (isClosed) return;

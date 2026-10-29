@@ -1,10 +1,18 @@
 import { useEffect, useMemo } from 'react';
 import { useSettingsStore } from '../stores/useSettingsStore';
+import { useAppModeStore } from '../stores/appModeStore';
 
 const TOAST_TIMEOUT_MS = 4000;
 
 export const useClinicSettings = () => {
   const store = useSettingsStore();
+  const isDemoMode = useAppModeStore((s) => s.isDemoMode);
+
+  useEffect(() => {
+    if (!isDemoMode && store.syncFromBackend) {
+      store.syncFromBackend();
+    }
+  }, [isDemoMode, store.syncFromBackend]);
 
   useEffect(() => {
     if (!store.toast) return undefined;

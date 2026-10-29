@@ -19,6 +19,7 @@ from .serializers_booking import (
 )
 from .services.availability import AvailabilityEngine
 from .services.sse_bus import broadcast_event
+from .services.telegram_service import TelegramService
 
 
 def get_booking_or_404(identifier, for_update=False):
@@ -312,6 +313,23 @@ class DispatchOffersView(APIView):
             'offers_count': len(created_offers),
             'offer_expires_at': expires_at.isoformat(),
         })
+
+        # Auto-dispatch interactive buttons to patient on Telegram if request originated from Telegram
+        custom_cfg = getattr(booking, 'custom_config', None) or {}
+        chat_id = request.data.get('telegram_chat_id') or custom_cfg.get('telegram_chat_id')
+        notes_text = getattr(booking, 'patient_notes', '') or ''
+        if not chat_id and 'telegram_chat_id:' in notes_text:
+            try:
+                chat_id = notes_text.split('telegram_chat_id:')[1].split()[0].strip()
+            except Exception:
+                pass
+
+        if chat_id:
+            try:
+                tg_text, tg_markup = TelegramService.format_slot_offers(booking, created_offers, clinic)
+                TelegramService.send_message(chat_id, tg_text, tg_markup)
+            except Exception:
+                pass
 
         return Response({
             "detail": "Offers dispatched successfully.",
