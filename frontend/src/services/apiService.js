@@ -5,8 +5,15 @@
  * All endpoints adhere to /api/v1/ prefix and handle snake_case / camelCase translation.
  */
 
+const DEFAULT_PROD_API_URL = 'https://booking-system-3-iojp.onrender.com/api/v1';
+const isLocalhost =
+  typeof window !== 'undefined' &&
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+
 const API_BASE_URL =
-  import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+  import.meta.env.VITE_API_URL ||
+  import.meta.env.VITE_API_BASE_URL ||
+  (isLocalhost ? 'http://localhost:8000/api/v1' : DEFAULT_PROD_API_URL);
 
 /**
  * Standard fetch wrapper with JSON headers, error unwrapping, credentials,

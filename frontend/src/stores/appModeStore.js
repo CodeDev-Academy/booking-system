@@ -7,7 +7,10 @@ import { create } from 'zustand';
 const getInitialDemoMode = () => {
   if (typeof window === 'undefined') return true;
   const saved = localStorage.getItem('cedarcare_demo_mode');
-  return saved !== null ? saved === 'true' : true;
+  if (saved !== null) return saved === 'true';
+  const isLocal =
+    window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  return isLocal;
 };
 
 const getInitialHideSim = () => {
