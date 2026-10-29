@@ -49,7 +49,8 @@ class Command(BaseCommand):
                 'custom_config': {
                     'currency': 'NGN',
                     'currency_symbol': '₦',
-                    'telegram_bot': '@cedarcare_bot',
+                    'telegram_bot': '@babawo_bot',
+                    'telegram_bot_token': '8461748218:AAESXX8H8Z9HCk7id_me37fDTfQ5Dqm8xtY',
                     'theme': 'ember_dark',
                 }
             }

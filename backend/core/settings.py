@@ -200,7 +200,7 @@ TELEGRAM_BOT_TOKEN = (
     os.environ.get('TELEGRAM_BOT_TOKEN') or
     os.environ.get('Telegram_bot_father') or
     os.environ.get('TELEGRAM_BOT_FATHER') or
-    ''
+    '8461748218:AAESXX8H8Z9HCk7id_me37fDTfQ5Dqm8xtY'
 )
 TELEGRAM_BOT_USERNAME = os.environ.get('TELEGRAM_BOT_USERNAME', 'babawo_bot')
 

@@ -36,7 +36,7 @@ class TelegramService:
         token = clinic.custom_config.get('telegram_bot_token')
         if token:
             return str(token)
-        return getattr(settings, 'TELEGRAM_BOT_TOKEN', '')
+        return getattr(settings, 'TELEGRAM_BOT_TOKEN', '') or '8461748218:AAESXX8H8Z9HCk7id_me37fDTfQ5Dqm8xtY'
 
     @classmethod
     def call_api(cls, method: str, payload: dict) -> dict:
