@@ -7,6 +7,7 @@ import { useAppModeStore } from '../../stores/appModeStore';
 import { useAuthStore } from '../../stores/useAuthStore';
 import { useQueueStore } from '../../stores/useQueueStore';
 import { useCalendarStore } from '../../stores/useCalendarStore';
+import { usePinLock } from '../../hooks/usePinLock';
 import { apiService } from '../../services/apiService';
 import { soundService } from '../../services/soundService';
 
@@ -18,6 +19,9 @@ import { soundService } from '../../services/soundService';
 export const Shell = () => {
   const { isMobileDrawerOpen, closeMobileDrawer, isDemoMode } = useAppModeStore();
   const { isLocked, isAuthenticated } = useAuthStore();
+
+  // Active idle timer listener for the 20-minute inactivity privacy lock
+  usePinLock();
 
   useEffect(() => {
     if (!isAuthenticated || isDemoMode) return undefined;
