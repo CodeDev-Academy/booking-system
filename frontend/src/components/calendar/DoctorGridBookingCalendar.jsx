@@ -28,13 +28,9 @@ import {
 import { useCalendarStore } from '../../stores/useCalendarStore';
 import { useStaffStore } from '../../stores/useStaffStore';
 import { useAuthStore } from '../../stores/useAuthStore';
-import { useAppModeStore } from '../../stores/appModeStore';
 import '../../styles/components/grid-booking-calendar.css';
 
-const getInitialToday = () => {
-  const isDemo = useAppModeStore.getState().isDemoMode;
-  return isDemo ? new Date(2026, 9, 26) : new Date();
-};
+const getInitialToday = () => new Date();
 
 const MONTH_NAMES = [
   'January',

@@ -807,6 +807,37 @@ class Phase3BookingQueueTests(APITestCase):
         self.assertIn('telegram_payload', res.data)
         self.assertEqual(len(res.data['telegram_payload']['inline_keyboard']), 2)
 
+    def test_dispatch_offers_auto_computes_end_datetime(self):
+        """
+        Verify DispatchOffersView auto-computes end_datetime from service duration when omitted.
+        """
+        self.client.force_authenticate(user=self.receptionist)
+        req = BookingRequest.objects.create(
+            patient_name='Khadijah Sanusi',
+            patient_phone='+2348099990000',
+            service=self.service,
+            preferred_doctor=self.doctor,
+            status='awaiting_review',
+        )
+
+        slot_start = timezone.now() + datetime.timedelta(days=1, hours=2)
+        res = self.client.post(f'/api/v1/booking-requests/{req.request_code}/dispatch-offers/', {
+            'slots': [
+                {
+                    'doctor_id': str(self.doctor.id),
+                    'start_datetime': slot_start.isoformat(),
+                    # end_datetime intentionally omitted to test fallback
+                }
+            ]
+        }, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 'slots_offered')
+        offer = SlotOffer.objects.filter(request=req).first()
+        self.assertIsNotNone(offer)
+        expected_end = slot_start + datetime.timedelta(minutes=self.service.duration_minutes)
+        self.assertEqual(offer.end_datetime, expected_end)
+
     def test_front_desk_inquiry_dispatch_t307(self):
         """
         T-307: POST /api/v1/booking-requests/{id}/ask-info/ logs clarification inquiry
@@ -1406,9 +1437,15 @@ class Phase3RealtimeWebhookTests(APITestCase):
 
     def test_realtime_stream_connection_and_headers(self):
         """
-        GET /api/v1/realtime/events/?limit=1 connects to SSE stream,
-        returns text/event-stream with X-Accel-Buffering: no, and yields initial connected event.
+        SEC-01: GET /api/v1/realtime/events/?limit=1 requires staff authentication (401 on anonymous),
+        and upon authentication connects to SSE stream returning text/event-stream with X-Accel-Buffering: no.
         """
+        # 1. Anonymous connection rejected under SEC-01
+        anon_res = self.client.get('/api/v1/realtime/events/?limit=1')
+        self.assertEqual(anon_res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        # 2. Authenticated staff connects successfully
+        self.client.force_authenticate(user=self.receptionist)
         res = self.client.get('/api/v1/realtime/events/?limit=1')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res['Content-Type'], 'text/event-stream')

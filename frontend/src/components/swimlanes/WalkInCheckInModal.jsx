@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   X,
   UserPlus,
@@ -17,24 +17,28 @@ import { useSettingsStore } from '../../stores/useSettingsStore';
 import { getAllDoctors } from '../../services/slotEngine';
 
 export const WalkInCheckInModal = ({ isOpen, onClose, onCheckIn }) => {
-  if (!isOpen) return null;
+  // Reactively subscribe to raw services without unstable inline filter selectors
+  const storeServices = useSettingsStore((s) => s.services);
+  const availableServices = useMemo(() => {
+    const active = storeServices?.filter((srv) => srv.isActive !== false);
+    return active && active.length > 0 ? active : SERVICES;
+  }, [storeServices]);
 
-  // Reactively subscribe to dynamic services in Clinic Settings
-  const storeServices = useSettingsStore((s) => s.services?.filter((srv) => srv.isActive !== false));
-  const availableServices = storeServices && storeServices.length > 0 ? storeServices : SERVICES;
-  const availableDoctors = getAllDoctors();
+  const availableDoctors = useMemo(() => getAllDoctors(), []);
 
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
     patientType: 'new',
-    doctorId: availableDoctors[0]?.id || 'doc-bello',
-    serviceId: availableServices[0]?.id || 'svc-dental',
+    doctorId: 'doc-bello',
+    serviceId: 'svc-dental',
     gender: 'Female',
     dateOfBirth: '',
     isEmergency: false,
     notes: '',
   });
+
+  if (!isOpen) return null;
 
   const handleQuickDemoFill = () => {
     setFormData({

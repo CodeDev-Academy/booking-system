@@ -33,12 +33,12 @@ class TelegramService:
 
     @staticmethod
     def get_bot_token() -> str:
-        """Retrieves Telegram bot token from ClinicSetting or Django settings."""
+        """Retrieves Telegram bot token strictly from ClinicSetting or Django environment settings (SEC-03)."""
         clinic = ClinicSetting.get_settings()
         token = clinic.custom_config.get('telegram_bot_token')
         if token:
             return str(token)
-        return getattr(settings, 'TELEGRAM_BOT_TOKEN', '') or '8461748218:AAESXX8H8Z9HCk7id_me37fDTfQ5Dqm8xtY'
+        return str(getattr(settings, 'TELEGRAM_BOT_TOKEN', '') or '')
 
     @classmethod
     def call_api(cls, method: str, payload: dict) -> dict:
@@ -346,13 +346,59 @@ class TelegramService:
             # Case 5: Interactive Clinic Service Booking (book_svc_{service_id})
             elif callback_data.startswith(('book_svc_', 'book_svc:')):
                 svc_id = callback_data.replace('book_svc_', '').replace('book_svc:', '').strip()
-                return cls._handle_service_booking(
+                return cls._prompt_date_range(
                     service_id=svc_id,
                     callback_id=callback_id,
                     chat_id=chat_id,
-                    from_user=from_user,
+                    message_id=message_id,
                     clinic=clinic
                 )
+
+            # Case 5b: Date Range Selection in Telegram (tg_rng_{service_id}_{days})
+            elif callback_data.startswith('tg_rng_'):
+                parts = callback_data.split('_')
+                if len(parts) >= 4:
+                    svc_id, days = parts[2], parts[3]
+                    return cls._prompt_time_window(
+                        service_id=svc_id,
+                        days=days,
+                        callback_id=callback_id,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        clinic=clinic
+                    )
+
+            # Case 5c: Time Window Selection in Telegram (tg_win_{service_id}_{days}_{window})
+            elif callback_data.startswith('tg_win_'):
+                parts = callback_data.split('_')
+                if len(parts) >= 5:
+                    svc_id, days, window = parts[2], parts[3], parts[4]
+                    return cls._prompt_gender(
+                        service_id=svc_id,
+                        days=days,
+                        window=window,
+                        callback_id=callback_id,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        clinic=clinic
+                    )
+
+            # Case 5d: Finalize Telegram Intake with Gender (tg_gen_{service_id}_{days}_{window}_{gender})
+            elif callback_data.startswith('tg_gen_'):
+                parts = callback_data.split('_')
+                if len(parts) >= 6:
+                    svc_id, days, window, gender = parts[2], parts[3], parts[4], parts[5]
+                    return cls._finalize_booking(
+                        service_id=svc_id,
+                        days=int(days) if days.isdigit() else 14,
+                        window=window,
+                        gender=gender,
+                        callback_id=callback_id,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        from_user=from_user,
+                        clinic=clinic
+                    )
 
             # Fallback for unrecognized button callbacks
             cls.answer_callback_query(callback_id, text="Action received.")
@@ -546,6 +592,128 @@ class TelegramService:
         except (Appointment.DoesNotExist, ValueError):
             cls.answer_callback_query(callback_id, text="Appointment not found.", show_alert=True)
             return {'status': 'error'}
+
+    @classmethod
+    def _prompt_date_range(cls, service_id, callback_id, chat_id, message_id, clinic):
+        try:
+            service = Service.objects.get(id=service_id)
+        except (Service.DoesNotExist, ValueError):
+            cls.answer_callback_query(callback_id, text="Service not found.", show_alert=True)
+            return {'status': 'error'}
+
+        cls.answer_callback_query(callback_id, text="Select date range")
+        text = (
+            f"🩺 <b>Selected: {html.escape(service.name)}</b>\n\n"
+            f"🗓️ <b>What is your preferred date window?</b>\n"
+            f"Our scheduling engine scans doctor shifts within this range to find candidate times:"
+        )
+        keyboard = [
+            [{"text": "⚡ Next 7 Days", "callback_data": f"tg_rng_{service.id}_7"}],
+            [{"text": "📅 Next 14 Days", "callback_data": f"tg_rng_{service.id}_14"}],
+            [{"text": "🗓️ Next 30 Days", "callback_data": f"tg_rng_{service.id}_30"}],
+        ]
+        cls.send_message(chat_id, text, reply_markup={"inline_keyboard": keyboard})
+        return {'status': 'prompted_date_range'}
+
+    @classmethod
+    def _prompt_time_window(cls, service_id, days, callback_id, chat_id, message_id, clinic):
+        cls.answer_callback_query(callback_id, text="Select time of day")
+        text = (
+            f"⏰ <b>What time of day works best for your schedule?</b>"
+        )
+        keyboard = [
+            [{"text": "☀️ Morning (08:00 – 12:00)", "callback_data": f"tg_win_{service_id}_{days}_morning"}],
+            [{"text": "🌤️ Afternoon (13:00 – 17:00)", "callback_data": f"tg_win_{service_id}_{days}_afternoon"}],
+            [{"text": "🌙 Evening (16:00 – 18:00)", "callback_data": f"tg_win_{service_id}_{days}_evening"}],
+        ]
+        cls.send_message(chat_id, text, reply_markup={"inline_keyboard": keyboard})
+        return {'status': 'prompted_time_window'}
+
+    @classmethod
+    def _prompt_gender(cls, service_id, days, window, callback_id, chat_id, message_id, clinic):
+        cls.answer_callback_query(callback_id, text="Select gender")
+        text = (
+            f"👤 <b>For medical records and clinical triage, please select the patient's gender:</b>"
+        )
+        keyboard = [
+            [{"text": "👩 Female", "callback_data": f"tg_gen_{service_id}_{days}_{window}_Female"}],
+            [{"text": "👨 Male", "callback_data": f"tg_gen_{service_id}_{days}_{window}_Male"}],
+            [{"text": "⚧ Other / Neutral", "callback_data": f"tg_gen_{service_id}_{days}_{window}_Other"}],
+        ]
+        cls.send_message(chat_id, text, reply_markup={"inline_keyboard": keyboard})
+        return {'status': 'prompted_gender'}
+
+    @classmethod
+    def _finalize_booking(cls, service_id, days, window, gender, callback_id, chat_id, message_id, from_user, clinic):
+        try:
+            service = Service.objects.get(id=service_id)
+        except (Service.DoesNotExist, ValueError):
+            cls.answer_callback_query(callback_id, text="Service not found.", show_alert=True)
+            return {'status': 'error'}
+
+        first_name = (from_user.get('first_name') or '').strip()
+        last_name = (from_user.get('last_name') or '').strip()
+        patient_name = f"{first_name} {last_name}".strip()
+        if not patient_name:
+            patient_name = from_user.get('username') or 'Telegram Patient'
+
+        phone_suffix = str(chat_id)[-8:] if len(str(chat_id)) >= 8 else "001122"
+        patient_phone = f"+23480{phone_suffix}"
+
+        today = timezone.now().date()
+        start_date = today.isoformat()
+        end_date = (today + datetime.timedelta(days=int(days))).isoformat()
+
+        booking = BookingRequest.objects.create(
+            patient_name=patient_name,
+            patient_phone=patient_phone,
+            patient_type='new',
+            service=service,
+            gender=gender,
+            preferred_date_range={'start': start_date, 'end': end_date},
+            preferred_time_window=window,
+            channel='telegram',
+            status='awaiting_review',
+            patient_notes=f"Patient booked via Telegram @babawo_bot. Window: {window}, Gender: {gender}, Range: {start_date} to {end_date}. telegram_chat_id:{chat_id}",
+        )
+
+        AuditLog.objects.create(
+            entity_name='BookingRequest',
+            entity_id=booking.id,
+            action='TELEGRAM_REQUEST_CREATED',
+            performed_by=f"Telegram:{chat_id}",
+            changes={'service': service.name, 'patient_name': patient_name, 'request_code': booking.request_code}
+        )
+
+        broadcast_event('request.created', {
+            'id': str(booking.id),
+            'request_id': booking.request_code,
+            'patient_name': booking.patient_name,
+            'service': service.name,
+            'gender': gender,
+            'preferred_date_range': {'start': start_date, 'end': end_date},
+            'preferred_time_window': window,
+            'channel': 'telegram',
+            'created_at': booking.created_at.isoformat()
+        })
+
+        cls.answer_callback_query(callback_id, text="Booking submitted!")
+
+        confirm_msg = (
+            f"📋 <b>Booking Request Submitted!</b>\n\n"
+            f"Hello <b>{html.escape(patient_name)}</b>, our reception has received your appointment request:\n\n"
+            f"🩺 <b>Service:</b> {html.escape(service.name)}\n"
+            f"🗓️ <b>Date Range:</b> <code>{start_date}</code> &rarr; <code>{end_date}</code>\n"
+            f"⏰ <b>Preferred Window:</b> {window.capitalize()}\n"
+            f"👤 <b>Gender:</b> {gender}\n"
+            f"📌 <b>Request Code:</b> <code>{booking.request_code}</code>\n"
+            f"⏱️ <b>Status:</b> <i>Awaiting Front-Desk Review</i>\n\n"
+            f"Our front desk is reviewing doctor schedules right now. As soon as reception approves candidate times, "
+            f"you will receive interactive slot buttons right here in Telegram to lock in your visit!"
+        )
+        cls.send_message(chat_id, confirm_msg)
+
+        return {'status': 'booking_request_created', 'request_id': booking.request_code}
 
     @classmethod
     def _handle_service_booking(cls, service_id, callback_id, chat_id, from_user, clinic):

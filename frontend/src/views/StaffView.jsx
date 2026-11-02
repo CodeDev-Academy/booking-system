@@ -9,7 +9,6 @@ import {
   Filter,
   Search,
 } from 'lucide-react';
-import { useAppModeStore } from '../stores/appModeStore';
 import { useStaffDirectory } from '../hooks/useStaffDirectory';
 import { StaffRosterTable } from '../components/admin/StaffRosterTable';
 import { StaffEditModal } from '../components/admin/StaffEditModal';
@@ -25,7 +24,6 @@ import '../styles/components/calendar.css';
  * Pure presentational wiring connecting useStaffDirectory() hook to admin components.
  */
 export const StaffView = () => {
-  const { isDemoMode } = useAppModeStore();
   const {
     staffList,
     rawStaffCount,

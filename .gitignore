@@ -40,3 +40,11 @@ Desktop.ini
 *.sublime-project
 *.sublime-workspace
 .neon
+
+# Testing & Artifacts
+test-results/
+playwright-report/
+frontend/test-results/
+frontend/playwright-report/
+.system_generated/
+.agents/skills/security-audit/

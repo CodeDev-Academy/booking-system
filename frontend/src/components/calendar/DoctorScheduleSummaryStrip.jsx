@@ -11,7 +11,6 @@ import {
   FileText,
 } from 'lucide-react';
 import { useCalendarStore } from '../../stores/useCalendarStore';
-import { useAppModeStore } from '../../stores/appModeStore';
 import { DOCTORS } from '../../services/mockData';
 
 /**
@@ -21,7 +20,6 @@ import { DOCTORS } from '../../services/mockData';
  */
 export const DoctorScheduleSummaryStrip = ({ onSelectPatient }) => {
   const blocks = useCalendarStore((state) => state.blocks);
-  const isDemoMode = useAppModeStore((state) => state.isDemoMode);
   const [activeDoctorModal, setActiveDoctorModal] = useState(null);
 
   // Compute workload numbers for each doctor
@@ -33,13 +31,7 @@ export const DoctorScheduleSummaryStrip = ({ onSelectPatient }) => {
     const endOf7DaysTs = startOfTodayTs + 7 * 24 * 60 * 60 * 1000;
     const endOf14DaysTs = startOfTodayTs + 14 * 24 * 60 * 60 * 1000;
 
-    const baseSeed = {
-      'doc-bello': { baseToday: 4, baseWeek: 18, baseTwoWeeks: 32 },
-      'doc-okafor': { baseToday: 3, baseWeek: 14, baseTwoWeeks: 26 },
-    };
-
     return DOCTORS.map((doc) => {
-      const seed = baseSeed[doc.id] || { baseToday: 2, baseWeek: 10, baseTwoWeeks: 20 };
       const docAppts = (blocks || []).filter(
         (b) => b.doctorId === doc.id && (b.type === 'appointment' || b.appointmentId)
       );
@@ -56,13 +48,13 @@ export const DoctorScheduleSummaryStrip = ({ onSelectPatient }) => {
 
       return {
         ...doc,
-        todayCount: isDemoMode ? Math.max(seed.baseToday, dynamicToday) : dynamicToday,
-        weekCount: isDemoMode ? Math.max(seed.baseWeek, dynamicWeek) : dynamicWeek,
-        twoWeeksCount: isDemoMode ? Math.max(seed.baseTwoWeeks, dynamicTwoWeeks) : dynamicTwoWeeks,
+        todayCount: dynamicToday,
+        weekCount: dynamicWeek,
+        twoWeeksCount: dynamicTwoWeeks,
         appointments: docAppts,
       };
     });
-  }, [blocks, isDemoMode]);
+  }, [blocks]);
 
   return (
     <div className="doctor-schedule-summary-strip" style={{ marginBottom: '14px' }}>

@@ -17,14 +17,14 @@ import { soundService } from '../../services/soundService';
  * Hardened for HIPAA/NDPR: unmounts dashboard DOM tree when workstation is locked.
  */
 export const Shell = () => {
-  const { isMobileDrawerOpen, closeMobileDrawer, isDemoMode } = useAppModeStore();
+  const { isMobileDrawerOpen, closeMobileDrawer } = useAppModeStore();
   const { isLocked, isAuthenticated } = useAuthStore();
 
   // Active idle timer listener for the 20-minute inactivity privacy lock
   usePinLock();
 
   useEffect(() => {
-    if (!isAuthenticated || isDemoMode) return undefined;
+    if (!isAuthenticated) return undefined;
 
     const disconnect = apiService.connectEventStream((evt) => {
       if (!evt || !evt.type) return;
@@ -56,7 +56,7 @@ export const Shell = () => {
     return () => {
       if (disconnect) disconnect();
     };
-  }, [isAuthenticated, isDemoMode]);
+  }, [isAuthenticated]);
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;

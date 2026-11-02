@@ -41,8 +41,34 @@ export const getAllDoctors = () => {
 };
 
 export const getDoctor = (id) => {
+  if (!id) return DOCTORS[0];
   const all = getAllDoctors();
-  return all.find((d) => d.id === id) || DOCTORS.find((d) => d.id === id);
+  const direct = all.find((d) => d.id === id) || DOCTORS.find((d) => d.id === id);
+  if (direct) return direct;
+
+  // Check matching by lowercase or UUID substring or staffList
+  const staff = useStaffStore.getState()?.staffList || [];
+  const fromStaff = staff.find((s) => s.id === id || String(s.id).toLowerCase() === String(id).toLowerCase());
+  if (fromStaff) {
+    return {
+      id: fromStaff.id,
+      name: fromStaff.name,
+      specialty: fromStaff.specialty || 'General Practitioner',
+      shiftStartMin: 8 * 60,
+      shiftEndMin: 18 * 60,
+      serviceIds: ['svc-checkup', 'svc-dental', 'svc-extract'],
+    };
+  }
+
+  // Graceful fallback for backend doctors or custom clinicians
+  return {
+    id,
+    name: 'Consulting Doctor',
+    specialty: 'Clinical Specialist',
+    shiftStartMin: 8 * 60,
+    shiftEndMin: 18 * 60,
+    serviceIds: ['svc-checkup', 'svc-dental', 'svc-extract'],
+  };
 };
 
 export const doctorsForService = (serviceId) => {
@@ -75,13 +101,32 @@ export const validateSlot = (slot, busyBlocks) => {
   const startMin = d.getHours() * 60 + d.getMinutes();
 
   const bufferMin = slot.bufferMin !== undefined ? slot.bufferMin : 10;
-  if (!doctor || startMin < doctor.shiftStartMin || startMin + slot.durationMin + bufferMin > doctor.shiftEndMin) {
-    return {
-      ok: false,
-      code: 'OUT_OF_SHIFT',
-      message: `Outside ${doctor ? doctor.name : 'doctor'}'s shift hours (procedure + buffer)`,
-      nextSafeStart: null,
-    };
+  const shiftStartMin = doctor?.shiftStartMin ?? 8 * 60;
+  const shiftEndMin = doctor?.shiftEndMin ?? 18 * 60;
+
+  // For custom slots manually placed by receptionist, validate against doctor shift hours
+  if (slot.custom) {
+    if (startMin < shiftStartMin || startMin + slot.durationMin + bufferMin > shiftEndMin) {
+      return {
+        ok: false,
+        code: 'OUT_OF_SHIFT',
+        message: `Outside ${doctor ? doctor.name : 'doctor'}'s shift hours (procedure + buffer)`,
+        nextSafeStart: null,
+      };
+    }
+  } else {
+    // For automated candidate slots (from backend or local engine), only enforce clinic operating hours
+    // (08:00 - 18:00) as doctor shifts have already been vetted by the scheduling engine
+    const clinicStartMin = Math.min(shiftStartMin, 8 * 60);
+    const clinicEndMin = Math.max(shiftEndMin, 18 * 60);
+    if (startMin < clinicStartMin || startMin + slot.durationMin > clinicEndMin) {
+      return {
+        ok: false,
+        code: 'OUT_OF_SHIFT',
+        message: 'Outside clinic operating hours (08:00 - 18:00)',
+        nextSafeStart: null,
+      };
+    }
   }
 
   const blockEnd = slotBlockEnd(slot);

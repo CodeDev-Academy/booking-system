@@ -3,6 +3,7 @@ import datetime
 from django.utils import timezone
 from rest_framework import serializers
 from .models import Appointment, SlotOffer, BookingRequest, Doctor, Service, FollowUpTask
+from .serializers_booking import resolve_service_or_default, resolve_doctor_or_default, sanitize_phone_e164
 
 
 class SlotHoldRequestSerializer(serializers.Serializer):
@@ -12,8 +13,8 @@ class SlotHoldRequestSerializer(serializers.Serializer):
     """
     slot_offer_id = serializers.UUIDField(required=False, allow_null=True)
     request_id = serializers.CharField(required=False, allow_blank=True)
-    doctor_id = serializers.UUIDField(required=False, allow_null=True)
-    service_id = serializers.UUIDField(required=False, allow_null=True)
+    doctor_id = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    service_id = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     start_datetime = serializers.DateTimeField(required=False, allow_null=True)
     end_datetime = serializers.DateTimeField(required=False, allow_null=True)
     patient_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
@@ -55,24 +56,28 @@ class SlotHoldRequestSerializer(serializers.Serializer):
             name = attrs.get('patient_name')
             phone = attrs.get('patient_phone')
 
-            if not all([doc_id, srv_id, start_dt, end_dt, name, phone]):
+            if not all([doc_id, srv_id, start_dt, name, phone]):
                 raise serializers.ValidationError(
-                    "Either slot_offer_id or complete appointment details (doctor_id, service_id, start_datetime, end_datetime, patient_name, patient_phone) are required."
+                    "Either slot_offer_id or complete appointment details (doctor_id, service_id, start_datetime, patient_name, patient_phone) are required."
                 )
 
-            try:
-                attrs['doctor_obj'] = Doctor.objects.get(id=doc_id, is_active=True)
-            except Doctor.DoesNotExist:
+            doctor_obj = resolve_doctor_or_default(doc_id)
+            if not doctor_obj:
                 raise serializers.ValidationError({'doctor_id': 'Doctor does not exist or is inactive.'})
+            attrs['doctor_obj'] = doctor_obj
 
-            try:
-                attrs['service_obj'] = Service.objects.get(id=srv_id, is_active=True)
-            except Service.DoesNotExist:
+            service_obj = resolve_service_or_default(srv_id)
+            if not service_obj:
                 raise serializers.ValidationError({'service_id': 'Service does not exist or is inactive.'})
+            attrs['service_obj'] = service_obj
+
+            if not end_dt and start_dt:
+                end_dt = start_dt + datetime.timedelta(minutes=service_obj.duration_minutes)
 
             attrs['start_dt'] = start_dt
             attrs['end_dt'] = end_dt
-            attrs['name'] = name
+            attrs['name'] = name.strip()
+            attrs['phone'] = sanitize_phone_e164(phone)
             attrs['phone'] = phone
 
             # Optional request lookup

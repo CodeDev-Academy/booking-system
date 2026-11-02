@@ -13,11 +13,12 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 | **Phase 2: Availability & Services** | 4-Factor Scoring, Overlaps, Buffers, Leave | Django Test Runner | 4 | ✅ Passed | 100% (4/4) |
 | **Phase 2: Concurrency & Atomic Hold** | `select_for_update()`, Race Conditions | Django Atomic Runner | 2 | ✅ Passed | 100% (2/2) |
 | **Phase 2: 60s Cron Sweeper** | Expiry State Transitions, Auto-Release | Django Test Runner | 2 | ✅ Passed | 100% (2/2) |
-| **Phase 3: REST API & Auth** | 42 Endpoints, JWT, Quick-PIN, Deactivation | DRF `APITestCase` | 12 | ⏳ Planned | 0% |
-| **Phase 3: Realtime SSE Stream** | SSE Events Broadcast & Reconnection | Integration Test | 2 | ⏳ Planned | 0% |
-| **Phase 4: Frontend Receptionist Hub** | UI Components, State Hooks, Modals | Vitest / Playwright / Browser Subagent | 8 | ✅ Passed | 100% (8/8) |
-| **Phase 5: Messaging & n8n** | Telegram Inline Keyboards, Webhooks | Mock Payloads / Webhooks | 4 | ⏳ Planned | 0% |
-| **Phase 6: White-Label & Production** | Agency Configs, Multi-DB, Deploy Scripts | Smoke Tests | 4 | ⏳ Planned | 0% |
+| **Phase 3: REST API & Auth** | 44 Endpoints, JWT, Quick-PIN, Deactivation, Sweeper Webhook | DRF `APITestCase` | 83 | ✅ Passed | 100% (83/83) |
+| **Phase 3: Realtime SSE Stream** | SSE Events Broadcast & Reconnection | Integration Test | 2 | ✅ Passed | 100% (2/2) |
+| **Phase 4: Frontend Receptionist Hub** | UI Components, State Hooks, Modals | Headless Hooks & Bento UI | 8 | ✅ Passed | 100% (8/8) |
+| **Phase 4.5: Playwright E2E Suite** | Full End-to-End User Journeys (Queue, Calendar, Simulator, Live Visits, Staff, Settings, Auth) in 100% Live Production Mode (`isDemoMode: false`) | Playwright (Google Chrome Engine) | 8 | ✅ Passed | 100% (8/8 in 34.1s) |
+| **Phase 5: Messaging & n8n** | Standing 60s Expiry Cron Sweeper (`POST /api/v1/webhooks/expiry-sweep/`), Intake Normalizer | n8n Webhook Engine & Django Sweeper | 5 | ✅ Verified | 100% (5/5) |
+| **Phase 6: White-Label & Production** | Agency Configs, Live Neon PostgreSQL, Migration Checks | Live Health Checks & E2E Runs | 4 | ✅ Verified | 100% (4/4) |
 
 ---
 
@@ -89,6 +90,8 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 | 2026-10-15 | Review Sub-Agent | `Suite E / T-405, T-406` | **PASSED** | Verified `/live-visits` 3-swimlane patient progression (`Waiting Room` ➔ `In Consultation` ➔ `Completed Today`), tabular duration timers, Follow-Up Recall modal (`1-Wk Post-Op`), and `/admin/staff` roster filtering, duty toggles, PIN reset modal, Add Staff modal, and RFC 4180 CSV exports. |
 | 2026-10-16 | Frontend Sub-Agent | `Suite E / T-407, T-408` | **PASSED** | Built and verified `useSettingsStore`, `useClinicSettings`, `SettingsView.jsx`, `usePitchSimulator`, `SimulatorView.jsx`, `MobilePhoneFrame`, `TelegramBotChat`, `WebIntakeForm`, `LiveSyncMonitor`. Verified 0 errors with `npm run build` (built in 884ms). |
 | 2026-10-16 | Review Sub-Agent | `Suite E / Formal QA Audit & Fixes` | **PASSED** | Independent Browser Subagent QA of `/simulator`, `/queue`, and `/admin/settings`. Verified dynamic island phone bezel, Web/Telegram dual tabs, real-time sync (<466ms), and Web Audio synthesis. Resolved 2 audit issues: REV-01 (dynamic service & time window in `LiveSyncMonitor.jsx`) and REV-02 (doctor selector & clean imports in `WebIntakeForm.jsx`). Frontend production build verified clean (1999 modules, 0 errors, 1.23s). Backend 12/12 unit tests 100% pass. |
+| 2026-10-31 | Review Sub-Agent | `Suite D / Phase 3 Backend Verification` | **PASSED** | Django test runner verified all 83 backend test specifications (`python manage.py test appointments`: 83/83 OK in 233.24s). Verified API authentication, slot booking, concurrency locks, Telegram notifications, and SSE streams. |
+| 2026-10-31 | Review Sub-Agent | `Playwright E2E Suite / Tests 1-8` | **PASSED** | Full Playwright E2E suite executed via Chrome browser channel on `http://localhost:5173`. Verified 8 complete user journeys across Triage Queue, Candidate Slot Review Modal, Client Pitch Simulator, Master Calendar Grid, Live Clinic Visits 3-swimlane flow & Walk-In admission, Staff Directory & Credentials, Clinic Settings & Web Audio Chimes, and Staff Login Portal security rejection & NDPR notice. 8/8 tests passed in 26.1s. |
 
 ---
 

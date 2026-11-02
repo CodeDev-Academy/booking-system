@@ -213,6 +213,24 @@ export const useStaffStore = create(
     soundService.playChime();
   },
 
+  confirmResetPassword: (staffId, newPassword) => {
+    set((state) => ({
+      staffList: state.staffList.map((s) => (s.id === staffId ? { ...s, password: newPassword } : s)),
+      toast: {
+        tone: 'success',
+        text: `Password for ${get().staffList.find((s) => s.id === staffId)?.name || 'staff'} successfully updated.`,
+      },
+    }));
+
+    if (!useAppModeStore.getState().isDemoMode) {
+      apiService.resetStaffPassword(staffId, newPassword).catch((err) => {
+        console.warn('Backend resetPassword failed:', err);
+      });
+    }
+
+    soundService.playChime();
+  },
+
   // 1-Click Deactivation with Immediate 401 Session Revocation
   toggleStaffActive: (staffId) => {
     const currentLoggedStaff = useAuthStore.getState().currentStaff;
@@ -300,10 +318,19 @@ export const useStaffStore = create(
       },
     }));
 
-    if (!useAppModeStore.getState().isDemoMode && !isDoc) {
-      apiService.createStaff(newStaffData).catch((err) => {
-        console.warn('Backend createStaff failed:', err);
-      });
+    if (!useAppModeStore.getState().isDemoMode) {
+      apiService
+        .createStaff(newStaffData)
+        .then((res) => {
+          if (res && res.id) {
+            set((state) => ({
+              staffList: state.staffList.map((s) => (s.id === newStaff.id ? { ...s, id: res.id } : s)),
+            }));
+          }
+        })
+        .catch((err) => {
+          console.warn('Backend createStaff failed:', err);
+        });
     }
 
     if (isDoc) {

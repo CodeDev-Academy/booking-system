@@ -15,7 +15,6 @@ import {
   MapPin,
   ShieldCheck,
 } from 'lucide-react';
-import { formatNaira } from '../../services/mockData';
 import { getDoctor, getService } from '../../services/slotEngine';
 import { formatDayLabel, formatTime } from '../../services/timeUtils';
 
@@ -26,6 +25,7 @@ export const WebIntakeForm = ({
   doctorsList,
   onUpdateForm,
   onApplyPreset,
+  onApplyDateRangePreset,
   onSubmit,
   isSubmitting,
   activeRequest,
@@ -180,7 +180,7 @@ export const WebIntakeForm = ({
         {/* 3 Selectable Candidate Slot Cards */}
         <div className="slots-candidate-stack">
           {offeredSlots.map((slot, index) => {
-            const doc = getDoctor(slot.doctorId);
+            const doc = (doctorsList && doctorsList.find((d) => d.id === slot.doctorId)) || getDoctor(slot.doctorId);
             const svc = activeRequest ? getService(activeRequest.serviceId) : null;
             return (
               <div
@@ -261,6 +261,15 @@ export const WebIntakeForm = ({
               <span className="ws-label">Preferred Window:</span>
               <span className="ws-val text-capitalize">{activeRequest.timeWindow}</span>
             </div>
+            {(activeRequest.startDate || activeRequest.preferredDateRange?.start) && (
+              <div className="waiting-summary-row">
+                <span className="ws-label">Date Range:</span>
+                <span className="ws-val tabular-nums" style={{ color: 'var(--amber-text)' }}>
+                  {activeRequest.startDate || activeRequest.preferredDateRange?.start} &rarr;{' '}
+                  {activeRequest.endDate || activeRequest.preferredDateRange?.end}
+                </span>
+              </div>
+            )}
           </div>
 
           <div className="waiting-tip-banner">
@@ -287,27 +296,6 @@ export const WebIntakeForm = ({
         </p>
       </div>
 
-      {/* Rapid Demo Preset Shortcuts */}
-      <div className="demo-preset-strip">
-        <span className="preset-label">Pitch Presets:</span>
-        <button
-          type="button"
-          className="btn-preset-pill"
-          onClick={() => onApplyPreset('amina')}
-          title="Fill Amina Yusuf (Dental, Returning)"
-        >
-          ✨ Amina (Dental)
-        </button>
-        <button
-          type="button"
-          className="btn-preset-pill"
-          onClick={() => onApplyPreset('tunde')}
-          title="Fill Tunde Musa (Check-up, New)"
-        >
-          ✨ Tunde (Check-up)
-        </button>
-      </div>
-
       {/* Step 1: Treatment Selection */}
       <div className="mobile-section">
         <div className="mobile-section-header">
@@ -325,9 +313,6 @@ export const WebIntakeForm = ({
               >
                 <div className="service-card-main">
                   <span className="service-card-name">{svc.name}</span>
-                  <span className="service-card-price tabular-nums">
-                    {formatNaira(svc.priceNgn)}
-                  </span>
                 </div>
                 <div className="service-card-meta">
                   <span className="meta-pill">
@@ -379,10 +364,94 @@ export const WebIntakeForm = ({
         </div>
       </div>
 
-      {/* Step 3: Patient Information */}
+      {/* Step 3: Preferred Date Range (Custom Range Engine) */}
       <div className="mobile-section">
         <div className="mobile-section-header">
           <span className="step-num-pill">3</span>
+          <span className="section-label">Preferred Date Range</span>
+        </div>
+
+        <p style={{ fontSize: '11px', color: 'var(--text-3)', lineHeight: 1.4, margin: '2px 0 8px 0' }}>
+          Select your availability range (e.g. Nov 10 – Nov 25). Our automated engine scans doctor shifts to find the 3 optimal slots.
+        </p>
+
+        {/* Quick Range Presets */}
+        <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
+          <button
+            type="button"
+            className="btn-preset-pill"
+            style={{ flex: 1, textAlign: 'center', justifyContent: 'center', fontSize: '10px' }}
+            onClick={() => onApplyDateRangePreset && onApplyDateRangePreset(7)}
+          >
+            ⚡ Next 7 Days
+          </button>
+          <button
+            type="button"
+            className="btn-preset-pill"
+            style={{ flex: 1, textAlign: 'center', justifyContent: 'center', fontSize: '10px' }}
+            onClick={() => onApplyDateRangePreset && onApplyDateRangePreset(14)}
+          >
+            📅 Next 14 Days
+          </button>
+          <button
+            type="button"
+            className="btn-preset-pill"
+            style={{ flex: 1, textAlign: 'center', justifyContent: 'center', fontSize: '10px' }}
+            onClick={() => onApplyDateRangePreset && onApplyDateRangePreset(30)}
+          >
+            🗓️ 30 Days
+          </button>
+        </div>
+
+        {/* Start Date & End Date Inputs */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+          <div className="mobile-input-group" style={{ marginBottom: 0 }}>
+            <label className="mobile-field-label" style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              From Date
+            </label>
+            <div className="mobile-input-box">
+              <Calendar size={13} color="var(--amber)" />
+              <input
+                id="input-start-date"
+                type="date"
+                className="mobile-input tabular-nums"
+                value={webForm.startDate || ''}
+                min={new Date().toISOString().split('T')[0]}
+                onChange={(e) => onUpdateForm('startDate', e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="mobile-input-group" style={{ marginBottom: 0 }}>
+            <label className="mobile-field-label" style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              To Date
+            </label>
+            <div className="mobile-input-box">
+              <Calendar size={13} color="var(--amber)" />
+              <input
+                id="input-end-date"
+                type="date"
+                className="mobile-input tabular-nums"
+                value={webForm.endDate || ''}
+                min={webForm.startDate || new Date().toISOString().split('T')[0]}
+                onChange={(e) => onUpdateForm('endDate', e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+
+        {webForm.startDate && webForm.endDate && (
+          <div style={{ marginTop: '7px', fontSize: '11px', color: 'var(--amber-text)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <Sparkles size={11} color="var(--amber)" />
+            <span>Scanning Window: <strong>{webForm.startDate}</strong> &rarr; <strong>{webForm.endDate}</strong></span>
+          </div>
+        )}
+      </div>
+
+      {/* Step 4: Patient Information */}
+      <div className="mobile-section">
+        <div className="mobile-section-header">
+          <span className="step-num-pill">4</span>
           <span className="section-label">Your Details</span>
         </div>
 
@@ -391,6 +460,7 @@ export const WebIntakeForm = ({
           <div className="mobile-input-box">
             <User size={13} color="var(--text-3)" />
             <input
+              id="input-patient-name"
               type="text"
               className="mobile-input"
               value={webForm.patientName}

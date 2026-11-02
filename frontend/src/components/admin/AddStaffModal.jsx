@@ -48,10 +48,18 @@ export const AddStaffModal = ({
 
   if (!isOpen) return null;
 
-  const isDoctor =
-    role.toLowerCase().includes('doctor') ||
-    role.toLowerCase().includes('physician') ||
-    role.toLowerCase() === 'doc';
+  const CLINICIAN_KEYWORDS = [
+    'doctor',
+    'physician',
+    'doc',
+    'surgeon',
+    'dentist',
+    'consultant',
+    'officer',
+    'practitioner',
+    'specialist',
+  ];
+  const isDoctor = CLINICIAN_KEYWORDS.some((kw) => role.toLowerCase().includes(kw));
 
   const handleAddNewRole = () => {
     const trimmed = newRoleInput.trim();

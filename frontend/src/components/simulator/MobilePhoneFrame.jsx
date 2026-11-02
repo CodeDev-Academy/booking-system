@@ -12,6 +12,7 @@ export const MobilePhoneFrame = ({
   doctorsList,
   onUpdateWebForm,
   onApplyPreset,
+  onApplyDateRangePreset,
   onSubmitWeb,
   activeRequest,
   offeredSlots,
@@ -76,6 +77,7 @@ export const MobilePhoneFrame = ({
               doctorsList={doctorsList}
               onUpdateForm={onUpdateWebForm}
               onApplyPreset={onApplyPreset}
+              onApplyDateRangePreset={onApplyDateRangePreset}
               onSubmit={onSubmitWeb}
               isSubmitting={isSubmitting}
               activeRequest={activeRequest}

@@ -3,33 +3,31 @@ import { create } from 'zustand';
 /**
  * AppModeStore — Headless Logic Layer for Application & Session State
  * Governed by strict Separation of Concerns: zero JSX, pure state management.
+ * PERMANENT PRODUCTION STATE: isDemoMode is strictly FALSE (100% Live Django REST API + Postgres).
  */
 const getInitialDemoMode = () => {
-  if (typeof window === 'undefined') return true;
-  const saved = localStorage.getItem('cedarcare_demo_mode');
-  if (saved !== null) return saved === 'true';
-  const isLocal =
-    window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-  return isLocal;
+  if (typeof window !== 'undefined') {
+    localStorage.setItem('cedarcare_demo_mode', 'false');
+  }
+  return false;
 };
 
 const getInitialHideSim = () => {
-  if (typeof window === 'undefined') return false;
+  if (typeof window !== 'undefined') return false;
   return localStorage.getItem('cedarcare_hide_simulator') === 'true';
 };
 
 export const useAppModeStore = create((set) => ({
-  // Mode switch: Standalone Mock Demo vs Live Django REST API
-  isDemoMode: getInitialDemoMode(),
-  toggleDemoMode: () =>
-    set((state) => {
-      const next = !state.isDemoMode;
-      if (typeof window !== 'undefined') localStorage.setItem('cedarcare_demo_mode', String(next));
-      return { isDemoMode: next };
-    }),
-  setDemoMode: (isDemo) => {
-    if (typeof window !== 'undefined') localStorage.setItem('cedarcare_demo_mode', String(isDemo));
-    set({ isDemoMode: isDemo });
+  // Production Mode: 100% Live REST API & PostgreSQL Database (Zero Mock Mode)
+  isDemoMode: false,
+  toggleDemoMode: () => {
+    // Demo mode disabled: system is permanently in Live Production Mode
+    if (typeof window !== 'undefined') localStorage.setItem('cedarcare_demo_mode', 'false');
+    set({ isDemoMode: false });
+  },
+  setDemoMode: () => {
+    if (typeof window !== 'undefined') localStorage.setItem('cedarcare_demo_mode', 'false');
+    set({ isDemoMode: false });
   },
 
   // Client Handover Mode (Hide Pitch Simulator from navigation)

@@ -6,7 +6,7 @@ from django.conf import settings
 from django.contrib.auth.hashers import make_password, check_password
 from rest_framework import status, views, response
 from rest_framework.permissions import AllowAny
-from .models import StaffUser, AuditLog, Doctor
+from .models import StaffUser, AuditLog, Doctor, Service, DoctorService
 from .authentication import StaffRefreshToken
 from .permissions import IsStaffAuthenticated, IsClinicAdmin
 from .serializers import (
@@ -297,6 +297,64 @@ class AdminStaffListCreateView(views.APIView):
         return response.Response(StaffUserSerializer(staff_qs, many=True).data)
 
     def post(self, request):
+        role = str(request.data.get('role', 'receptionist')).lower().strip()
+        if role == 'doctor':
+            name = (request.data.get('full_name') or request.data.get('name') or '').strip()
+            if not name:
+                return response.Response({'name': 'Doctor name is required.'}, status=status.HTTP_400_BAD_REQUEST)
+            email = (request.data.get('email') or '').strip()
+            specialty = (request.data.get('specialty') or 'General Practice').strip()
+
+            # Parse shift times if available (e.g. "08:00 - 16:00")
+            shift_start_val = datetime.time(8, 0)
+            shift_end_val = datetime.time(16, 0)
+            shift_str = request.data.get('shift', '')
+            if '-' in shift_str:
+                parts = shift_str.split('-')
+                try:
+                    s_h = int(parts[0].strip().split(':')[0])
+                    shift_start_val = datetime.time(s_h, 0)
+                    e_h = int(parts[1].strip().split(':')[0])
+                    shift_end_val = datetime.time(e_h, 0)
+                except Exception:
+                    pass
+
+            doc = Doctor.objects.create(
+                name=name,
+                email=email,
+                specialty=specialty,
+                working_days=[1, 2, 3, 4, 5],
+                shift_start=shift_start_val,
+                shift_end=shift_end_val,
+                max_daily_appointments=12,
+                is_active=True
+            )
+            # Auto-assign doctor to active clinic services so they are immediately bookable
+            for svc in Service.objects.filter(is_active=True):
+                DoctorService.objects.get_or_create(doctor=doc, service=svc)
+
+            AuditLog.objects.create(
+                entity_name='Doctor',
+                entity_id=doc.id,
+                action='ADMIN_DOCTOR_CREATED',
+                performed_by=getattr(request.user, 'email', 'admin'),
+                changes={'email': doc.email, 'name': doc.name, 'specialty': doc.specialty},
+                ip_address=request.META.get('REMOTE_ADDR')
+            )
+
+            return response.Response({
+                'id': str(doc.id),
+                'full_name': doc.name,
+                'name': doc.name,
+                'email': doc.email,
+                'role': 'doctor',
+                'role_label': 'Clinical Doctor',
+                'specialty': doc.specialty,
+                'shift': f"{doc.shift_start.strftime('%H:%M')} – {doc.shift_end.strftime('%H:%M')}",
+                'is_active': doc.is_active,
+                'created_at': doc.created_at.isoformat()
+            }, status=status.HTTP_201_CREATED)
+
         serializer = StaffCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         staff = serializer.save()
@@ -305,7 +363,7 @@ class AdminStaffListCreateView(views.APIView):
             entity_name='StaffUser',
             entity_id=staff.id,
             action='ADMIN_STAFF_CREATED',
-            performed_by=request.user.email,
+            performed_by=getattr(request.user, 'email', 'admin'),
             changes={'email': staff.email, 'role': staff.role},
             ip_address=request.META.get('REMOTE_ADDR')
         )

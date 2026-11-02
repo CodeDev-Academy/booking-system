@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Zap, Plus, MessageSquare, Rocket, ShieldCheck, ShieldAlert, Phone, AlertCircle } from 'lucide-react';
+import { X, Zap, Plus, MessageSquare, Rocket, ShieldCheck, ShieldAlert, Phone, AlertCircle, Calendar } from 'lucide-react';
 import { PatientDossier } from './PatientDossier';
 import { CandidateSlotCard } from './CandidateSlotCard';
 import { AskInfoPanel } from './AskInfoPanel';
@@ -13,14 +13,27 @@ export const ReviewModal = ({ review, actions }) => {
   const [customTime, setCustomTime] = useState('');
   const [selectedSlotIds, setSelectedSlotIds] = useState([]);
 
-  // Auto-select conflict-free slots whenever slots change for this request
+  const lastRequestIdRef = React.useRef(null);
+
+  // Auto-select conflict-free slots on initial open or when slots first arrive without clobbering user selection
   React.useEffect(() => {
-    if (review && Array.isArray(review.slots) && review.slots.length > 0) {
-      setSelectedSlotIds(review.slots.filter((s) => s.ok).map((s) => s.id));
-    } else {
+    if (!review) {
       setSelectedSlotIds([]);
+      lastRequestIdRef.current = null;
+      return;
     }
-  }, [review?.id, review?.slots?.length]);
+
+    if (review.id !== lastRequestIdRef.current) {
+      lastRequestIdRef.current = review.id;
+      const okSlots = Array.isArray(review.slots) ? review.slots.filter((s) => s.ok).map((s) => s.id) : [];
+      setSelectedSlotIds(okSlots);
+    } else if (selectedSlotIds.length === 0 && Array.isArray(review.slots) && review.slots.length > 0) {
+      const okSlots = review.slots.filter((s) => s.ok).map((s) => s.id);
+      if (okSlots.length > 0) {
+        setSelectedSlotIds(okSlots);
+      }
+    }
+  }, [review?.id, review?.slots]);
 
   if (!review) return null;
 
@@ -270,6 +283,32 @@ export const ReviewModal = ({ review, actions }) => {
                 </select>
               </div>
             </div>
+
+            {/* Patient Requested Date Range Banner */}
+            {review.dateRangeDisplay && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  marginTop: '8px',
+                  padding: '6px 10px',
+                  borderRadius: '6px',
+                  background: 'rgba(255, 181, 71, 0.08)',
+                  border: '1px solid rgba(255, 181, 71, 0.25)',
+                  fontSize: '11px',
+                  color: 'var(--amber-text)',
+                }}
+              >
+                <Calendar size={13} color="var(--amber)" />
+                <span>
+                  Requested Date Range:{' '}
+                  <strong className="tabular-nums" style={{ color: 'var(--text-1)' }}>
+                    {review.dateRangeDisplay}
+                  </strong>
+                </span>
+              </div>
+            )}
           </section>
 
           {/* RIGHT — candidate slots */}

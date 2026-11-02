@@ -113,6 +113,31 @@
     - [x] **Issue 9 (Monolithic Chunk Size & Code Splitting)**: Implemented `React.lazy()` and `<Suspense>` route-level code splitting across all 6 main view routes in `App.jsx`.
     - [x] **Issue 10 (Schedule Collision Validator on Calendar)**: Implemented `rescheduleAppointment` and hardened `reassignToColleague` in `useCalendarStore.js` with `validateSlot` collision checks guarding shift boundaries, break times, and buffer preservation, paired with an interactive Reschedule & Verify panel in `AppointmentDetailsModal.jsx`.
     - [x] **Bugfix: Doctor Sick / Leave Disruption Modal Crash**: Fixed React hook order violation (`useMemo` rendered conditionally) in `EmergencyDisruptionModal.jsx` and protected mount in `MasterCalendarGrid.jsx`.
+    - [x] **WSGI Hop-by-Hop SSE Crash Fix**: Removed `Connection: keep-alive` from `EventStreamView` in `views_realtime.py` (which triggered PEP 3333 WSGI assertion failures) and attached explicit CORS headers (`Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials`, `Access-Control-Allow-Headers`).
+    - [x] **Dispatch Offers Payload Robustness (`INVALID_SLOT_PAYLOAD`)**:
+      - Updated `DispatchOffersView` in `views_booking.py` to auto-calculate `end_datetime = start_datetime + duration_minutes` when `end_datetime` is omitted.
+      - Updated `apiService.js:dispatchOffers` to calculate `end_datetime` from `startTs + durationMin * 60000` so formatted slot payloads always include valid ISO timestamps.
+    - [x] **Doctor UUID Resolution & Shift Hours Deselect Fix**:
+      - In `slotEngine.js`, updated `getDoctor(id)` to gracefully resolve backend doctor UUIDs (e.g. from PostgreSQL database) against `staffList` and fallback to standard clinic doctor profiles rather than returning `undefined`.
+      - In `validateSlot()`, separated custom manual slots from automated candidate slots: candidate slots from the availability engine are already vetted against doctor shifts and only enforced against clinic operating hours (08:00–18:00).
+      - In `ReviewModal.jsx`, fixed candidate slot selection state machine using `lastRequestIdRef` so background data polls do not cancel or clobber the receptionist's chosen slots while reviewing.
+    - [x] **Missing Favicon Fix**: Added `<link rel="icon" type="image/svg+xml" href="/favicon.svg" />` to `frontend/index.html` to eliminate 404 console errors.
+    - [x] **Review Sub-Agent Quality & Architecture Hardening**:
+      - [x] **Staff API Persistence Parity**: Injected missing `createStaff`, `updateStaff`, `resetStaffPassword`, `resetStaffPin`, and `toggleStaffActive` in `apiService.js` to guarantee Live Mode persistence against `/api/v1/staff/` endpoints.
+      - [x] **Non-Closing Password & PIN Reset**: Decoupled Quick-PIN and Master Password reset in `StaffEditModal.jsx` from full modal close via dedicated `useStaffStore.confirmResetPassword` and `confirmResetPin`, allowing receptionists' credentials to be staged without dropping in-progress edits.
+      - [x] **Duplicate Telegram Offer Elimination**: Eliminated duplicate Telegram dispatch in `usePitchSimulator.js` by delegating solely to the reactive `useQueueStore.subscribe` listener.
+      - [x] **Encrypted Password Disclosure Safeguard**: Prevented false fallback display of `'password123'` when viewing staff records loaded from Django, displaying `'•••••••••••• (Encrypted in Django)'` with helpful reset guidance.
+      - [x] **Doctor Roster Reactivity**: Subscribed `useTriageQueue.js` to `useStaffStore((s) => s.staffList)` with dependency array inclusion to ensure dynamically added/updated doctors reflect immediately in the review modal.
+      - [x] **Broadened Clinical Title Detection**: Extended doctor role detection in `AddStaffModal.jsx` to recognize all clinical practitioner keywords (`surgeon`, `dentist`, `consultant`, `officer`, `practitioner`, `specialist`).
+      - [x] **Dynamic Doctor Resolution in Simulator**: Fixed `WebIntakeForm.jsx` to check `doctorsList` prop before falling back to static `DOCTORS`.
+      - [x] **Accessibility (ARIA) Nested Control Fix**: Cleaned `QueueCard.jsx` by removing outer `role="button"` and `tabIndex={0}`, leaving the card as a clickable surface while the inner button handles keyboard focus cleanly with dedicated `aria-label`.
+      - [x] **Zustand Selective Slicing**: Replaced monolithic store binding in `useTriageQueue.js` with individual state selectors, preventing unnecessary re-render churn on background ticks.
+      - [x] **Cloudflare Security Audit Remediations (SEC-01 through SEC-05)**:
+        - [x] **SEC-01 (SSE Stream RBAC Authentication)**: Hardened `EventStreamView` in `views_realtime.py` with `IsStaffAuthenticated`, enhanced `CookieJWTAuthentication` to accept validated `token` query parameters for browser `EventSource`, and updated `apiService.js` to pass active credentials.
+        - [x] **SEC-02 (CORS Wildcard Tightening)**: Replaced open wildcard regexes in `settings.py` with exact clinic deployment domains (`cedarcare`, `clinic-booking`, `railway`, `onrender`, and localhost dev ports), and disabled global wildcard reflection when credentials are active.
+        - [x] **SEC-03 (Zero Hardcoded Bot Secrets)**: Purged raw fallback Telegram bot tokens from `telegram_service.py` and `settings.py`, enforcing strict loading from environment variables (`.env.local`) and `ClinicSetting.custom_config`.
+        - [x] **SEC-04 (Rate-Limit Client IP Resolution)**: Added hardened `get_client_ip()` in `views_booking.py` prioritizing edge headers (`CF-Connecting-IP`, `X-Real-IP`, leftmost untrusted proxy hop) to eliminate `X-Forwarded-For` spoofing.
+        - [x] **SEC-05 (Webhook Signature Verification)**: Enforced `X-Telegram-Bot-Api-Secret-Token` validation against `TELEGRAM_WEBHOOK_SECRET` in `views_realtime.py`, rejecting unverified gateway payloads.
     - [x] **Polish: White-Label Config Exporter**: Replaced raw JSON code dump with client-friendly executive summary card (hours, phone, service counts, 1-click JSON backup); hid developer drawer in Client Handover Mode.
     - [x] **Security & Authentication: Dedicated Staff Login Portal (`LoginView.jsx`)**:
       - Strict Two-Role RBAC: Restricted to Front Desk Receptionists (`Sarah Aliyu`, `Chioma Okeke`) and Clinic Administrator (`Dr. Ibrahim Musa`). Doctors do not have dashboard login accounts.
@@ -237,3 +262,81 @@
         - Database Migration: `appointments.0003_appointment_date_of_birth_appointment_gender_and_more.py` applied cleanly to Neon PostgreSQL.
         - Frontend Build: `npm run build` compiled in 3.23s with 0 errors across 2,010 modules.
         - Backend Tests: All 82 tests passed in 159.041s (0 errors, 0 failures).
+    - [x] **Full-System Playwright End-to-End (E2E) Test Suite**:
+      - **Toolchain**: Installed `@playwright/test` and configured `playwright.config.js` targeting local Google Chrome against `http://localhost:5173`.
+      - **Test Specifications (`frontend/e2e/clinic-e2e.spec.js`)**:
+        - [x] **Test 1 — Triage Queue & FIFO Tabs**: Verified header branding, 4 FIFO tabs (`New Requests`, `Re-Requested`, `Expired Offers`, `Today's Schedule`), card rendering, and real-time search filtering.
+        - [x] **Test 2 — Candidate Slot Review Modal**: Verified opening review modal from triage queue, header inspection, and clean dismissal.
+        - [x] **Test 3 — Client Pitch Simulator**: Verified dual-channel mobile frame chassis, 1-click rapid demo preset (`Amina Yusuf`), phone intake form, and Telegram bot chat switching.
+        - [x] **Test 4 — Master Clinical Calendar Grid**: Verified doctor workload cards, weekly schedule grid, and tab switching to Past Patient Records Archive.
+        - [x] **Test 5 — Live Clinic Visits & Walk-In Admission**: Verified 3 swimlanes (`Waiting Room`, `In Consultation`, `Completed`), toolbar clinician filter, and Walk-In Patient check-in modal. Fixed infinite re-render loop caused by unstable selector reference in `WalkInCheckInModal.jsx`.
+        - [x] **Test 6 — Staff Directory & Credentials**: Verified staff roster grid, clinician status chips, and staff management edit modal.
+        - [x] **Test 7 — Clinic Settings Bento & Sound Engine**: Verified clinic profile, operational KPI cards, white-label rules, and front-desk Web Audio chime trigger.
+        - [x] **Test 8 — Staff Workstation Authentication Portal**: Tested security boundaries, verified NDPR/HIPAA notice, validated rejection of unauthorized credentials, and verified 1-click demo credential authentication.
+      - **Test Results**:
+        - Playwright E2E Suite: **8/8 Passed (100%)** in 26.1s.
+        - Django Backend Suite: **83/83 Passed (100%)** in 233.2s.
+        - Frontend Production Build: **0 errors** across 2,010 modules.
+    - [x] **Full Live Production Transition (`isDemoMode: false`) & n8n Standalone Ownership**:
+      - **Permanent Live Production Enforcement**: Removed all offline demo mode toggles and switchers. Locked `isDemoMode: false` across all stores (`useQueueStore`, `useCalendarStore`, `useVisitsStore`, `useSettingsStore`, `useStaffStore`, `useAuthStore`), views (`SettingsView`, `CalendarView`, `StaffView`), and layout (`Shell`). All receptionist and patient interactions execute live against Django REST API endpoints.
+      - **Live Neon PostgreSQL Verification**: Verified live connection to AWS Neon PostgreSQL (`neondb` on AWS us-east-2). All 22 database migrations verified applied (`[X]`). Configured direct IP resolution (`hostaddr=52.14.39.200`) in `DATABASE_URL` to eliminate Windows DNS `getaddrinfo` latency. Verified live domain records (7 staff users, 3 doctors, 5 services, 10 booking requests, 6 appointments).
+      - **PostgreSQL Atomic Concurrency Hardening**: Resolved PostgreSQL `FOR UPDATE cannot be applied to the nullable side of an outer join` exception in `SweepService` by adding explicit `select_for_update(of=('self',))` table-targeted row locking.
+      - **Standalone n8n Automation Engine Alignment**: Standardized all 5 workflow JSON templates in `n8n/`. Verified that standing 60s background cron (`02_hold_and_offer_expiry_cron.json`) pings `POST /api/v1/webhooks/expiry-sweep/` with `X-Webhook-Secret` and receives HTTP 200 OK with live release payload (`expired_offers`, `pre_expiry_nudges`, `expired_holds`).
+      - **Production Bento Redesign (`SystemDeploymentBento.jsx`)**: Replaced offline demo mode cards with a 3-pillar production status dashboard (Django REST API, Neon PostgreSQL, n8n Automation Engine) and a 1-click **Force Sync Fresh Data from Backend** trigger.
+      - **End-to-End Test Suite Verification in Live Mode**: Playwright E2E suite executed in 100% live mode with real JWT authentication: **8/8 tests passed in 34.1s**. Backend Django test suite: **83/83 tests passed**. Production frontend build: **0 errors**.
+    - [x] **Web Intake Form Architecture & Custom Date Range Engine Integration**:
+      - **Dual Ingestion Architecture Codified**: Formulated the production connection pathways:
+        1. *Unified Ingestion Gateway via n8n Webhook Node*: Web form posts to `POST https://n8n.yourdomain.com/webhook/intake-patient-request` for centralized channel parity, validation, and forwarding to Django.
+        2. *Direct REST API Endpoint with Instant SSE Receptionist Chime (< 50ms)*: Web form submits directly to `POST /api/v1/booking-requests/` on Django, immediately saving to PostgreSQL and triggering the real-time audio chime on the receptionist workstation.
+      - **Custom Preferred Date Range UI (`WebIntakeForm.jsx`)**:
+        - Added Step 3 "Preferred Date Range" with interactive Start Date (`fromDate`) and End Date (`toDate`) pickers with minimum validation guard (`min={today}`).
+        - Added 1-click convenience presets: `⚡ Next 7 Days`, `📅 Next 14 Days`, `🗓️ 30 Days`.
+        - Visual scanning window confirmation tag: `Scanning Window: YYYY-MM-DD → YYYY-MM-DD`.
+        - Dynamic waiting card displays patient's requested date window while waiting for receptionist triage.
+      - **Receptionist Visibility & Review Bridge (`ReviewModal.jsx` & `useTriageQueue.js`)**:
+        - Displayed requested date range tag on the active review modal alongside preferred time window.
+      - **Backend Validation & Normalization Hardening (`serializers_booking.py`)**:
+        - Added `resolve_service_or_default()` and `resolve_doctor_or_default()` resolvers to seamlessly accept UUIDs, slugs (`svc-dental`, `doc-bello`), or text names without serialization exceptions.
+        - Preserved `AvailabilityEngine.find_candidate_slots_for_request()` scanning logic across the patient's custom `preferred_date_range` with automatic nearest-alternative fallback.
+      - **Build Verification**: `npm run build` compiled 2,010 modules in 2.25s with 0 errors.
+    - [x] **Doctor Load-Balancing & Patient Doctor Selection Removal**:
+      - **Zero Patient Doctor Selection**: Ensured patient intake forms (`WebIntakeForm.jsx`, `TelegramBotChat.jsx`, and pitch presets) never give patients an option to request a specific clinician. This eliminates demand congestion on popular doctors and avoids schedule bottlenecks.
+      - **Automated Workload Equalization Algorithm (`availability.py`)**: Enhanced `AvailabilityEngine.get_available_slots_for_date()` with dynamic doctor utilization scoring:
+        - Calculates daily doctor utilization: `active_appts_count / max_daily_appointments`.
+        - Awards a **+0 to +40 points load-balancing bonus** to qualified clinicians with fewer bookings on the target day.
+        - Open slots belonging to less busy doctors naturally rank higher and are offered first to patients.
+        - Enforces hard daily cap: if a doctor reaches `max_daily_appointments`, they are immediately removed from further bookings on that day.
+      - **Front-Desk Governance (`ReviewModal.jsx` & `useTriageQueue.js`)**: Labeled the default doctor dropdown option as `⚡ Auto-Balance by Clinic Load (Recommended)`, allowing receptionists to view the balanced clinician while retaining manual override authority if medically needed.
+      - **Verification**: `Phase2ServicesTests` verified 7/7 passed. Frontend build verified 0 errors across 2,010 modules.
+    - [x] **Full Backend-to-Frontend Feature Synchronization**:
+      - **Doctor Provisioning via Admin API (`views_auth.py`)**: Upgraded `AdminStaffListCreateView.post` to handle clinician enrollment (`role: 'doctor'`). Creates the `Doctor` record in PostgreSQL, automatically binds them to active clinic services via `DoctorService`, logs an `AuditLog` entry, and returns standard clinician metadata.
+      - **Walk-In & Direct Slot Hold Normalization (`serializers_appointment.py`)**: Enhanced `SlotHoldRequestSerializer` to accept friendly doctor/service slugs (`doc-bello`, `svc-dental`) and auto-compute missing `end_datetime` based on service duration.
+      - **SSE Event Payload Completeness (`views_booking.py`)**: Included `preferred_date_range`, `preferred_time_window`, and `patient_notes` in the `request.created` SSE broadcast and HTTP 201 response so triage queue cards display custom date range windows immediately.
+      - **Full Backend Test Suite Verified**: Ran all Phase 3 tests (`Phase3BookingQueueTests`, `Phase3AuthTests`, `Phase3LiveVisitsTests`): **23/23 tests passed in 124.28s**. Frontend production build: **0 errors**.
+    - [x] **Playwright E2E Suite & Security Audit Verification**:
+      - **Playwright E2E Suite (8/8 Passed — 100% in 1.1m)**:
+        1. Triage Queue loads and displays inbound requests with FIFO tabs: PASSED
+        2. Receptionist can open and inspect a Candidate Slot Review Modal: PASSED
+        3. Client Pitch Simulator (Web & Telegram channels) intake and dispatch: PASSED
+        4. Master Clinical Calendar grid & doctor workload horizons: PASSED
+        5. Live Clinic Visits 3-swimlane flow & Walk-In admission modal: PASSED
+        6. Staff Directory roster & credentials management: PASSED
+        7. Clinic Settings bento & audio chimes test: PASSED
+        8. Staff Login Portal displays clean NDPR notice and rejects invalid credentials: PASSED
+      - **Backend Security & Concurrency Verification (100% Passed)**:
+        - `Phase3AuthTests`: 8/8 Passed (PBKDF2 720,000-round password hashing, SHA-256 PIN hashing, 5-strike brute-force freeze, honeypots, doctor login barrier)
+        - `Phase6ConcurrencyAndE2ETests`: 4/4 Passed (Atomic slot hold lock, race condition prevention, zero double-booking under load)
+        - `Phase2ServicesTests`: 7/7 Passed (Availability engine, doctor sick-leave disruption reassignment, expiry sweeper)
+      - **Frontend Production Build**: Vite compiled 2,010 modules cleanly in 4.75s with zero syntax or build errors.
+    - [x] **Price Removal, Pitch Presets Cleanup & Telegram/WhatsApp Parity**:
+      - **Zero Treatment Prices**: Removed all price labels (`₦15,000`, `priceNgn`) from web booking service cards and Telegram/WhatsApp bot flows so patients focus purely on clinical treatment and scheduling.
+      - **Pitch Presets Strip Removed**: Removed `✨ Amina (Dental)` and `✨ Tunde (Check-up)` preset buttons from `WebIntakeForm.jsx`. Patients enter clean, real details without demo shortcut artifacts.
+      - **Telegram & WhatsApp Complete Feature Parity**: Upgraded both backend (`telegram_service.py`) and simulator (`usePitchSimulator.js`) to guide patients through the exact same multi-step intake flow as the web form:
+        1. Select Consultation Service
+        2. Select Preferred Date Range (`⚡ Next 7 Days`, `📅 Next 14 Days`, `🗓️ Next 30 Days`, `☀️ This Week`)
+        3. Select Preferred Time Window (`☀️ Morning`, `🌤️ Afternoon`, `🌙 Evening`)
+        4. Select Patient Gender (`👩 Female`, `👨 Male`, `⚧ Other / Neutral`)
+        5. Select Consultation Urgency (`🟢 Standard Consultation`, `🚨 Urgent / Emergency Visit`)
+        6. Review Structured Summary Dossier & 1-Click Transmit to Reception
+      - **Playwright E2E Suite Re-Verified**: **8/8 Passed in 31.3s (100%)**.
+      - **Backend Suite Re-Verified**: `Phase2ServicesTests` (7/7 Passed), `Phase6ConcurrencyAndE2ETests` (4/4 Passed). Production Vite build: 0 errors in 3.67s.

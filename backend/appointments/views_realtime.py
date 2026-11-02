@@ -3,6 +3,7 @@ import datetime
 import secrets
 from django.utils import timezone
 from django.core.cache import cache
+from django.conf import settings
 from django.http import StreamingHttpResponse
 from django.db import transaction, IntegrityError
 from rest_framework.views import APIView
@@ -15,6 +16,7 @@ from .permissions import IsStaffAuthenticated
 from rest_framework.renderers import BaseRenderer, JSONRenderer
 from .services.sse_bus import bus, broadcast_event, sse_event_stream
 from .services.telegram_service import TelegramService
+from .services.sweep_service import SweepService
 from .serializers_realtime import PresenceUpdateSerializer, InboundWebhookSerializer
 
 
@@ -30,9 +32,10 @@ class EventStreamView(APIView):
     """
     GET /api/v1/realtime/stream/ & /api/v1/realtime/events/
     Server-Sent Events endpoint streaming real-time clinic updates.
-    Implements anti-buffering headers (X-Accel-Buffering: no) and 15s heartbeats.
+    Implements anti-buffering headers (X-Accel-Buffering: no), 15s heartbeats,
+    and strict staff-authenticated RBAC (SEC-01).
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsStaffAuthenticated]
     renderer_classes = [ServerSentEventRenderer, JSONRenderer]
 
     def get(self, request):
@@ -56,7 +59,15 @@ class EventStreamView(APIView):
         response = StreamingHttpResponse(stream_gen, content_type='text/event-stream')
         response['Cache-Control'] = 'no-cache, no-transform'
         response['X-Accel-Buffering'] = 'no'
-        response['Connection'] = 'keep-alive'
+        # Note: Do NOT set hop-by-hop 'Connection: keep-alive' under WSGI (PEP 3333 assertion)
+
+        # Explicit CORS headers for EventSource / SSE streaming
+        origin = request.META.get('HTTP_ORIGIN')
+        if origin:
+            response['Access-Control-Allow-Origin'] = origin
+            response['Access-Control-Allow-Credentials'] = 'true'
+            response['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, X-Requested-With, Accept'
+
         return response
 
 
@@ -119,8 +130,11 @@ class InboundWebhookView(APIView):
     def post(self, request):
         clinic = ClinicSetting.get_settings()
 
-        # 1. Telegram Webhook Secret Token Verification (Risk EC-7)
-        expected_tg_token = clinic.custom_config.get('telegram_secret_token')
+        # 1. Telegram Webhook Secret Token Verification (SEC-05)
+        expected_tg_token = (
+            clinic.custom_config.get('telegram_secret_token') or
+            getattr(settings, 'TELEGRAM_WEBHOOK_SECRET', '')
+        )
         received_tg_token = request.META.get('HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN')
         if expected_tg_token:
             if not received_tg_token or not secrets.compare_digest(str(expected_tg_token), str(received_tg_token)):
@@ -182,4 +196,28 @@ class InboundWebhookView(APIView):
             resp_data["telegram_result"] = telegram_result
 
         return Response(resp_data, status=status.HTTP_200_OK)
+
+
+class ExpirySweepWebhookView(APIView):
+    """
+    POST /api/v1/webhooks/expiry-sweep/
+    Triggered by n8n 60s cron (02_hold_and_offer_expiry_cron.json) or external scheduler.
+    Performs batch transitions for expired offers & expired holds.
+    Guarded by X-Webhook-Secret.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        secret = request.headers.get('X-Webhook-Secret') or request.META.get('HTTP_X_WEBHOOK_SECRET')
+        clinic = ClinicSetting.get_settings()
+        expected = (
+            clinic.custom_config.get('webhook_secret') or
+            getattr(settings, 'WEBHOOK_SECRET', 'clinic_dev_secret_2026')
+        )
+        if not secret or not secrets.compare_digest(str(secret), str(expected)):
+            return Response({'error': 'INVALID_WEBHOOK_SECRET'}, status=status.HTTP_403_FORBIDDEN)
+
+        actor = f"n8n:{request.data.get('triggered_by', 'cron_sweeper')}"
+        sweep_result = SweepService.run_sweep(performed_by=actor)
+        return Response(sweep_result, status=status.HTTP_200_OK)
 

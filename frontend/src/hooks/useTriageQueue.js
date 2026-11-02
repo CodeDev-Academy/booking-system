@@ -41,7 +41,18 @@ const reliabilityTone = (pct) => (pct >= 90 ? 'success' : pct >= 70 ? 'amber' : 
  * Owns ticking clock, tab filtering, aging math, phone normalization, slot validation.
  */
 export const useTriageQueue = () => {
-  const store = useQueueStore();
+  const requests = useQueueStore((s) => s.requests);
+  const appointments = useQueueStore((s) => s.appointments);
+  const activeTab = useQueueStore((s) => s.activeTab);
+  const selectedId = useQueueStore((s) => s.selectedId);
+  const slotsByRequest = useQueueStore((s) => s.slotsByRequest);
+  const busyBlocks = useQueueStore((s) => s.busyBlocks);
+  const infoPanelOpen = useQueueStore((s) => s.infoPanelOpen);
+  const toast = useQueueStore((s) => s.toast);
+  const syncFromBackend = useQueueStore((s) => s.syncFromBackend);
+  const dismissToast = useQueueStore((s) => s.dismissToast);
+
+  const staffList = useStaffStore((s) => s.staffList);
   const isDemoMode = useAppModeStore((s) => s.isDemoMode);
   const setQueueCounts = useAppModeStore((s) => s.setQueueCounts);
   const [now, setNow] = useState(() => Date.now());
@@ -53,24 +64,22 @@ export const useTriageQueue = () => {
   }, []);
 
   useEffect(() => {
-    if (isDemoMode || !store.syncFromBackend) return undefined;
+    if (isDemoMode || !syncFromBackend) return undefined;
     // Initial fetch on mount
-    store.syncFromBackend();
+    syncFromBackend();
     // Safety polling guard every 10 seconds to auto-reflect new Telegram requests
     const pollId = setInterval(() => {
-      store.syncFromBackend();
+      syncFromBackend();
     }, 10000);
     return () => clearInterval(pollId);
-  }, [isDemoMode, store.syncFromBackend]);
+  }, [isDemoMode, syncFromBackend]);
 
   // Auto-dismiss toast (4s)
   useEffect(() => {
-    if (!store.toast) return undefined;
-    const id = setTimeout(store.dismissToast, TOAST_MS);
+    if (!toast) return undefined;
+    const id = setTimeout(dismissToast, TOAST_MS);
     return () => clearTimeout(id);
-  }, [store.toast, store.dismissToast]);
-
-  const { requests, appointments, activeTab } = store;
+  }, [toast, dismissToast]);
 
   const buckets = useMemo(() => {
     const awaiting = requests.filter((r) => r.status === 'awaiting_review');
@@ -195,7 +204,7 @@ export const useTriageQueue = () => {
   }, [selectedTodayAppointmentId, appointments]);
 
   // ---------- Review modal view model ----------
-  const selectedRequest = requests.find((r) => r.id === store.selectedId) || null;
+  const selectedRequest = requests.find((r) => r.id === selectedId) || null;
 
   const review = useMemo(() => {
     if (!selectedRequest) return null;
@@ -204,8 +213,7 @@ export const useTriageQueue = () => {
     const registry = lookupPatient(phone.value || r.phone, r.patientName);
     
     // Dynamic doctors from Staff Directory (fallback to DOCTORS)
-    const staffMembers = (useStaffStore.getState && useStaffStore.getState().staffList) || [];
-    const activeStaffDoctors = staffMembers
+    const activeStaffDoctors = (staffList || [])
       .filter((s) => s.role === 'doctor' && s.isActive)
       .map((d) => ({ id: d.id, name: d.name, specialty: d.specialty }));
     const dynamicDoctors = activeStaffDoctors.length > 0 ? activeStaffDoctors : DOCTORS;
@@ -216,11 +224,11 @@ export const useTriageQueue = () => {
       ? (r.customService || { id: 'custom', name: 'Custom Procedure', durationMin: 30, bufferMin: 10 })
       : getService(r.serviceId);
 
-    const rawSlots = store.slotsByRequest[r.id];
+    const rawSlots = slotsByRequest[r.id];
     const hasChecked = Array.isArray(rawSlots);
 
     const slots = (rawSlots || []).map((s) => {
-      const validation = validateSlot(s, store.busyBlocks);
+      const validation = validateSlot(s, busyBlocks);
       const doctor = getDoctor(s.doctorId) || dynamicDoctors.find((d) => d.id === s.doctorId);
       return {
         id: s.id,
@@ -275,15 +283,20 @@ export const useTriageQueue = () => {
       serviceSummary: service ? `${service.durationMin}m + ${service.bufferMin}m buffer` : '',
       doctorId: r.preferredDoctorId || '',
       timeWindow: r.timeWindow,
+      startDate: r.startDate || r.preferredDateRange?.start || r.preferred_date_range?.start || null,
+      endDate: r.endDate || r.preferredDateRange?.end || r.preferred_date_range?.end || null,
+      dateRangeDisplay: (r.startDate || r.preferredDateRange?.start || r.preferred_date_range?.start)
+        ? `${r.startDate || r.preferredDateRange?.start || r.preferred_date_range?.start} → ${r.endDate || r.preferredDateRange?.end || r.preferred_date_range?.end}`
+        : null,
       channel: r.channel,
       serviceOptions: SERVICES.map((s) => ({ id: s.id, name: s.name })),
-      doctorOptions: [{ id: '', name: 'Any available doctor' }, ...dynamicDoctors.map((d) => ({ id: d.id, name: d.name }))],
+      doctorOptions: [{ id: '', name: '⚡ Auto-Balance by Clinic Load (Recommended)' }, ...dynamicDoctors.map((d) => ({ id: d.id, name: d.name }))],
       windowOptions: Object.entries(TIME_WINDOWS).map(([id, w]) => ({ id, name: w.label })),
       slots,
       hasChecked,
       collisions,
       gridIncrementMin: CLINIC_RULES.gridIncrementMin,
-      infoPanelOpen: store.infoPanelOpen,
+      infoPanelOpen,
       infoPrompts: INFO_PROMPTS,
       offerExpiryMin: CLINIC_RULES.offerExpiryMin,
       canDispatch: phone.valid && slots.length > 0 && collisions === 0,
@@ -295,43 +308,43 @@ export const useTriageQueue = () => {
             ? `${collisions} slot${collisions > 1 ? 's' : ''} blocked by the Double-Booking Shield`
             : '',
     };
-  }, [selectedRequest, store.slotsByRequest, store.busyBlocks, store.infoPanelOpen]);
+  }, [selectedRequest, slotsByRequest, busyBlocks, infoPanelOpen, staffList]);
 
   // ---------- Handlers (stable, passed down as props) ----------
   const updateField = useCallback(
-    (patch) => selectedRequest && store.updateRequestField(selectedRequest.id, patch),
-    [selectedRequest, store]
+    (patch) => selectedRequest && useQueueStore.getState().updateRequestField(selectedRequest.id, patch),
+    [selectedRequest]
   );
 
   const actions = {
-    setActiveTab: store.setActiveTab,
-    openRequest: store.openRequest,
-    closeRequest: store.closeRequest,
+    setActiveTab: (tab) => useQueueStore.getState().setActiveTab(tab),
+    openRequest: (id) => useQueueStore.getState().openRequest(id),
+    closeRequest: () => useQueueStore.getState().closeRequest(),
     updateField,
-    checkSlots: () => selectedRequest && store.checkSlots(selectedRequest.id),
+    checkSlots: () => selectedRequest && useQueueStore.getState().checkSlots(selectedRequest.id),
     swapDoctor: (slotId, doctorId) =>
-      selectedRequest && store.patchSlot(selectedRequest.id, slotId, { doctorId }),
+      selectedRequest && useQueueStore.getState().patchSlot(selectedRequest.id, slotId, { doctorId }),
     nudgeSlot: (slotId, deltaMin) =>
-      selectedRequest && store.nudgeSlot(selectedRequest.id, slotId, deltaMin),
+      selectedRequest && useQueueStore.getState().nudgeSlot(selectedRequest.id, slotId, deltaMin),
     setSlotTime: (slotId, value) => {
       const ts = fromDatetimeLocal(value);
-      if (selectedRequest && !Number.isNaN(ts)) store.patchSlot(selectedRequest.id, slotId, { start: ts });
+      if (selectedRequest && !Number.isNaN(ts)) useQueueStore.getState().patchSlot(selectedRequest.id, slotId, { start: ts });
     },
     snapSlot: (slotId, nextSafeStart) =>
-      selectedRequest && nextSafeStart && store.patchSlot(selectedRequest.id, slotId, { start: nextSafeStart }),
-    removeSlot: (slotId) => selectedRequest && store.removeSlot(selectedRequest.id, slotId),
+      selectedRequest && nextSafeStart && useQueueStore.getState().patchSlot(selectedRequest.id, slotId, { start: nextSafeStart }),
+    removeSlot: (slotId) => selectedRequest && useQueueStore.getState().removeSlot(selectedRequest.id, slotId),
     addCustomSlot: (doctorId, datetimeValue) =>
-      selectedRequest && store.addCustomSlot(selectedRequest.id, doctorId, fromDatetimeLocal(datetimeValue)),
-    toggleInfoPanel: store.toggleInfoPanel,
-    sendInfoRequest: (message) => selectedRequest && store.sendInfoRequest(selectedRequest.id, message),
+      selectedRequest && useQueueStore.getState().addCustomSlot(selectedRequest.id, doctorId, fromDatetimeLocal(datetimeValue)),
+    toggleInfoPanel: () => useQueueStore.getState().toggleInfoPanel(),
+    sendInfoRequest: (message) => selectedRequest && useQueueStore.getState().sendInfoRequest(selectedRequest.id, message),
     dispatchOffers: (selectedSlotIds = null) =>
-      selectedRequest && review && review.canDispatch && store.dispatchOffers(selectedRequest.id, selectedSlotIds),
+      selectedRequest && review && review.canDispatch && useQueueStore.getState().dispatchOffers(selectedRequest.id, selectedSlotIds),
     confirmSingleSlot: (slotId) =>
-      selectedRequest && store.confirmSingleSlot({ requestId: selectedRequest.id, slotId }),
+      selectedRequest && useQueueStore.getState().confirmSingleSlot({ requestId: selectedRequest.id, slotId }),
     openTodayAppointment: (id) => setSelectedTodayAppointmentId(id),
     closeTodayAppointment: () => setSelectedTodayAppointmentId(null),
     setSearchQuery,
-    dismissToast: store.dismissToast,
+    dismissToast,
   };
 
   return {
@@ -342,7 +355,7 @@ export const useTriageQueue = () => {
     todayRows,
     selectedTodayAppointment,
     review,
-    toast: store.toast,
+    toast,
     actions,
   };
 };

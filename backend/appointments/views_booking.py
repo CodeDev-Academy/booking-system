@@ -1,5 +1,7 @@
+import os
 import uuid
 import datetime
+import json
 import logging
 from django.utils import timezone
 from django.core.cache import cache
@@ -36,6 +38,28 @@ def get_booking_or_404(identifier, for_update=False):
         return get_object_or_404(qs, id=val)
     except (ValueError, AttributeError):
         return get_object_or_404(qs, request_code=identifier)
+
+
+def get_client_ip(request):
+    """
+    SEC-04: Robust client IP extraction for rate-limiting.
+    Prioritizes edge ingress headers (CF-Connecting-IP, X-Real-IP) before X-Forwarded-For / REMOTE_ADDR.
+    """
+    cf_ip = request.META.get('HTTP_CF_CONNECTING_IP')
+    if cf_ip:
+        return cf_ip.strip()
+
+    real_ip = request.META.get('HTTP_X_REAL_IP')
+    if real_ip:
+        return real_ip.strip()
+
+    forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    if forwarded_for:
+        parts = [ip.strip() for ip in forwarded_for.split(',') if ip.strip()]
+        if parts:
+            return parts[0]
+
+    return request.META.get('REMOTE_ADDR', '127.0.0.1')
 
 
 def resolve_doctor_or_default(doctor_id):
@@ -92,10 +116,8 @@ class BookingRequestListCreateView(APIView):
                 "detail": "Request received.",
             }, status=status.HTTP_201_CREATED)
 
-        # 2. IP-Based Rate Limiting (5 requests per 10 minutes)
-        client_ip = request.META.get('HTTP_X_FORWARDED_FOR', request.META.get('REMOTE_ADDR', '127.0.0.1'))
-        if client_ip and ',' in client_ip:
-            client_ip = client_ip.split(',')[0].strip()
+        # 2. IP-Based Rate Limiting (5 requests per 10 minutes, hardened via SEC-04)
+        client_ip = get_client_ip(request)
 
         rate_limit_key = f"rate_limit_booking_{client_ip}"
         current_attempts = cache.get(rate_limit_key, 0)
@@ -163,6 +185,9 @@ class BookingRequestListCreateView(APIView):
             'service_name': booking.service.name,
             'channel': booking.channel,
             'patient_type': booking.patient_type,
+            'preferred_date_range': booking.preferred_date_range or {},
+            'preferred_time_window': booking.preferred_time_window,
+            'patient_notes': booking.patient_notes,
             'date_of_birth': str(booking.date_of_birth) if booking.date_of_birth else None,
             'gender': booking.gender,
             'is_emergency': booking.is_emergency,
@@ -177,6 +202,9 @@ class BookingRequestListCreateView(APIView):
             "patient_name": booking.patient_name,
             "patient_phone": booking.patient_phone,
             "patient_type": booking.patient_type,
+            "preferred_date_range": booking.preferred_date_range or {},
+            "preferred_time_window": booking.preferred_time_window,
+            "patient_notes": booking.patient_notes,
             "date_of_birth": str(booking.date_of_birth) if booking.date_of_birth else None,
             "gender": booking.gender,
             "is_emergency": booking.is_emergency,
@@ -268,10 +296,14 @@ class DispatchOffersView(APIView):
                         'detail': f'Could not resolve doctor for ID {doctor_id}'
                     }, status=status.HTTP_404_NOT_FOUND)
                 try:
-                    if not s.get('start_datetime') or not s.get('end_datetime'):
-                        raise ValueError("start_datetime and end_datetime are required fields.")
+                    if not s.get('start_datetime'):
+                        raise ValueError("start_datetime is a required field.")
                     start_dt = datetime.datetime.fromisoformat(s['start_datetime'])
-                    end_dt = datetime.datetime.fromisoformat(s['end_datetime'])
+                    if s.get('end_datetime'):
+                        end_dt = datetime.datetime.fromisoformat(s['end_datetime'])
+                    else:
+                        duration = booking.service.duration_minutes if booking.service else 30
+                        end_dt = start_dt + datetime.timedelta(minutes=duration)
                 except (KeyError, ValueError, TypeError) as err:
                     return Response({
                         'error': 'INVALID_SLOT_PAYLOAD',
@@ -370,6 +402,30 @@ class DispatchOffersView(APIView):
             except Exception as tg_err:
                 logger.error("Failed to send slot offers to Telegram chat %s: %s", chat_id, tg_err, exc_info=True)
 
+        # Forward to n8n Slot Offer Dispatcher Webhook (05_slot_offer_dispatcher.json) if configured
+        n8n_dispatch_url = os.environ.get('N8N_DISPATCH_WEBHOOK_URL') or custom_cfg.get('n8n_dispatch_url')
+        if n8n_dispatch_url:
+            try:
+                import urllib.request
+                n8n_payload = json.dumps({
+                    'request_id': booking.request_code,
+                    'patient_name': booking.patient_name,
+                    'patient_phone': booking.patient_phone,
+                    'service_name': booking.service.name if booking.service else 'Consultation',
+                    'telegram_chat_id': chat_id,
+                    'channel': booking.channel,
+                    'candidate_slots': SlotOfferSerializer(created_offers, many=True).data,
+                }).encode('utf-8')
+                n8n_req = urllib.request.Request(
+                    n8n_dispatch_url,
+                    data=n8n_payload,
+                    headers={'Content-Type': 'application/json'}
+                )
+                urllib.request.urlopen(n8n_req, timeout=3)
+                logger.info("Successfully notified n8n dispatch webhook for request %s", booking.request_code)
+            except Exception as n8n_err:
+                logger.warning("n8n dispatch webhook notification failed: %s", n8n_err)
+
         return Response({
             "detail": "Offers dispatched successfully.",
             "request_id": booking.request_code,
@@ -422,4 +478,40 @@ class AskInfoView(APIView):
             "request_id": booking.request_code,
             "prompt_code": prompt_code,
             "patient_notes": booking.patient_notes,
+        }, status=status.HTTP_200_OK)
+
+
+class BookingRequestReRequestView(APIView):
+    """
+    POST /api/v1/booking-requests/{id}/re-request/
+    Triggered when patient requests fresh available times after previous offer expiration.
+    Places request into receptionist priority Re-Requested tab and broadcasts SSE event.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, id):
+        booking = get_booking_or_404(id)
+        booking.status = 're_requested'
+        booking.save(update_fields=['status', 'updated_at'])
+
+        actor = request.data.get('re_requested_by', 'patient_channel')
+        AuditLog.objects.create(
+            entity_name='BookingRequest',
+            entity_id=booking.id,
+            action='PATIENT_RE_REQUESTED_TIMES',
+            performed_by=str(actor),
+            changes={'status': 're_requested'},
+            ip_address=get_client_ip(request)
+        )
+
+        broadcast_event('request.re_requested', {
+            'request_id': booking.request_code,
+            'patient_name': booking.patient_name,
+            'status': 're_requested'
+        })
+
+        return Response({
+            'status': 're_requested',
+            'detail': 'Request placed in receptionist priority Re-Requested tab.',
+            'request_id': booking.request_code
         }, status=status.HTTP_200_OK)

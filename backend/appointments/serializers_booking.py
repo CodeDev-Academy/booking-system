@@ -1,4 +1,5 @@
 import re
+import uuid
 from rest_framework import serializers
 from .models import BookingRequest, SlotOffer, Service, Doctor, Appointment
 
@@ -18,6 +19,61 @@ def sanitize_phone_e164(phone: str) -> str:
     if not cleaned.startswith('+') and cleaned:
         return '+' + cleaned
     return cleaned
+
+
+def resolve_service_or_default(service_id):
+    """
+    Resolves Service by UUID, slug ('svc-dental', 'svc-checkup'), or partial name match.
+    Defaults to the first active clinic service if not found.
+    """
+    if not service_id:
+        return Service.objects.filter(is_active=True).first()
+    try:
+        val = uuid.UUID(str(service_id))
+        srv = Service.objects.filter(id=val, is_active=True).first()
+        if srv:
+            return srv
+    except (ValueError, AttributeError):
+        pass
+
+    id_str = str(service_id).lower()
+    if 'extract' in id_str or 'surgery' in id_str:
+        srv = Service.objects.filter(name__icontains='Extraction', is_active=True).first()
+    elif 'dental' in id_str or 'dent' in id_str:
+        srv = Service.objects.filter(name__icontains='Dental', is_active=True).first()
+    elif 'check' in id_str or 'general' in id_str:
+        srv = Service.objects.filter(name__icontains='Check-up', is_active=True).first()
+    elif 'eye' in id_str or 'ophthalmology' in id_str:
+        srv = Service.objects.filter(name__icontains='Eye', is_active=True).first()
+    else:
+        srv = Service.objects.filter(name__icontains=id_str, is_active=True).first()
+    return srv or Service.objects.filter(is_active=True).first()
+
+
+def resolve_doctor_or_default(doctor_id):
+    """
+    Resolves Doctor by UUID, slug ('doc-bello', 'doc-okafor'), or partial name.
+    """
+    if not doctor_id:
+        return None
+    try:
+        val = uuid.UUID(str(doctor_id))
+        doc = Doctor.objects.filter(id=val, is_active=True).first()
+        if doc:
+            return doc
+    except (ValueError, AttributeError):
+        pass
+
+    id_str = str(doctor_id).lower()
+    if 'bello' in id_str:
+        doc = Doctor.objects.filter(name__icontains='Bello', is_active=True).first()
+    elif 'okafor' in id_str:
+        doc = Doctor.objects.filter(name__icontains='Okafor', is_active=True).first()
+    elif 'babawo' in id_str:
+        doc = Doctor.objects.filter(name__icontains='Babawo', is_active=True).first()
+    else:
+        doc = Doctor.objects.filter(name__icontains=id_str, is_active=True).first()
+    return doc
 
 
 def get_patient_dossier(phone: str):
@@ -81,10 +137,10 @@ class BookingRequestCreateSerializer(serializers.Serializer):
     """
     patient_name = serializers.CharField(max_length=255)
     patient_phone = serializers.CharField(max_length=32)
-    service_id = serializers.UUIDField(required=False)
-    service = serializers.UUIDField(required=False)
-    preferred_doctor_id = serializers.UUIDField(required=False, allow_null=True)
-    preferred_doctor = serializers.UUIDField(required=False, allow_null=True)
+    service_id = serializers.CharField(required=False, allow_blank=True)
+    service = serializers.CharField(required=False, allow_blank=True)
+    preferred_doctor_id = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    preferred_doctor = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     preferred_dates = serializers.ListField(
         child=serializers.CharField(), required=False, allow_empty=True
     )
@@ -103,24 +159,16 @@ class BookingRequestCreateSerializer(serializers.Serializer):
     is_emergency = serializers.BooleanField(required=False, default=False)
 
     def validate(self, attrs):
-        # Service ID normalization
+        # Service ID normalization (accepts UUID, slug like 'svc-dental', or name)
         srv_id = attrs.get('service_id') or attrs.get('service')
-        if not srv_id:
-            raise serializers.ValidationError({'service_id': 'Service ID is required.'})
-
-        try:
-            attrs['service_obj'] = Service.objects.get(id=srv_id, is_active=True)
-        except Service.DoesNotExist:
+        service_obj = resolve_service_or_default(srv_id)
+        if not service_obj:
             raise serializers.ValidationError({'service_id': 'Selected service does not exist or is inactive.'})
+        attrs['service_obj'] = service_obj
 
-        # Preferred Doctor normalization (optional)
+        # Preferred Doctor normalization (optional, accepts UUID, slug, or name)
         doc_id = attrs.get('preferred_doctor_id') or attrs.get('preferred_doctor')
-        attrs['doctor_obj'] = None
-        if doc_id:
-            try:
-                attrs['doctor_obj'] = Doctor.objects.get(id=doc_id, is_active=True)
-            except Doctor.DoesNotExist:
-                raise serializers.ValidationError({'preferred_doctor_id': 'Selected doctor does not exist or is inactive.'})
+        attrs['doctor_obj'] = resolve_doctor_or_default(doc_id)
 
         # Phone sanitization
         raw_phone = attrs.get('patient_phone', '')

@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useQueueStore } from '../stores/useQueueStore';
 import { useCalendarStore } from '../stores/useCalendarStore';
+import { useStaffStore } from '../stores/useStaffStore';
 import { soundService } from '../services/soundService';
+import { apiService } from '../services/apiService';
 import {
   SERVICES,
   DOCTORS,
@@ -14,14 +16,30 @@ import { formatDayLabel, formatTime } from '../services/timeUtils';
 
 const MIN = 60000;
 
+export const formatDateIso = (d) => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+export const getTodayIso = () => formatDateIso(new Date());
+export const getFutureIso = (days) => {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return formatDateIso(d);
+};
+
 export const PRESETS = {
   amina: {
     patientName: 'Amina Yusuf',
     phone: '+234 801 234 5678',
     patientType: 'returning',
     serviceId: 'svc-dental',
-    preferredDoctorId: 'doc-bello',
+    preferredDoctorId: null,
     timeWindow: 'morning',
+    startDate: getTodayIso(),
+    endDate: getFutureIso(14),
     gender: 'Female',
     dateOfBirth: '1992-05-14',
     isEmergency: false,
@@ -32,8 +50,10 @@ export const PRESETS = {
     phone: '+234 802 987 6543',
     patientType: 'new',
     serviceId: 'svc-checkup',
-    preferredDoctorId: 'doc-okafor',
+    preferredDoctorId: null,
     timeWindow: 'afternoon',
+    startDate: getTodayIso(),
+    endDate: getFutureIso(14),
     gender: 'Male',
     dateOfBirth: '1985-11-20',
     isEmergency: false,
@@ -41,13 +61,26 @@ export const PRESETS = {
   },
 };
 
-const INITIAL_WEB_FORM = { ...PRESETS.amina };
+const INITIAL_WEB_FORM = {
+  patientName: '',
+  phone: '',
+  patientType: 'new',
+  serviceId: 'svc-dental',
+  preferredDoctorId: null,
+  timeWindow: 'morning',
+  startDate: getTodayIso(),
+  endDate: getFutureIso(14),
+  gender: 'Female',
+  dateOfBirth: '',
+  isEmergency: false,
+  symptoms: '',
+};
 
 const INITIAL_TELEGRAM_MESSAGES = [
   {
     id: 'tg-1',
     sender: 'bot',
-    text: '👋 Welcome to Cedarcare Specialist Clinic! How can we assist you today?',
+    text: '👋 Welcome to Cedarcare Specialist Clinic! How can we assist you today? Please choose a consultation service:',
     time: '10:00 AM',
     options: [
       { label: '🦷 Dental Consultation', key: 'service', value: 'svc-dental' },
@@ -65,7 +98,12 @@ export const usePitchSimulator = () => {
   const [telegramStep, setTelegramStep] = useState(1); // 1: service, 2: timeWindow, 3: contact, 4: sent
   const [telegramDraft, setTelegramDraft] = useState({
     serviceId: 'svc-dental',
+    dateRangeDays: 14,
+    startDate: getTodayIso(),
+    endDate: getFutureIso(14),
     timeWindow: 'morning',
+    gender: 'Female',
+    isEmergency: false,
     patientName: 'Amina Yusuf',
     phone: '+234 801 234 5678',
   });
@@ -84,6 +122,14 @@ export const usePitchSimulator = () => {
   const expireOffer = useQueueStore((s) => s.expireOffer);
   const reRequestSlots = useQueueStore((s) => s.reRequestSlots);
   const confirmPatientBooking = useCalendarStore((s) => s.confirmPatientBooking);
+
+  const staffList = useStaffStore((s) => s.staffList);
+  const dynamicDoctors = useMemo(() => {
+    const activeDocs = (staffList || [])
+      .filter((s) => s.role === 'doctor' && s.isActive)
+      .map((d) => ({ id: d.id, name: d.name, specialty: d.specialty }));
+    return activeDocs.length > 0 ? activeDocs : DOCTORS;
+  }, [staffList]);
 
   // Sync with QueueStore changes (e.g. if receptionist approved in /queue)
   useEffect(() => {
@@ -153,8 +199,22 @@ export const usePitchSimulator = () => {
     }
   }, []);
 
+  const applyDateRangePreset = useCallback((days) => {
+    const start = getTodayIso();
+    const end = getFutureIso(days);
+    setWebForm((prev) => ({
+      ...prev,
+      startDate: start,
+      endDate: end,
+    }));
+    setToast({
+      tone: 'info',
+      text: `Date range adjusted: ${start} to ${end} (${days} days)`,
+    });
+  }, []);
+
   // Submit via Web Intake Form
-  const submitWebBooking = useCallback(() => {
+  const submitWebBooking = useCallback(async () => {
     if (!webForm.patientName || !webForm.phone) {
       setToast({ tone: 'error', text: 'Please provide patient name and phone number.' });
       return;
@@ -165,15 +225,22 @@ export const usePitchSimulator = () => {
     const uniqueId = `req-sim-${Date.now().toString(36)}`;
     const randomCode = `REQ-2026-${Math.floor(1000 + Math.random() * 9000)}`;
 
+    const startDate = webForm.startDate || getTodayIso();
+    const endDate = webForm.endDate || getFutureIso(14);
+    const preferredDateRange = { start: startDate, end: endDate };
+
     const newRequest = {
       id: uniqueId,
       code: randomCode,
       patientName: webForm.patientName.trim(),
       phone: webForm.phone.trim(),
-      patientType: webForm.patientType,
+      patientType: webForm.patientType || 'new',
       serviceId: webForm.serviceId,
       preferredDoctorId: webForm.preferredDoctorId || null,
       timeWindow: webForm.timeWindow,
+      startDate,
+      endDate,
+      preferredDateRange,
       dateRange: { fromOffset: BASE_OFFSET, toOffset: BASE_OFFSET + DEFAULT_RANGE_DAYS - 1 },
       channel: 'web',
       status: 'awaiting_review',
@@ -183,185 +250,64 @@ export const usePitchSimulator = () => {
       gender: webForm.gender || 'Female',
       dateOfBirth: webForm.dateOfBirth || null,
       isEmergency: Boolean(webForm.isEmergency),
-      symptoms: webForm.symptoms,
+      symptoms: webForm.symptoms || '',
     };
 
-    setTimeout(() => {
-      injectRequest(newRequest);
-      soundService.playChime();
-
-      const elapsed = Math.round(performance.now() - startTimestamp);
-      setSyncLatencyMs(elapsed > 0 ? elapsed : 110);
-      setActiveRequest(newRequest);
-      setSimulatorStage('waiting_review');
-      setIsSubmitting(false);
-
-      setToast({
-        tone: 'success',
-        text: `⚡ Web Intake for ${newRequest.patientName} synced to Front Desk Triage in ${elapsed}ms!`,
+    // Live backend persistence
+    try {
+      const res = await apiService.createBookingRequest({
+        patient_name: newRequest.patientName,
+        patient_phone: newRequest.phone,
+        service_id: newRequest.serviceId,
+        preferred_doctor_id: newRequest.preferredDoctorId,
+        preferred_time_window: newRequest.timeWindow,
+        preferred_date_range: preferredDateRange,
+        preferred_dates: [startDate, endDate],
+        channel: 'web',
+        patient_notes: newRequest.symptoms,
+        gender: newRequest.gender,
+        date_of_birth: newRequest.dateOfBirth,
+        is_emergency: newRequest.isEmergency,
       });
-    }, 180);
-  }, [webForm, injectRequest]);
 
-  // Handle Telegram Chat Options
-  const handleTelegramOptionSelect = useCallback(
-    (key, value, optionLabel, slotData = null) => {
-      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-      // User response bubble
-      const userMsg = {
-        id: `tg-u-${Date.now()}`,
-        sender: 'user',
-        text: optionLabel || value,
-        time: nowTime,
-      };
-
-      if (key === 'service') {
-        setTelegramDraft((prev) => ({ ...prev, serviceId: value }));
-        setTelegramStep(2);
-
-        const botReply = {
-          id: `tg-b-${Date.now() + 1}`,
-          sender: 'bot',
-          text: `Great choice! When do you prefer to see the specialist?`,
-          time: nowTime,
-          options: [
-            { label: '☀️ Morning (08:00 – 12:00)', key: 'timeWindow', value: 'morning' },
-            { label: '🌤️ Afternoon (13:00 – 17:00)', key: 'timeWindow', value: 'afternoon' },
-            { label: '🌙 Evening (16:00 – 18:00)', key: 'timeWindow', value: 'evening' },
-          ],
-        };
-        setTelegramMessages((prev) => [...prev, userMsg, botReply]);
-      } else if (key === 'timeWindow') {
-        setTelegramDraft((prev) => ({ ...prev, timeWindow: value }));
-        setTelegramStep(3);
-
-        const botReply = {
-          id: `tg-b-${Date.now() + 1}`,
-          sender: 'bot',
-          text: `Got it! Please confirm booking under your registered contact:\n👤 Amina Yusuf\n📞 +234 801 234 5678`,
-          time: nowTime,
-          options: [
-            { label: '🚀 Confirm & Dispatch to Clinic', key: 'confirm', value: 'confirm' },
-            { label: '🔄 Start Over', key: 'restart', value: 'restart' },
-          ],
-        };
-        setTelegramMessages((prev) => [...prev, userMsg, botReply]);
-      } else if (key === 'confirm') {
-        setTelegramStep(4);
-        setIsSubmitting(true);
-        const startTimestamp = performance.now();
-
-        const uniqueId = `req-tg-${Date.now().toString(36)}`;
-        const randomCode = `REQ-2026-${Math.floor(1000 + Math.random() * 9000)}`;
-
-        const newRequest = {
-          id: uniqueId,
-          code: randomCode,
-          patientName: telegramDraft.patientName,
-          phone: telegramDraft.phone,
-          patientType: 'returning',
-          serviceId: telegramDraft.serviceId,
-          preferredDoctorId: 'doc-bello',
-          timeWindow: telegramDraft.timeWindow,
-          dateRange: { fromOffset: BASE_OFFSET, toOffset: BASE_OFFSET + DEFAULT_RANGE_DAYS - 1 },
-          channel: 'telegram',
-          status: 'awaiting_review',
-          reRequested: false,
-          reviewingBy: null,
-          createdAt: Date.now(),
-          symptoms: 'Scheduled via @cedarcare_bot interactive Telegram intake flow',
-        };
-
-        setTimeout(() => {
-          injectRequest(newRequest);
-          soundService.playChime();
-
-          const elapsed = Math.round(performance.now() - startTimestamp);
-          setSyncLatencyMs(elapsed > 0 ? elapsed : 95);
-          setActiveRequest(newRequest);
-          setSimulatorStage('waiting_review');
-          setIsSubmitting(false);
-
-          const botConfirmed = {
-            id: `tg-b-${Date.now() + 2}`,
-            sender: 'bot',
-            text: `✅ Request received (${randomCode})!\n\nFront desk receptionist is now reviewing available slots for your preferred window.\n\nYou will receive 3 candidate options directly here within minutes with a 1-hour decision hold.`,
-            time: nowTime,
-            options: [],
-          };
-
-          setTelegramMessages((prev) => [...prev, userMsg, botConfirmed]);
-          setToast({
-            tone: 'success',
-            text: `⚡ Telegram Bot Intake (${randomCode}) injected into Triage Queue in ${elapsed}ms!`,
-          });
-        }, 150);
-      } else if (key === 'select_slot') {
-        // Patient picked a slot in Telegram!
-        const chosenSlot = slotData || offeredSlots.find((s) => s.id === value) || offeredSlots[0];
-        if (chosenSlot) {
-          selectCandidateSlot(chosenSlot);
-        }
-      } else if (key === 'rerequest_fresh') {
-        reRequestFreshTimes();
-      } else if (key === 'restart') {
-        resetSimulator();
+      if (res && (res.id || res.request_id || res.request_code)) {
+        newRequest.id = res.id || uniqueId;
+        newRequest.code = res.request_code || res.request_id || randomCode;
+        newRequest.backendUuid = res.id;
       }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [telegramDraft, injectRequest, offeredSlots]
-  );
+    } catch (err) {
+      console.warn('Backend createBookingRequest fallback to local state:', err);
+    }
 
-  // 1-Click Receptionist Action from LiveSyncMonitor: Review & Dispatch 3 Candidate Slots
-  const approveAndDispatchQuickly = useCallback(() => {
-    if (!activeRequest) return;
-
-    const busyBlocks = useQueueStore.getState().busyBlocks || [];
-    const candidateSlots = generateCandidateSlots(activeRequest, busyBlocks, 3);
-
-    // Save slots to queue store
-    useQueueStore.setState((state) => ({
-      slotsByRequest: {
-        ...state.slotsByRequest,
-        [activeRequest.id]: candidateSlots,
-      },
-    }));
-
-    dispatchOffers(activeRequest.id);
-    setOfferedSlots(candidateSlots);
-    const expiresAt = Date.now() + CLINIC_RULES.offerExpiryMin * MIN;
-    setOfferExpiresAt(expiresAt);
-    setRemainingOfferSeconds(CLINIC_RULES.offerExpiryMin * 60);
-    setSimulatorStage('slots_offered');
+    injectRequest(newRequest);
     soundService.playChime();
 
-    // If channel is Telegram, send bot message with option buttons
-    if (channel === 'telegram') {
-      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const options = candidateSlots.map((slot, idx) => {
-        const doc = getDoctor(slot.doctorId);
-        const label = `${idx + 1}️⃣ ${formatDayLabel(slot.start)} @ ${formatTime(slot.start)} (${doc?.name?.split(' ')[0] || 'Doctor'})`;
-        return { label, key: 'select_slot', value: slot.id, slotData: slot };
-      });
-
-      setTelegramMessages((prev) => [
-        ...prev,
-        {
-          id: `tg-offered-${Date.now()}`,
-          sender: 'bot',
-          text: `✨ Good news, ${activeRequest.patientName.split(' ')[0]}!\n\nFront desk receptionist Chioma reviewed your request and approved 3 available times.\n\nPlease tap your preferred slot below (offers held for 1 hour):`,
-          time: nowTime,
-          options,
-        },
-      ]);
-    }
+    const elapsed = Math.round(performance.now() - startTimestamp);
+    setSyncLatencyMs(elapsed > 0 ? elapsed : 110);
+    setActiveRequest(newRequest);
+    setSimulatorStage('waiting_review');
+    setIsSubmitting(false);
 
     setToast({
       tone: 'success',
-      text: `Approved & dispatched 3 candidate slots to ${activeRequest.patientName}! 60-min offer window active.`,
+      text: `⚡ Web Intake for ${newRequest.patientName} synced to Front Desk Triage in ${elapsed}ms!`,
     });
-  }, [activeRequest, dispatchOffers, channel]);
+  }, [webForm, injectRequest]);
+
+  // Reset simulator
+  const resetSimulator = useCallback(() => {
+    setWebForm({ ...INITIAL_WEB_FORM });
+    setTelegramMessages([...INITIAL_TELEGRAM_MESSAGES]);
+    setTelegramStep(1);
+    setActiveRequest(null);
+    setOfferedSlots([]);
+    setOfferExpiresAt(null);
+    setRemainingOfferSeconds(3600);
+    setConfirmedAppointment(null);
+    setSimulatorStage('intake');
+    setSyncLatencyMs(null);
+    setToast({ tone: 'neutral', text: 'Pitch simulator reset to initial demo state.' });
+  }, []);
 
   // Patient selects one candidate slot
   const selectCandidateSlot = useCallback(
@@ -429,6 +375,32 @@ export const usePitchSimulator = () => {
     [activeRequest, confirmPatientBooking, finalizeBooking, channel]
   );
 
+  // Patient re-requests fresh times (Phase C Step 4: Re-Requested Slots Priority Queue)
+  const reRequestFreshTimes = useCallback(() => {
+    if (!activeRequest) return;
+
+    reRequestSlots(activeRequest.id);
+    setSimulatorStage('waiting_review');
+    soundService.playChime();
+
+    if (channel === 'telegram') {
+      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const botWaitMsg = {
+        id: `tg-wait-${Date.now()}`,
+        sender: 'bot',
+        text: `⚡ Front desk is reviewing fresh times for you right now. You will receive updated options shortly!`,
+        time: nowTime,
+        options: [],
+      };
+      setTelegramMessages((prev) => [...prev, botWaitMsg]);
+    }
+
+    setToast({
+      tone: 'ember',
+      text: `Patient ${activeRequest.patientName} re-requested fresh times! Prioritized in Triage Queue.`,
+    });
+  }, [activeRequest, reRequestSlots, channel]);
+
   // Simulate 60-Minute Expiry (Phase C: Graceful Expiry Demo)
   const simulateOfferExpiry = useCallback(() => {
     if (!activeRequest) return;
@@ -458,45 +430,229 @@ export const usePitchSimulator = () => {
     });
   }, [activeRequest, expireOffer, channel]);
 
-  // Patient re-requests fresh times (Phase C Step 4: Re-Requested Slots Priority Queue)
-  const reRequestFreshTimes = useCallback(() => {
+  // 1-Click Receptionist Action from LiveSyncMonitor: Review & Dispatch 3 Candidate Slots
+  const approveAndDispatchQuickly = useCallback(() => {
     if (!activeRequest) return;
 
-    reRequestSlots(activeRequest.id);
-    setSimulatorStage('waiting_review');
-    soundService.playChime();
+    const busyBlocks = useQueueStore.getState().busyBlocks || [];
+    const candidateSlots = generateCandidateSlots(activeRequest, busyBlocks, 3);
 
-    if (channel === 'telegram') {
-      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const botWaitMsg = {
-        id: `tg-wait-${Date.now()}`,
-        sender: 'bot',
-        text: `⚡ Front desk is reviewing fresh times for you right now. You will receive updated options shortly!`,
-        time: nowTime,
-        options: [],
-      };
-      setTelegramMessages((prev) => [...prev, botWaitMsg]);
-    }
+    // Save slots to queue store
+    useQueueStore.setState((state) => ({
+      slotsByRequest: {
+        ...state.slotsByRequest,
+        [activeRequest.id]: candidateSlots,
+      },
+    }));
+
+    // Trigger state machine transition
+    dispatchOffers(activeRequest.id);
 
     setToast({
-      tone: 'ember',
-      text: `Patient ${activeRequest.patientName} re-requested fresh times! Prioritized in Triage Queue.`,
+      tone: 'success',
+      text: `Approved & dispatched 3 candidate slots to ${activeRequest.patientName}! 60-min offer window active.`,
     });
-  }, [activeRequest, reRequestSlots, channel]);
+  }, [activeRequest, dispatchOffers]);
 
-  const resetSimulator = useCallback(() => {
-    setWebForm({ ...INITIAL_WEB_FORM });
-    setTelegramMessages([...INITIAL_TELEGRAM_MESSAGES]);
-    setTelegramStep(1);
-    setActiveRequest(null);
-    setOfferedSlots([]);
-    setOfferExpiresAt(null);
-    setRemainingOfferSeconds(3600);
-    setConfirmedAppointment(null);
-    setSimulatorStage('intake');
-    setSyncLatencyMs(null);
-    setToast({ tone: 'neutral', text: 'Pitch simulator reset to initial demo state.' });
-  }, []);
+  // Handle Telegram Chat Options with Full Feature Parity
+  const handleTelegramOptionSelect = useCallback(
+    (key, value, optionLabel, slotData = null) => {
+      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      // User response bubble
+      const userMsg = {
+        id: `tg-u-${Date.now()}`,
+        sender: 'user',
+        text: optionLabel || value,
+        time: nowTime,
+      };
+
+      if (key === 'service') {
+        setTelegramDraft((prev) => ({ ...prev, serviceId: value }));
+        setTelegramStep(2);
+
+        const botReply = {
+          id: `tg-b-${Date.now() + 1}`,
+          sender: 'bot',
+          text: `🗓️ What is your preferred date window? Our scheduling engine scans doctor shifts within this range:`,
+          time: nowTime,
+          options: [
+            { label: '⚡ Next 7 Days', key: 'dateRange', value: '7' },
+            { label: '📅 Next 14 Days', key: 'dateRange', value: '14' },
+            { label: '🗓️ Next 30 Days', key: 'dateRange', value: '30' },
+            { label: '☀️ This Week', key: 'dateRange', value: '5' },
+          ],
+        };
+        setTelegramMessages((prev) => [...prev, userMsg, botReply]);
+      } else if (key === 'dateRange') {
+        const days = Number(value) || 14;
+        const startDate = getTodayIso();
+        const endDate = getFutureIso(days);
+        setTelegramDraft((prev) => ({ ...prev, dateRangeDays: days, startDate, endDate }));
+        setTelegramStep(3);
+
+        const botReply = {
+          id: `tg-b-${Date.now() + 1}`,
+          sender: 'bot',
+          text: `⏰ What time of day works best for your schedule?`,
+          time: nowTime,
+          options: [
+            { label: '☀️ Morning (08:00 – 12:00)', key: 'timeWindow', value: 'morning' },
+            { label: '🌤️ Afternoon (13:00 – 17:00)', key: 'timeWindow', value: 'afternoon' },
+            { label: '🌙 Evening (16:00 – 18:00)', key: 'timeWindow', value: 'evening' },
+          ],
+        };
+        setTelegramMessages((prev) => [...prev, userMsg, botReply]);
+      } else if (key === 'timeWindow') {
+        setTelegramDraft((prev) => ({ ...prev, timeWindow: value }));
+        setTelegramStep(4);
+
+        const botReply = {
+          id: `tg-b-${Date.now() + 1}`,
+          sender: 'bot',
+          text: `👤 For clinical records and triage, please select the patient's gender:`,
+          time: nowTime,
+          options: [
+            { label: '👩 Female', key: 'gender', value: 'Female' },
+            { label: '👨 Male', key: 'gender', value: 'Male' },
+            { label: '⚧ Other / Neutral', key: 'gender', value: 'Other' },
+          ],
+        };
+        setTelegramMessages((prev) => [...prev, userMsg, botReply]);
+      } else if (key === 'gender') {
+        setTelegramDraft((prev) => ({ ...prev, gender: value }));
+        setTelegramStep(5);
+
+        const botReply = {
+          id: `tg-b-${Date.now() + 1}`,
+          sender: 'bot',
+          text: `🩺 Is this a routine consultation or an urgent emergency medical visit?`,
+          time: nowTime,
+          options: [
+            { label: '🟢 Standard Consultation', key: 'urgency', value: 'standard' },
+            { label: '🚨 Urgent / Emergency Visit', key: 'urgency', value: 'emergency' },
+          ],
+        };
+        setTelegramMessages((prev) => [...prev, userMsg, botReply]);
+      } else if (key === 'urgency') {
+        const isEmergency = value === 'emergency';
+        setTelegramDraft((prev) => ({ ...prev, isEmergency }));
+        setTelegramStep(6);
+
+        const svc = SERVICES.find((s) => s.id === telegramDraft.serviceId) || { name: 'Consultation' };
+        const windowLabel =
+          telegramDraft.timeWindow === 'morning'
+            ? 'Morning (08:00 – 12:00)'
+            : telegramDraft.timeWindow === 'afternoon'
+            ? 'Afternoon (13:00 – 17:00)'
+            : 'Evening (16:00 – 18:00)';
+
+        const botReply = {
+          id: `tg-b-${Date.now() + 1}`,
+          sender: 'bot',
+          text: `📋 Review Booking Request:\n👤 Patient: ${telegramDraft.patientName}\n📞 Phone: ${telegramDraft.phone}\n🩺 Service: ${svc.name}\n🗓️ Range: ${telegramDraft.startDate} → ${telegramDraft.endDate}\n⏰ Window: ${windowLabel}\n👤 Gender: ${telegramDraft.gender}\n🚨 Priority: ${isEmergency ? 'URGENT' : 'STANDARD'}\n\nConfirm to transmit to front desk triage:`,
+          time: nowTime,
+          options: [
+            { label: '🚀 Confirm & Dispatch to Clinic', key: 'confirm', value: 'confirm' },
+            { label: '🔄 Start Over', key: 'restart', value: 'restart' },
+          ],
+        };
+        setTelegramMessages((prev) => [...prev, userMsg, botReply]);
+      } else if (key === 'confirm') {
+        setTelegramStep(7);
+        setIsSubmitting(true);
+        const startTimestamp = performance.now();
+
+        const uniqueId = `req-tg-${Date.now().toString(36)}`;
+        const randomCode = `REQ-2026-${Math.floor(1000 + Math.random() * 9000)}`;
+
+        const newRequest = {
+          id: uniqueId,
+          code: randomCode,
+          patientName: telegramDraft.patientName,
+          phone: telegramDraft.phone,
+          patientType: 'returning',
+          serviceId: telegramDraft.serviceId,
+          preferredDoctorId: null, // Zero doctor choice: auto-balanced across clinicians!
+          timeWindow: telegramDraft.timeWindow,
+          startDate: telegramDraft.startDate,
+          endDate: telegramDraft.endDate,
+          preferredDateRange: { start: telegramDraft.startDate, end: telegramDraft.endDate },
+          gender: telegramDraft.gender,
+          isEmergency: Boolean(telegramDraft.isEmergency),
+          channel: 'telegram',
+          status: 'awaiting_review',
+          reRequested: false,
+          reviewingBy: null,
+          createdAt: Date.now(),
+          symptoms: `Scheduled via @cedarcare_bot interactive Telegram gateway (${telegramDraft.isEmergency ? 'URGENT' : 'Standard'}, ${telegramDraft.gender})`,
+        };
+
+        // Live backend persistence
+        try {
+          apiService.createBookingRequest({
+            patient_name: newRequest.patientName,
+            patient_phone: newRequest.phone,
+            service_id: newRequest.serviceId,
+            preferred_doctor_id: null,
+            preferred_time_window: newRequest.timeWindow,
+            preferred_date_range: newRequest.preferredDateRange,
+            preferred_dates: [telegramDraft.startDate, telegramDraft.endDate],
+            channel: 'telegram',
+            patient_notes: newRequest.symptoms,
+            gender: newRequest.gender,
+            is_emergency: newRequest.isEmergency,
+          }).then((res) => {
+            if (res && (res.id || res.request_id || res.request_code)) {
+              newRequest.id = res.id || uniqueId;
+              newRequest.code = res.request_code || res.request_id || randomCode;
+              newRequest.backendUuid = res.id;
+            }
+          }).catch((err) => {
+            console.warn('Backend createBookingRequest fallback to local state:', err);
+          });
+        } catch (err) {
+          console.warn('Backend createBookingRequest error:', err);
+        }
+
+        setTimeout(() => {
+          injectRequest(newRequest);
+          soundService.playChime();
+
+          const elapsed = Math.round(performance.now() - startTimestamp);
+          setSyncLatencyMs(elapsed > 0 ? elapsed : 95);
+          setActiveRequest(newRequest);
+          setSimulatorStage('waiting_review');
+          setIsSubmitting(false);
+
+          const botConfirmed = {
+            id: `tg-b-${Date.now() + 2}`,
+            sender: 'bot',
+            text: `✅ Request received (${randomCode})!\n\nFront desk receptionist is now reviewing available slots for your preferred window (${telegramDraft.startDate} → ${telegramDraft.endDate}).\n\nYou will receive 3 candidate options directly here within minutes with a 1-hour decision hold.`,
+            time: nowTime,
+            options: [],
+          };
+
+          setTelegramMessages((prev) => [...prev, userMsg, botConfirmed]);
+          setToast({
+            tone: 'success',
+            text: `⚡ Telegram Bot Intake (${randomCode}) injected into Triage Queue in ${elapsed}ms!`,
+          });
+        }, 150);
+      } else if (key === 'select_slot') {
+        // Patient picked a slot in Telegram!
+        const chosenSlot = slotData || offeredSlots.find((s) => s.id === value) || offeredSlots[0];
+        if (chosenSlot) {
+          selectCandidateSlot(chosenSlot);
+        }
+      } else if (key === 'rerequest_fresh') {
+        reRequestFreshTimes();
+      } else if (key === 'restart') {
+        resetSimulator();
+      }
+    },
+    [telegramDraft, injectRequest, offeredSlots, selectCandidateSlot, reRequestFreshTimes, resetSimulator]
+  );
 
   const dismissToast = useCallback(() => setToast(null), []);
 
@@ -507,6 +663,7 @@ export const usePitchSimulator = () => {
     webForm,
     updateWebForm,
     applyPreset,
+    applyDateRangePreset,
     submitWebBooking,
     telegramMessages,
     telegramStep,
@@ -526,6 +683,6 @@ export const usePitchSimulator = () => {
     dismissToast,
     resetSimulator,
     servicesList: SERVICES,
-    doctorsList: DOCTORS,
+    doctorsList: dynamicDoctors,
   };
 };

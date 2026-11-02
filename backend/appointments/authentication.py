@@ -24,7 +24,8 @@ class CookieJWTAuthentication(JWTAuthentication):
     Dual-Mode Authentication Backend:
     1. Checks HTTP 'Authorization: Bearer <token>' header.
     2. Falls back to 'clinic_access_token' HttpOnly cookie (immune to XSS token theft).
-    3. Enforces real-time is_active database check for instant session killswitch.
+    3. Falls back to validated 'token' or 'ticket' query parameter for browser EventSource / SSE connections.
+    4. Enforces real-time is_active database check for instant session killswitch.
     """
 
     def authenticate(self, request):
@@ -33,8 +34,12 @@ class CookieJWTAuthentication(JWTAuthentication):
 
         if header is not None:
             raw_token = self.get_raw_token(header)
-        else:
+        elif 'clinic_access_token' in request.COOKIES:
             raw_token = request.COOKIES.get('clinic_access_token')
+        elif hasattr(request, 'query_params') and ('token' in request.query_params or 'ticket' in request.query_params):
+            raw_token = request.query_params.get('token') or request.query_params.get('ticket')
+        elif hasattr(request, 'GET') and ('token' in request.GET or 'ticket' in request.GET):
+            raw_token = request.GET.get('token') or request.GET.get('ticket')
 
         if raw_token is None:
             return None

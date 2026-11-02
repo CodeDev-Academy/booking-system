@@ -28,8 +28,6 @@ import '../styles/components/settings.css';
  */
 export const SettingsView = () => {
   const {
-    isDemoMode,
-    toggleDemoMode,
     hidePitchSimulator,
     toggleHidePitchSimulator,
     audioEnabled,
@@ -247,8 +245,6 @@ export const SettingsView = () => {
 
         {/* 6. System Architecture, API Engine & Client Handover */}
         <SystemDeploymentBento
-          isDemoMode={isDemoMode}
-          onToggleDemoMode={toggleDemoMode}
           hidePitchSimulator={hidePitchSimulator}
           onToggleHidePitchSimulator={toggleHidePitchSimulator}
         />

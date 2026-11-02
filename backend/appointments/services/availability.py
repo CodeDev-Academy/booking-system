@@ -179,6 +179,15 @@ class AvailabilityEngine:
                     preferred_time_window=preferred_time_window
                 )
 
+                # Doctor Workload Equalization (Automated Load Balancing)
+                # Balances appointment density across qualified clinicians so one doctor isn't
+                # heavily congested while another sits idle. Doctors with lower daily utilization
+                # receive a positive priority bonus (+0 to +40 points).
+                max_daily = max(1, doctor.max_daily_appointments)
+                utilization = active_appts_count / max_daily
+                load_balance_bonus = int((1.0 - min(1.0, utilization)) * 40)
+                score += load_balance_bonus
+
                 eligible_slots.append({
                     'doctor_id': str(doctor.id),
                     'doctor_name': doctor.name,

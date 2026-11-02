@@ -180,28 +180,35 @@ else:
         "http://127.0.0.1:3000",
     ]
 
+# SEC-02: Hardened CORS Origin Controls (prevent subdomain hijacking on Vercel/Railway/Render)
 CORS_ALLOWED_ORIGIN_REGEXES = [
-    r"^https:\/\/.*\.vercel\.app$",
-    r"^https:\/\/.*\.railway\.app$",
-    r"^https:\/\/.*\.onrender\.com$",
+    r"^https:\/\/.*cedarcare.*\.vercel\.app$",
+    r"^https:\/\/.*clinic-booking.*\.vercel\.app$",
+    r"^https:\/\/.*clinic.*\.railway\.app$",
+    r"^https:\/\/booking-system-3-iojp\.onrender\.com$",
     r"^http:\/\/localhost:\d+$",
     r"^http:\/\/127\.0\.0\.1:\d+$",
+    r"^http:\/\/192\.168\.\d+\.\d+:\d+$",
+    r"^http:\/\/10\.\d+\.\d+\.\d+:\d+$",
+    r"^http:\/\/172\.(1[6-9]|2\d|3[01])\.\d+\.\d+:\d+$",
+    r"^http:\/\/.*\.local:\d+$",
 ]
 CORS_ALLOW_CREDENTIALS = True
-if DEBUG:
-    CORS_ALLOW_ALL_ORIGINS = True
+# SEC-02: Never allow global wildcard origin reflection when credentials (cookies/tokens) are enabled
+CORS_ALLOW_ALL_ORIGINS = False
 
 # Neon Services Configuration (Provisioned via `neon deploy`)
 NEON_BRANCH = os.environ.get('NEON_BRANCH', 'production')
 NEON_AUTH_BASE_URL = os.environ.get('NEON_AUTH_BASE_URL', '')
 NEON_AUTH_JWKS_URL = os.environ.get('NEON_AUTH_JWKS_URL', '')
 
-# Telegram Bot Gateway Configuration
+# Telegram Bot Gateway Configuration (SEC-03: Strictly loaded from env / .env.local; zero hardcoded fallback in source)
 TELEGRAM_BOT_TOKEN = (
     os.environ.get('TELEGRAM_BOT_TOKEN') or
     os.environ.get('Telegram_bot_father') or
     os.environ.get('TELEGRAM_BOT_FATHER') or
-    '8461748218:AAESXX8H8Z9HCk7id_me37fDTfQ5Dqm8xtY'
+    ''
 )
 TELEGRAM_BOT_USERNAME = os.environ.get('TELEGRAM_BOT_USERNAME', 'babawo_bot')
+TELEGRAM_WEBHOOK_SECRET = os.environ.get('TELEGRAM_WEBHOOK_SECRET', '')
 

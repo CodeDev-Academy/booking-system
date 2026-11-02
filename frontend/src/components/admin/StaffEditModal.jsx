@@ -18,6 +18,7 @@ import {
   Check,
 } from 'lucide-react';
 import { soundService } from '../../services/soundService';
+import { useStaffStore } from '../../stores/useStaffStore';
 import {
   useSettingsStore,
   DEFAULT_STAFF_ROLES,
@@ -72,7 +73,7 @@ export const StaffEditModal = ({
       setSpecialty(staff.specialty || '');
       setShift(staff.shift || '');
       setStatus(staff.status || 'on_duty');
-      setPassword(staff.password || 'password123');
+      setPassword(staff.password || '');
       setPin(staff.pin || '1234');
       setNewPassword('');
       setNewPin('');
@@ -90,7 +91,7 @@ export const StaffEditModal = ({
 
   const isDoctor = staff.role === 'doctor';
 
-  // Direct 1-Click Password Reset
+  // Direct 1-Click Password Reset (without closing the modal)
   const handleApplyNewPassword = () => {
     if (!newPassword.trim() || newPassword.trim().length < 6) {
       setFeedback({ tone: 'error', text: 'Password must be at least 6 characters.' });
@@ -98,14 +99,14 @@ export const StaffEditModal = ({
     }
     const updatedPwd = newPassword.trim();
     setPassword(updatedPwd);
-    onUpdateStaff({ ...staff, name, email, specialty, shift, status, password: updatedPwd });
+    useStaffStore.getState().confirmResetPassword(staff.id, updatedPwd);
     setIsEditingPassword(false);
     setNewPassword('');
-    setFeedback({ tone: 'success', text: `Password for ${staff.name} has been updated successfully!` });
+    setFeedback({ tone: 'success', text: `Login password for ${staff.name} updated successfully!` });
     soundService.playChime();
   };
 
-  // Direct 1-Click PIN Reset
+  // Direct 1-Click PIN Reset (without closing the modal)
   const handleApplyNewPin = () => {
     if (!/^\d{4}$/.test(newPin.trim())) {
       setFeedback({ tone: 'error', text: 'Screen PIN must be exactly 4 digits.' });
@@ -113,7 +114,7 @@ export const StaffEditModal = ({
     }
     const updatedPin = newPin.trim();
     setPin(updatedPin);
-    onUpdateStaff({ ...staff, name, email, specialty, shift, status, pin: updatedPin });
+    useStaffStore.getState().confirmResetPin(staff.id, updatedPin);
     setIsEditingPin(false);
     setNewPin('');
     setFeedback({ tone: 'success', text: `4-Digit Quick-PIN for ${staff.name} updated to ${updatedPin}!` });
@@ -587,17 +588,30 @@ export const StaffEditModal = ({
                     <span
                       style={{
                         fontFamily: 'monospace',
-                        fontSize: '13px',
-                        letterSpacing: showPassword ? '0.5px' : '2px',
-                        color: showPassword ? 'var(--text)' : 'var(--text-3)',
+                        fontSize: '12px',
+                        letterSpacing: showPassword && password ? '0.5px' : '2px',
+                        color: showPassword && password ? 'var(--text)' : 'var(--text-3)',
                         fontWeight: 600,
                       }}
                     >
-                      {showPassword ? password : '••••••••••••'}
+                      {showPassword && password
+                        ? password
+                        : password
+                        ? '••••••••••••'
+                        : '•••••••••••• (Encrypted in Django)'}
                     </span>
                     <button
                       type="button"
-                      onClick={() => setShowPassword(!showPassword)}
+                      onClick={() => {
+                        if (!password) {
+                          setFeedback({
+                            tone: 'info',
+                            text: 'Password is securely hashed in Django database. Click "Reset Password" to set a new password.',
+                          });
+                          return;
+                        }
+                        setShowPassword(!showPassword);
+                      }}
                       style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)' }}
                       title={showPassword ? 'Hide password' : 'View password'}
                       aria-label="Toggle password visibility"

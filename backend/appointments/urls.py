@@ -17,6 +17,7 @@ from .views_booking import (
     CheckSlotsView,
     DispatchOffersView,
     AskInfoView,
+    BookingRequestReRequestView,
 )
 from .views_appointment import (
     SlotHoldView,
@@ -47,6 +48,7 @@ from .views_realtime import (
     EventStreamView,
     PresenceBroadcastView,
     InboundWebhookView,
+    ExpirySweepWebhookView,
 )
 from .views_analytics import (
     AnalyticsSummaryView,
@@ -113,10 +115,12 @@ urlpatterns = [
     path('booking-requests/<str:id>/check-slots/', CheckSlotsView.as_view(), name='booking-check-slots'),
     path('booking-requests/<str:id>/dispatch-offers/', DispatchOffersView.as_view(), name='booking-dispatch-offers'),
     path('booking-requests/<str:id>/ask-info/', AskInfoView.as_view(), name='booking-ask-info'),
+    path('booking-requests/<str:id>/re-request/', BookingRequestReRequestView.as_view(), name='booking-re-request'),
     path('requests/', BookingRequestListCreateView.as_view(), name='requests-list-create'),
     path('requests/<str:id>/check-slots/', CheckSlotsView.as_view(), name='requests-check-slots'),
     path('requests/<str:id>/dispatch/', DispatchOffersView.as_view(), name='requests-dispatch'),
     path('requests/<str:id>/dispatch-offers/', DispatchOffersView.as_view(), name='requests-dispatch-offers'),
+    path('requests/<str:id>/re-request/', BookingRequestReRequestView.as_view(), name='requests-re-request'),
     path('availability/slots/', CheckSlotsView.as_view(), name='availability-slots'),
 
     # Task 3.3: Appointments, Live Visits & Follow-Up Endpoints
@@ -159,6 +163,7 @@ urlpatterns = [
     path('webhooks/telegram/inbound/', InboundWebhookView.as_view(), name='webhook-telegram-inbound'),
     path('webhooks/telegram/', InboundWebhookView.as_view(), name='webhook-telegram'),
     path('webhooks/whatsapp/inbound/', InboundWebhookView.as_view(), name='webhook-whatsapp-inbound'),
+    path('webhooks/expiry-sweep/', ExpirySweepWebhookView.as_view(), name='webhook-expiry-sweep'),
     path('telegram/webhook/', InboundWebhookView.as_view(), name='telegram-webhook-alias'),
 
     # Task 3.6: Analytics KPI Summary API & CSV Exports

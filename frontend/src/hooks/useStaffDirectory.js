@@ -30,6 +30,52 @@ export const useStaffDirectory = () => {
         }
       })
       .catch(() => {});
+
+    apiService
+      .fetchStaffDirectory()
+      .then((data) => {
+        if (!active || !data) return;
+        const doctors = data.doctors || [];
+        const staff = data.staff || [];
+        if (doctors.length === 0 && staff.length === 0) return;
+
+        const remoteStaffList = [
+          ...doctors.map((d) => ({
+            id: d.id,
+            name: d.name,
+            email: d.email || `${d.name.toLowerCase().replace(/[^a-z]/g, '.')}@cedarcare.ng`,
+            role: 'doctor',
+            roleLabel: 'Clinical Doctor',
+            shift: d.shift_label || '09:00 – 17:00 WAT',
+            specialty: d.specialty || 'General Practice',
+            status: d.duty_status || 'on_duty',
+            clockInTime: '08:30 AM',
+            punctuality: 'On Time',
+            patientsHandled: d.active_appointments_count || 0,
+            isActive: d.is_active !== false,
+            avatar: d.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase(),
+          })),
+          ...staff.map((s) => ({
+            id: s.id,
+            name: s.full_name || s.name,
+            email: s.email,
+            role: s.role || 'receptionist',
+            roleLabel: s.role === 'clinic_admin' ? 'Clinic Administrator' : 'Front-Desk Receptionist',
+            shift: '08:00 – 16:00 WAT',
+            specialty: s.role === 'clinic_admin' ? 'Clinic Operations' : 'Reception Triage',
+            status: 'on_duty',
+            clockInTime: '08:00 AM',
+            punctuality: 'On Time',
+            patientsHandled: 0,
+            isActive: s.is_active !== false,
+            avatar: (s.full_name || s.name || 'ST').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase(),
+          })),
+        ];
+
+        useStaffStore.setState({ staffList: remoteStaffList });
+      })
+      .catch(() => {});
+
     return () => {
       active = false;
     };

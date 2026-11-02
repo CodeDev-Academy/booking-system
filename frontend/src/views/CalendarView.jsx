@@ -11,7 +11,6 @@ import { PastPatientsHistory } from '../components/calendar/PastPatientsHistory'
 import { AppointmentDetailsModal } from '../components/calendar/AppointmentDetailsModal';
 import { QuickWalkInModal } from '../components/calendar/QuickWalkInModal';
 import { parseTimeSlotToTimestamp } from '../services/timeUtils';
-import { useAppModeStore } from '../stores/appModeStore';
 import '../styles/components/views.css';
 import '../styles/components/calendar.css';
 import '../styles/components/grid-booking-calendar.css';
@@ -142,10 +141,8 @@ export const CalendarView = () => {
             if (dateOrDayNum instanceof Date) {
               startTs = parseTimeSlotToTimestamp(dateOrDayNum, timeSlot);
             } else if (typeof dateOrDayNum === 'number') {
-              const isDemo = useAppModeStore.getState().isDemoMode;
-              const currentYear = isDemo ? 2026 : new Date().getFullYear();
-              const currentMonth = isDemo ? 9 : new Date().getMonth();
-              const baseDate = new Date(currentYear, currentMonth, dateOrDayNum);
+              const now = new Date();
+              const baseDate = new Date(now.getFullYear(), now.getMonth(), dateOrDayNum);
               startTs = parseTimeSlotToTimestamp(baseDate, timeSlot);
             } else {
               startTs = parseTimeSlotToTimestamp(new Date(), timeSlot);

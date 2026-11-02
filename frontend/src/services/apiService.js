@@ -6,14 +6,24 @@
  */
 
 const DEFAULT_PROD_API_URL = 'https://booking-system-3-iojp.onrender.com/api/v1';
-const isLocalhost =
+
+const isLocalOrLan =
   typeof window !== 'undefined' &&
-  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+  (
+    window.location.hostname === 'localhost' ||
+    window.location.hostname === '127.0.0.1' ||
+    /^192\.168\.\d+\.\d+$/.test(window.location.hostname) ||
+    /^10\.\d+\.\d+\.\d+$/.test(window.location.hostname) ||
+    /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/.test(window.location.hostname) ||
+    window.location.hostname.endsWith('.local')
+  );
 
 const API_BASE_URL =
   import.meta.env.VITE_API_URL ||
   import.meta.env.VITE_API_BASE_URL ||
-  (isLocalhost ? 'http://localhost:8000/api/v1' : DEFAULT_PROD_API_URL);
+  (isLocalOrLan
+    ? `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:8000/api/v1`
+    : (typeof window !== 'undefined' ? `${window.location.origin}/api/v1` : DEFAULT_PROD_API_URL));
 
 /**
  * Standard fetch wrapper with JSON headers, error unwrapping, credentials,
@@ -233,16 +243,22 @@ export const apiService = {
     const formattedSlots = Array.isArray(slots)
       ? slots.map((s) => {
           if (typeof s === 'object' && s !== null) {
+            const startTs =
+              s.startDatetime ||
+              s.start_datetime ||
+              (s.start ? (typeof s.start === 'number' ? s.start : new Date(s.start).getTime()) : (s.startTs ? (typeof s.startTs === 'number' ? s.startTs : new Date(s.startTs).getTime()) : null));
+            const startIso = startTs ? new Date(startTs).toISOString() : undefined;
+            const durationMin = s.durationMin || s.duration_minutes || 30;
+            const endTs =
+              s.endDatetime ||
+              s.end_datetime ||
+              (s.end ? (typeof s.end === 'number' ? s.end : new Date(s.end).getTime()) : (s.endTs ? (typeof s.endTs === 'number' ? s.endTs : new Date(s.endTs).getTime()) : (startTs ? startTs + durationMin * 60000 : null)));
+            const endIso = endTs ? new Date(endTs).toISOString() : undefined;
+
             return {
               doctor_id: s.doctorId || s.doctor_id,
-              start_datetime:
-                s.startDatetime ||
-                s.start_datetime ||
-                (s.start ? new Date(s.start).toISOString() : (s.startTs ? new Date(s.startTs).toISOString() : undefined)),
-              end_datetime:
-                s.endDatetime ||
-                s.end_datetime ||
-                (s.end ? new Date(s.end).toISOString() : (s.endTs ? new Date(s.endTs).toISOString() : undefined)),
+              start_datetime: startIso,
+              end_datetime: endIso,
               is_alternative_date: s.isAlternativeDate || s.is_alternative_date || false,
             };
           }
@@ -433,6 +449,60 @@ export const apiService = {
     return request('/clinic/staff-directory/');
   },
 
+  async createStaff(staffData) {
+    const payload = {
+      full_name: staffData.name || staffData.full_name,
+      email: staffData.email,
+      role: staffData.role || 'receptionist',
+      password: staffData.password,
+      pin: staffData.pin,
+      specialty: staffData.specialty,
+      shift_start: staffData.shiftStart || '08:00',
+      shift_end: staffData.shiftEnd || '16:00',
+    };
+    return request('/staff/', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async updateStaff(staffId, staffData) {
+    const payload = {
+      name: staffData.name,
+      email: staffData.email,
+      role: staffData.role,
+      specialty: staffData.specialty,
+      shift: staffData.shift,
+      status: staffData.status,
+      is_active: staffData.isActive !== undefined ? staffData.isActive : staffData.is_active,
+    };
+    return request(`/staff/${staffId}/`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async resetStaffPassword(staffId, newPassword) {
+    return request(`/staff/${staffId}/reset-password/`, {
+      method: 'POST',
+      body: JSON.stringify({ new_password: newPassword, password: newPassword }),
+    });
+  },
+
+  async resetStaffPin(staffId, newPin) {
+    return request(`/staff/${staffId}/reset-pin/`, {
+      method: 'POST',
+      body: JSON.stringify({ pin: newPin }),
+    });
+  },
+
+  async toggleStaffActive(staffId, isActive) {
+    return request(`/staff/${staffId}/toggle-active/`, {
+      method: 'POST',
+      body: JSON.stringify({ is_active: isActive }),
+    });
+  },
+
   async updateDoctorDutyStatus(doctorId, statusData) {
     const payload = typeof statusData === 'string'
       ? { status: statusData }
@@ -465,7 +535,9 @@ export const apiService = {
   // 6. Real-Time SSE, Presence & Webhooks
   // ==========================================
   connectEventStream(onEvent, onError) {
-    const sseUrl = `${API_BASE_URL}/realtime/stream/`;
+    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('cbs_auth_token') : null;
+    const queryParam = token ? `?token=${encodeURIComponent(token)}` : '';
+    const sseUrl = `${API_BASE_URL}/realtime/stream/${queryParam}`;
     let eventSource = null;
     let isClosed = false;
 
@@ -480,7 +552,7 @@ export const apiService = {
     };
 
     try {
-      eventSource = new EventSource(sseUrl);
+      eventSource = new EventSource(sseUrl, { withCredentials: true });
 
       eventSource.onmessage = (event) => handleIncomingEvent('message', event.data);
 

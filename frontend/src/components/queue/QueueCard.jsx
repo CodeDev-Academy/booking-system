@@ -35,15 +35,6 @@ export const QueueCard = ({ card, onOpen }) => {
     <div
       className="bento-queue-card"
       onClick={() => onOpen(card.id)}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onOpen(card.id);
-        }
-      }}
-      aria-label={`Review request ${card.code} from ${card.patientName}`}
     >
       {/* 1. Top Info Row: Avatar + Name + Tags */}
       <div className="bento-queue-info-row">
@@ -160,6 +151,7 @@ export const QueueCard = ({ card, onOpen }) => {
           e.stopPropagation();
           onOpen(card.id);
         }}
+        aria-label={`Review request ${card.code} from ${card.patientName}`}
       >
         <span>Review Request</span>
         <ArrowRight size={13} />

@@ -18,6 +18,7 @@ export const SimulatorView = () => {
     webForm,
     updateWebForm,
     applyPreset,
+    applyDateRangePreset,
     submitWebBooking,
     telegramMessages,
     handleTelegramOptionSelect,
@@ -87,6 +88,7 @@ export const SimulatorView = () => {
           doctorsList={doctorsList}
           onUpdateWebForm={updateWebForm}
           onApplyPreset={applyPreset}
+          onApplyDateRangePreset={applyDateRangePreset}
           onSubmitWeb={submitWebBooking}
           activeRequest={activeRequest}
           offeredSlots={offeredSlots}
