@@ -107,6 +107,9 @@
 
 ## 🔄 PHASE 4 — n8n Workflows (User Builds In-House)
 
+> **Build guide:** `n8n/N8N_BUILD_SHEET.md` — per-workflow node-by-node specs with verified Django
+> contracts, interaction-logging requirements, and a recommended build/test order (2026-11-12).
+
 ### Task 4.1: Slot Offer Dispatcher workflow `[~]` (05_slot_offer_dispatcher.json exists; add SMS node + 30s delay + VoiceBip call node)
 ### Task 4.2: Patient Response Handler workflow `[~]` (04 exists; add SMS "1/2/3" replies, other-channel neutralization, write to /interactions/)
 ### Task 4.3: Reminder Flows workflow `[~]` (03 exists; add dual WhatsApp+SMS 24h & 2h messages, zero calls)
