@@ -67,6 +67,11 @@ class ClinicSetting(models.Model):
     enable_24h_reminder = models.BooleanField(default=True)
     enable_2h_reminder = models.BooleanField(default=False)
 
+    # Shared secret n8n / external gateways must present as `X-Webhook-Secret`
+    # to reach guarded endpoints (slots/hold, re-request, expiry-sweep, interactions).
+    # Empty value = fail-closed in production (see services/webhook_security.py).
+    webhook_secret = models.CharField(max_length=255, blank=True, default='')
+
     # Dynamic white-label JSON configuration (currency, bot tokens, custom metadata)
     custom_config = models.JSONField(default=dict, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -513,3 +518,85 @@ class IdempotencyKey(models.Model):
 
     def __str__(self):
         return f"{self.source}:{self.key}"
+
+
+class InteractionLog(models.Model):
+    """
+    Phase 2 / Task 2.1 — Authoritative record of every patient-facing
+    communication (VoiceBip call, WhatsApp, SMS, Telegram) sent by the n8n
+    Dispatcher or reception staff (Hybrid AI OS spec §6 "Interactions" data area).
+
+    Idempotency: `external_ref` stores the provider's unique message/call ID;
+    re-delivered webhooks upsert onto the same row instead of duplicating.
+    """
+    PROVIDER_CHOICES = (
+        ('voicebip', 'VoiceBip (Voice/SMS)'),
+        ('meta_whatsapp', 'Meta WhatsApp Cloud'),
+        ('telegram', 'Telegram Bot'),
+        ('system', 'System / Internal'),
+    )
+
+    CHANNEL_CHOICES = (
+        ('voice', 'Voice Call'),
+        ('whatsapp', 'WhatsApp'),
+        ('sms', 'SMS'),
+        ('telegram', 'Telegram'),
+    )
+
+    DIRECTION_CHOICES = (
+        ('outbound', 'Outbound (clinic to patient)'),
+        ('inbound', 'Inbound (patient to clinic)'),
+    )
+
+    STATUS_CHOICES = (
+        ('queued', 'Queued'),
+        ('sent', 'Sent'),
+        ('delivered', 'Delivered'),
+        ('failed', 'Failed'),
+        ('answered', 'Answered'),
+        ('no_answer', 'No Answer'),
+        ('expired', 'Expired'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    provider = models.CharField(max_length=32, choices=PROVIDER_CHOICES, db_index=True)
+    channel = models.CharField(max_length=16, choices=CHANNEL_CHOICES, db_index=True)
+    direction = models.CharField(max_length=16, choices=DIRECTION_CHOICES, default='outbound')
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='sent', db_index=True)
+
+    # Patient identification (E.164 normalized phone — spec §6 duplicate protection)
+    patient_name = models.CharField(max_length=255, blank=True, default='')
+    patient_phone = models.CharField(max_length=32, db_index=True)
+
+    # Optional links to the booking domain (nullable — provider-only interactions allowed)
+    booking_request = models.ForeignKey(
+        BookingRequest, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='interactions'
+    )
+    appointment = models.ForeignKey(
+        Appointment, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='interactions'
+    )
+
+    # Delivery evidence
+    external_ref = models.CharField(
+        max_length=255, unique=True, null=True, blank=True, db_index=True,
+        help_text="Provider's unique message/call ID — idempotency key for webhook re-delivery."
+    )
+    call_duration_seconds = models.PositiveIntegerField(null=True, blank=True)
+    recording_url = models.URLField(null=True, blank=True)
+    summary = models.TextField(blank=True, default='')
+    transcript = models.TextField(blank=True, default='')
+    error_detail = models.TextField(blank=True, default='')
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'interaction_logs'
+        verbose_name = 'Interaction Log'
+        verbose_name_plural = 'Interaction Logs'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.get_channel_display()} ({self.get_status_display()}) → {self.patient_name or self.patient_phone}"

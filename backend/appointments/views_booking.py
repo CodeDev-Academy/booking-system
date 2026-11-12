@@ -1,6 +1,7 @@
 import os
 import uuid
 import datetime
+import ipaddress
 import json
 import logging
 from django.utils import timezone
@@ -21,8 +22,10 @@ from .serializers_booking import (
     sanitize_phone_e164,
 )
 from .services.availability import AvailabilityEngine
+from .services.dispatch_service import fire_and_forget_webhook
 from .services.sse_bus import broadcast_event
 from .services.telegram_service import TelegramService
+from .services.webhook_security import has_staff_or_webhook_access
 
 logger = logging.getLogger(__name__)
 
@@ -43,23 +46,34 @@ def get_booking_or_404(identifier, for_update=False):
 def get_client_ip(request):
     """
     SEC-04: Robust client IP extraction for rate-limiting.
-    Prioritizes edge ingress headers (CF-Connecting-IP, X-Real-IP) before X-Forwarded-For / REMOTE_ADDR.
+
+    Task 1.4 hardening:
+    - Every candidate value is validated with `ipaddress` — a spoofed or
+      malformed edge header (e.g. 'not-an-ip', '1.2.3.4, 5.6.7.8', private
+      garbage) is never trusted for rate-limit bucketing.
+    - Proxy-header inspection is controlled by the `TRUST_PROXY_IP_HEADERS`
+      env toggle (default 'True'). It must stay enabled on Railway/Cloudflare
+      where REMOTE_ADDR is the edge proxy, not the patient. Set to 'False'
+      only when deploying behind nothing (direct REMOTE_ADDR is trustworthy).
     """
-    cf_ip = request.META.get('HTTP_CF_CONNECTING_IP')
-    if cf_ip:
-        return cf_ip.strip()
+    client_ip = request.META.get('REMOTE_ADDR', '127.0.0.1')
 
-    real_ip = request.META.get('HTTP_X_REAL_IP')
-    if real_ip:
-        return real_ip.strip()
+    if os.environ.get('TRUST_PROXY_IP_HEADERS', 'True').strip().lower() not in ('false', '0', 'no'):
+        for header in ('HTTP_CF_CONNECTING_IP', 'HTTP_X_REAL_IP', 'HTTP_X_FORWARDED_FOR'):
+            raw = request.META.get(header)
+            if not raw:
+                continue
+            # X-Forwarded-For may chain: client, proxy1, proxy2 — first hop is the client
+            candidate = raw.split(',')[0].strip()
+            try:
+                client_ip = str(ipaddress.ip_address(candidate))
+                break
+            except (ValueError, TypeError):
+                logger.warning(
+                    "SEC-04: Ignoring malformed IP in %s header: %r", header, candidate
+                )
 
-    forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-    if forwarded_for:
-        parts = [ip.strip() for ip in forwarded_for.split(',') if ip.strip()]
-        if parts:
-            return parts[0]
-
-    return request.META.get('REMOTE_ADDR', '127.0.0.1')
+    return client_ip
 
 
 def resolve_doctor_or_default(doctor_id):
@@ -398,33 +412,37 @@ class DispatchOffersView(APIView):
             try:
                 tg_text, tg_markup = TelegramService.format_slot_offers(booking, created_offers, clinic)
                 dispatch_res = TelegramService.send_message(chat_id, tg_text, tg_markup)
-                logger.info("Telegram slot offer dispatched to chat_id %s: %s", chat_id, dispatch_res)
+                # Task 1.3 (privacy): log a safe summary only — the raw Telegram
+                # response echoes the full offer text containing the patient's name.
+                tg_ok = bool(dispatch_res.get('ok')) if isinstance(dispatch_res, dict) else False
+                tg_msg_id = (
+                    dispatch_res.get('result', {}).get('message_id')
+                    if isinstance(dispatch_res, dict) and isinstance(dispatch_res.get('result'), dict)
+                    else None
+                )
+                logger.info(
+                    "Telegram slot offer dispatched to chat_id %s: ok=%s message_id=%s",
+                    chat_id, tg_ok, tg_msg_id
+                )
             except Exception as tg_err:
                 logger.error("Failed to send slot offers to Telegram chat %s: %s", chat_id, tg_err, exc_info=True)
 
-        # Forward to n8n Slot Offer Dispatcher Webhook (05_slot_offer_dispatcher.json) if configured
+        # Forward to n8n Slot Offer Dispatcher Webhook (05_slot_offer_dispatcher.json) if configured.
+        # Task 2.2 (async): fire-and-forget daemon thread — the receptionist response is
+        # returned immediately; slow/unreachable n8n never blocks the modal (offers are
+        # already committed to the DB above, satisfying spec §5 persist-before-process).
         n8n_dispatch_url = os.environ.get('N8N_DISPATCH_WEBHOOK_URL') or custom_cfg.get('n8n_dispatch_url')
         if n8n_dispatch_url:
-            try:
-                import urllib.request
-                n8n_payload = json.dumps({
-                    'request_id': booking.request_code,
-                    'patient_name': booking.patient_name,
-                    'patient_phone': booking.patient_phone,
-                    'service_name': booking.service.name if booking.service else 'Consultation',
-                    'telegram_chat_id': chat_id,
-                    'channel': booking.channel,
-                    'candidate_slots': SlotOfferSerializer(created_offers, many=True).data,
-                }).encode('utf-8')
-                n8n_req = urllib.request.Request(
-                    n8n_dispatch_url,
-                    data=n8n_payload,
-                    headers={'Content-Type': 'application/json'}
-                )
-                urllib.request.urlopen(n8n_req, timeout=3)
-                logger.info("Successfully notified n8n dispatch webhook for request %s", booking.request_code)
-            except Exception as n8n_err:
-                logger.warning("n8n dispatch webhook notification failed: %s", n8n_err)
+            n8n_payload = {
+                'request_id': booking.request_code,
+                'patient_name': booking.patient_name,
+                'patient_phone': booking.patient_phone,
+                'service_name': booking.service.name if booking.service else 'Consultation',
+                'telegram_chat_id': chat_id,
+                'channel': booking.channel,
+                'candidate_slots': SlotOfferSerializer(created_offers, many=True).data,
+            }
+            fire_and_forget_webhook(n8n_dispatch_url, n8n_payload)
 
         return Response({
             "detail": "Offers dispatched successfully.",
@@ -486,10 +504,19 @@ class BookingRequestReRequestView(APIView):
     POST /api/v1/booking-requests/{id}/re-request/
     Triggered when patient requests fresh available times after previous offer expiration.
     Places request into receptionist priority Re-Requested tab and broadcasts SSE event.
+
+    Security (Phase 1 / Task 1.1): requires an authenticated active staff member
+    OR a valid `X-Webhook-Secret` header (n8n proxying the patient's button tap).
     """
     permission_classes = [AllowAny]
 
     def post(self, request, id):
+        if not has_staff_or_webhook_access(request):
+            return Response(
+                {'error': 'UNAUTHORIZED', 'detail': 'Valid staff credentials or X-Webhook-Secret required.'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
         booking = get_booking_or_404(id)
         booking.status = 're_requested'
         booking.save(update_fields=['status', 'updated_at'])

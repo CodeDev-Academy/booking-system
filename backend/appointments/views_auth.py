@@ -299,6 +299,20 @@ class AdminStaffListCreateView(views.APIView):
     def post(self, request):
         role = str(request.data.get('role', 'receptionist')).lower().strip()
         if role == 'doctor':
+            # Two-Role Dashboard Policy (Phase 1 / Task 1.2): doctors are clinical
+            # scheduling resources WITHOUT dashboard logins. A doctor creation attempt
+            # carrying password/PIN credentials is a login-provisioning attempt and is
+            # rejected; a credential-free doctor enrolment creates a Doctor resource only.
+            if request.data.get('password') or request.data.get('pin'):
+                return response.Response(
+                    {
+                        'role': 'Doctors cannot be provisioned dashboard logins. '
+                                'Dashboard accounts are strictly limited to receptionist and clinic_admin. '
+                                'To enrol a clinical doctor, omit password and PIN credentials.'
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             name = (request.data.get('full_name') or request.data.get('name') or '').strip()
             if not name:
                 return response.Response({'name': 'Doctor name is required.'}, status=status.HTTP_400_BAD_REQUEST)

@@ -32,11 +32,14 @@ class ClinicSettingsView(APIView):
 
     def get(self, request):
         clinic = ClinicSetting.get_settings()
-        return Response(ClinicSettingSerializer(clinic).data, status=status.HTTP_200_OK)
+        return Response(
+            ClinicSettingSerializer(clinic, context={'request': request}).data,
+            status=status.HTTP_200_OK
+        )
 
     def patch(self, request):
         clinic = ClinicSetting.get_settings()
-        serializer = ClinicSettingSerializer(clinic, data=request.data, partial=True)
+        serializer = ClinicSettingSerializer(clinic, data=request.data, partial=True, context={'request': request})
         serializer.is_valid(raise_exception=True)
         updated_clinic = serializer.save()
 
@@ -49,7 +52,10 @@ class ClinicSettingsView(APIView):
             ip_address=request.META.get('REMOTE_ADDR')
         )
 
-        return Response(ClinicSettingSerializer(updated_clinic).data, status=status.HTTP_200_OK)
+        return Response(
+            ClinicSettingSerializer(updated_clinic, context={'request': request}).data,
+            status=status.HTTP_200_OK
+        )
 
     def post(self, request):
         return self.patch(request)
@@ -118,7 +124,7 @@ class ClinicSettingsExportView(APIView):
 
     def get(self, request):
         clinic = ClinicSetting.get_settings()
-        data = ClinicSettingSerializer(clinic).data
+        data = ClinicSettingSerializer(clinic, context={'request': request}).data
         # Remove primary key and timestamps from portable template
         data.pop('id', None)
         data.pop('updated_at', None)

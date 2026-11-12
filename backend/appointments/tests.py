@@ -18,6 +18,7 @@ from .models import (
     FollowUpTask,
     AuditLog,
     IdempotencyKey,
+    InteractionLog,
 )
 from .services.availability import AvailabilityEngine
 from .services.hold_service import HoldService, SlotConflictException
@@ -33,6 +34,8 @@ class DomainModelTests(TestCase):
 
     def setUp(self):
         self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
         self.doctor = Doctor.objects.create(
             name='Dr. Test Doctor',
             specialty='Dental Surgery',
@@ -125,6 +128,8 @@ class Phase2ServicesTests(TestCase):
 
     def setUp(self):
         self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
         self.doctor = Doctor.objects.create(
             name='Dr. Bello Ibrahim',
             specialty='Dental Surgery',
@@ -588,6 +593,8 @@ class Phase3BookingQueueTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
 
         self.doctor = Doctor.objects.create(
             name='Dr. Bello Ibrahim',
@@ -888,6 +895,8 @@ class Phase3LiveVisitsTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
 
         self.doctor = Doctor.objects.create(
             name='Dr. Bello Ibrahim',
@@ -957,7 +966,7 @@ class Phase3LiveVisitsTests(APITestCase):
 
         res = self.client.post('/api/v1/slots/hold/', {
             'slot_offer_id': str(offer.id)
-        }, format='json')
+        }, format='json', HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026')
 
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data['status'], 'held')
@@ -1004,7 +1013,7 @@ class Phase3LiveVisitsTests(APITestCase):
             'end_datetime': end2.isoformat(),
             'patient_name': 'Second Patient',
             'patient_phone': '+2348055556666',
-        }, format='json')
+        }, format='json', HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026')
 
         self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
         self.assertEqual(res.data['error'], 'SLOT_CONFLICT')
@@ -1205,6 +1214,8 @@ class Phase3ClinicSettingsTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
 
         self.admin = StaffUser.objects.create(
             full_name='Dr. Admin Director',
@@ -1423,6 +1434,9 @@ class Phase3RealtimeWebhookTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.custom_config['telegram_secret_token'] = 'prod-secret-tg-token-777'
+        self.clinic.save()
         self.receptionist = StaffUser.objects.create(
             full_name='Zainab Frontdesk',
             email='zainab@clinic.com',
@@ -1507,7 +1521,7 @@ class Phase3RealtimeWebhookTests(APITestCase):
         }
 
         # 1. Initial ingestion
-        res1 = self.client.post('/api/v1/webhooks/messaging/inbound/', webhook_payload, format='json')
+        res1 = self.client.post('/api/v1/webhooks/messaging/inbound/', webhook_payload, format='json', HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN='prod-secret-tg-token-777')
         self.assertEqual(res1.status_code, status.HTTP_200_OK)
         self.assertEqual(res1.data['status'], 'processed')
         self.assertTrue(res1.data['created'])
@@ -1524,7 +1538,7 @@ class Phase3RealtimeWebhookTests(APITestCase):
         self.assertEqual(audit.performed_by, 'Gateway:telegram')
 
         # 2. Duplicate ingestion (network retry or retry sweep)
-        res2 = self.client.post('/api/v1/webhooks/messaging/inbound/', webhook_payload, format='json')
+        res2 = self.client.post('/api/v1/webhooks/messaging/inbound/', webhook_payload, format='json', HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN='prod-secret-tg-token-777')
         self.assertEqual(res2.status_code, status.HTTP_200_OK)
         self.assertEqual(res2.data['status'], 'duplicate_ignored')
         self.assertIn('already been processed', res2.data['detail'])
@@ -1601,6 +1615,8 @@ class Phase3AnalyticsTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
 
         self.doctor = Doctor.objects.create(
             name='Dr. Aminu Kano',
@@ -1832,6 +1848,12 @@ class Phase5TelegramTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.custom_config['telegram_secret_token'] = 'prod-secret-tg-token-777'
+        self.clinic.save()
+        # Inject the Telegram gateway secret header for every request in this class
+        # (fail-closed inbound verification is active under the test runner).
+        self.client.credentials(HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN='prod-secret-tg-token-777')
         self.doctor = Doctor.objects.create(
             name='Dr. Bello (Dentist & Surgeon)',
             specialty='Dental Surgery',
@@ -2142,6 +2164,7 @@ class Phase6ConcurrencyAndE2ETests(APITestCase):
         cache.clear()
         self.clinic = ClinicSetting.get_settings()
         self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.custom_config['telegram_secret_token'] = 'prod-secret-tg-token-777'
         self.clinic.save()
 
         # Create staff user
@@ -2232,7 +2255,7 @@ class Phase6ConcurrencyAndE2ETests(APITestCase):
             'patient_name': 'Patient Gamma',
             'patient_phone': '+2348033333333',
         }
-        res = self.client.post('/api/v1/slots/hold/', overlap_payload, format='json')
+        res = self.client.post('/api/v1/slots/hold/', overlap_payload, format='json', HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026')
         self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
         self.assertEqual(res.data['error'], 'SLOT_CONFLICT')
 
@@ -2348,7 +2371,7 @@ class Phase6ConcurrencyAndE2ETests(APITestCase):
                 'message': {'message_id': 101, 'chat': {'id': 98765432}}
             }
         }
-        select_res = self.client.post('/api/v1/webhooks/telegram/inbound/', tg_payload, format='json')
+        select_res = self.client.post('/api/v1/webhooks/telegram/inbound/', tg_payload, format='json', HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN='prod-secret-tg-token-777')
         self.assertEqual(select_res.status_code, status.HTTP_200_OK)
         self.assertEqual(select_res.data['telegram_result']['status'], 'confirmed')
         appt_code = select_res.data['telegram_result']['appointment_code']
@@ -2374,7 +2397,7 @@ class Phase6ConcurrencyAndE2ETests(APITestCase):
                 'message': {'message_id': 102, 'chat': {'id': 98765432}}
             }
         }
-        confirm_res = self.client.post('/api/v1/webhooks/telegram/inbound/', confirm_payload, format='json')
+        confirm_res = self.client.post('/api/v1/webhooks/telegram/inbound/', confirm_payload, format='json', HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN='prod-secret-tg-token-777')
         self.assertEqual(confirm_res.status_code, status.HTTP_200_OK)
         appt.refresh_from_db()
         self.assertIsNotNone(appt.confirmed_at)
@@ -2477,6 +2500,8 @@ class StaffAuthSecurityHardeningTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
 
         self.receptionist = StaffUser.objects.create(
             full_name='Sarah Aliyu',
@@ -2675,6 +2700,8 @@ class ComprehensiveBackendSyncSpecificationTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
         self.clinic.phones = ['+234 803 000 1122', '+234 809 111 2233']
         self.clinic.emails = ['contact@cedarcare.ng', 'help@cedarcare.ng']
         self.clinic.save()
@@ -3024,6 +3051,721 @@ class ComprehensiveBackendSyncSpecificationTests(APITestCase):
 
         svc_db = Service.objects.get(id=new_svc_id)
         self.assertFalse(svc_db.is_active)
+
+
+class WebhookSecurityHardeningTests(APITestCase):
+    """
+    Phase 1 / Task 1.1 — Partner Readiness Roadmap:
+    X-Webhook-Secret enforcement on every endpoint the n8n Dispatcher calls,
+    and fail-closed behavior when secrets are unconfigured in production.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+
+        self.doctor = Doctor.objects.create(
+            name='Dr. Security Test',
+            specialty='General Medicine',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(17, 0),
+            is_active=True,
+        )
+        self.service = Service.objects.create(
+            name='Security Consultation',
+            category='General',
+            duration_minutes=30,
+            buffer_minutes=10,
+            price=10000.00,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.service)
+
+        self.staff = StaffUser.objects.create(
+            full_name='Security Receptionist',
+            email='security@clinic.com',
+            role='receptionist',
+            is_active=True,
+        )
+        self.staff.set_password('SecurityPass123!')
+        self.staff.save()
+
+        self.hold_payload = {
+            'doctor_id': str(self.doctor.id),
+            'service_id': str(self.service.id),
+            'start_datetime': (
+                timezone.make_aware(datetime.datetime.combine(
+                    timezone.now().date() + datetime.timedelta(days=7),
+                    datetime.time(10, 0),
+                )).isoformat()
+            ),
+            'end_datetime': (
+                timezone.make_aware(datetime.datetime.combine(
+                    timezone.now().date() + datetime.timedelta(days=7),
+                    datetime.time(10, 30),
+                )).isoformat()
+            ),
+            'patient_name': 'Hauwa Webhook',
+            'patient_phone': '+2348099988777',
+        }
+
+    def tearDown(self):
+        cache.clear()
+
+    # --- POST /api/v1/slots/hold/ -------------------------------------------
+
+    def test_slot_hold_rejects_missing_webhook_secret(self):
+        """Anonymous request without X-Webhook-Secret must be rejected before any DB write."""
+        initial_count = Appointment.objects.count()
+        res = self.client.post('/api/v1/slots/hold/', self.hold_payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(res.data['error'], 'UNAUTHORIZED')
+        self.assertEqual(Appointment.objects.count(), initial_count)
+
+    def test_slot_hold_rejects_wrong_webhook_secret(self):
+        res = self.client.post(
+            '/api/v1/slots/hold/', self.hold_payload, format='json',
+            HTTP_X_WEBHOOK_SECRET='attacker-guess-123'
+        )
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_slot_hold_accepts_valid_webhook_secret(self):
+        res = self.client.post(
+            '/api/v1/slots/hold/', self.hold_payload, format='json',
+            HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 'held')
+
+    def test_slot_hold_allows_authenticated_staff_without_secret(self):
+        """Dashboard / walk-in desk path: staff JWT works with no secret header."""
+        self.client.force_authenticate(user=self.staff)
+        res = self.client.post('/api/v1/slots/hold/', self.hold_payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    # --- POST /api/v1/booking-requests/{id}/re-request/ ----------------------
+
+    def test_re_request_rejects_anonymous_without_secret(self):
+        booking = BookingRequest.objects.create(
+            patient_name='Musa ReRequest',
+            patient_phone='+2348012345678',
+            service=self.service,
+            status='offer_expired',
+        )
+        res = self.client.post(f'/api/v1/booking-requests/{booking.id}/re-request/', {}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, 'offer_expired')
+
+    def test_re_request_accepts_valid_webhook_secret(self):
+        booking = BookingRequest.objects.create(
+            patient_name='Musa ReRequest',
+            patient_phone='+2348012345678',
+            service=self.service,
+            status='offer_expired',
+        )
+        res = self.client.post(
+            f'/api/v1/booking-requests/{booking.id}/re-request/', {}, format='json',
+            HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, 're_requested')
+
+    # --- POST /api/v1/webhooks/expiry-sweep/ ---------------------------------
+
+    def test_expiry_sweep_rejects_missing_and_wrong_secret(self):
+        res_missing = self.client.post('/api/v1/webhooks/expiry-sweep/', {}, format='json')
+        self.assertEqual(res_missing.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(res_missing.data['error'], 'INVALID_WEBHOOK_SECRET')
+
+        res_wrong = self.client.post(
+            '/api/v1/webhooks/expiry-sweep/', {}, format='json',
+            HTTP_X_WEBHOOK_SECRET='wrong-secret'
+        )
+        self.assertEqual(res_wrong.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_expiry_sweep_accepts_valid_secret(self):
+        res = self.client.post(
+            '/api/v1/webhooks/expiry-sweep/', {'triggered_by': 'n8n_cron'}, format='json',
+            HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026'
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('expired_offers', res.data)
+
+    # --- Fail-closed postures -------------------------------------------------
+
+    def test_telegram_inbound_fail_closed_when_token_unconfigured(self):
+        """Production posture: unconfigured Telegram secret rejects Telegram-shaped payloads."""
+        self.clinic.custom_config.pop('telegram_secret_token', None)
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+
+        payload = {'update_id': 700100200, 'channel': 'telegram', 'message': {'text': 'hi'}}
+        res = self.client.post('/api/v1/webhooks/messaging/inbound/', payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(res.data['error'], 'INVALID_WEBHOOK_SECRET')
+
+    def test_unconfigured_secret_fails_closed_for_slot_hold(self):
+        """No secret configured anywhere + DEBUG=False (test runner) -> every guarded call rejected."""
+        self.clinic.webhook_secret = ''
+        self.clinic.save()
+
+        with override_settings(WEBHOOK_SECRET=''):
+            res = self.client.post(
+                '/api/v1/slots/hold/', self.hold_payload, format='json',
+                HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026'
+            )
+            self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_staff_deactivated_user_cannot_bypass_with_secret(self):
+        """An inactive staff member is not a valid staff fallback even when a secret is present."""
+        self.staff.is_active = False
+        self.staff.save(update_fields=['is_active'])
+        self.client.force_authenticate(user=self.staff)
+        res = self.client.post('/api/v1/slots/hold/', self.hold_payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class RBACTighteningTests(APITestCase):
+    """
+    Phase 1 / Task 1.2 — Partner Readiness Roadmap:
+    Receptionists must never read integration secrets or mutate root clinic rules;
+    clinic_admin retains full visibility and control; doctor login provisioning stays forbidden.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.custom_config = {
+            'currency': 'NGN',
+            'bot_handle': '@cedarcare_bot',
+            'telegram_bot_token': '123456:ABC-real-bot-token',
+            'telegram_secret_token': 'tg-gateway-secret-999',
+            'webhook_secret': 'legacy-config-secret',
+        }
+        self.clinic.save()
+
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Frontdesk',
+            email='sarah.rbac@clinic.com',
+            role='receptionist',
+            is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+
+        self.admin = StaffUser.objects.create(
+            full_name='Ibrahim Admin',
+            email='admin.rbac@clinic.com',
+            role='clinic_admin',
+            is_active=True,
+        )
+        self.admin.set_password('AdminPass123!')
+        self.admin.save()
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_receptionist_settings_get_masks_integration_secrets(self):
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.get('/api/v1/clinic/settings/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        cfg = res.data['custom_config']
+        self.assertEqual(cfg['telegram_bot_token'], '•••••••• (admin only)')
+        self.assertEqual(cfg['telegram_secret_token'], '•••••••• (admin only)')
+        self.assertEqual(cfg['webhook_secret'], '•••••••• (admin only)')
+        # Benign operational keys stay visible for the workstation UI
+        self.assertEqual(cfg['currency'], 'NGN')
+        self.assertEqual(cfg['bot_handle'], '@cedarcare_bot')
+        # The dedicated webhook_secret DB field is never serialized at all
+        self.assertNotIn('webhook_secret', res.data)
+
+    def test_admin_settings_get_returns_full_secrets(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.get('/api/v1/clinic/settings/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        cfg = res.data['custom_config']
+        self.assertEqual(cfg['telegram_bot_token'], '123456:ABC-real-bot-token')
+        self.assertEqual(cfg['telegram_secret_token'], 'tg-gateway-secret-999')
+        self.assertEqual(cfg['webhook_secret'], 'legacy-config-secret')
+
+    def test_receptionist_settings_export_masks_secrets(self):
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.get('/api/v1/clinic/settings/export/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        body = res.content.decode('utf-8')
+        # Real secret values must never appear; masked marker text must appear
+        self.assertNotIn('ABC-real-bot-token', body)
+        self.assertNotIn('tg-gateway-secret-999', body)
+        self.assertIn('(admin only)', body)
+
+    def test_receptionist_cannot_update_root_clinic_settings(self):
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.patch('/api/v1/clinic/settings/', {
+            'open_time': '06:00',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.clinic.refresh_from_db()
+        self.assertEqual(self.clinic.open_time, datetime.time(8, 0))
+
+    def test_admin_can_update_root_clinic_settings(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.patch('/api/v1/clinic/settings/', {
+            'open_time': '07:30',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.clinic.refresh_from_db()
+        self.assertEqual(self.clinic.open_time, datetime.time(7, 30))
+
+    def test_admin_clinical_doctor_enrolment_without_credentials_succeeds(self):
+        """Credential-free doctor enrolment creates a Doctor resource with NO dashboard login."""
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post('/api/v1/admin/staff/', {
+            'full_name': 'Dr. Emeka Nwosu',
+            'email': 'emeka.nwosu@cedarcare.ng',
+            'role': 'doctor',
+            'specialty': 'Optometry',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['role'], 'doctor')
+        self.assertTrue(Doctor.objects.filter(name='Dr. Emeka Nwosu').exists())
+        # The security guarantee: no StaffUser login account may exist for a doctor
+        self.assertFalse(StaffUser.objects.filter(role='doctor').exists())
+
+    def test_admin_doctor_login_provisioning_with_credentials_rejected(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post('/api/v1/admin/staff/', {
+            'full_name': 'Dr. Sneaky Login',
+            'email': 'sneaky@cedarcare.ng',
+            'role': 'doctor',
+            'password': 'password123',
+            'pin': '1234',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('role', res.data)
+        self.assertFalse(StaffUser.objects.filter(role='doctor').exists())
+        self.assertFalse(Doctor.objects.filter(name='Dr. Sneaky Login').exists())
+
+
+class PrivacyAndIPHardeningTests(TestCase):
+    """
+    Phase 1 / Tasks 1.3 + 1.4 — Partner Readiness Roadmap:
+    Patient phone numbers never reach ephemeral server logs in full form, and
+    client-IP extraction cannot be poisoned by malformed/spoofed edge headers.
+    """
+
+    def setUp(self):
+        cache.clear()
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_mask_phone_variants(self):
+        from .services.privacy import mask_phone
+        self.assertEqual(mask_phone('+2348030001122'), '+234••••••1122')
+        self.assertEqual(mask_phone('08030001122'), '•••••••1122')
+        self.assertEqual(mask_phone(''), '')
+        self.assertEqual(mask_phone(None), '')
+        # Short inputs become fully masked
+        self.assertEqual(mask_phone('12345'), '•••••')
+
+    def test_safe_external_body_masks_phones_and_truncates(self):
+        from .services.privacy import safe_external_body
+        body = "Error for patient +2348030001122: slot taken. " + "x" * 500
+        safe = safe_external_body(body, max_chars=100)
+        self.assertNotIn('+2348030001122', safe)
+        self.assertIn('1122', safe)
+        self.assertLessEqual(len(safe), 100 + len('…[truncated]'))
+        self.assertTrue(safe.endswith('…[truncated]'))
+
+    def test_safe_external_body_none(self):
+        from .services.privacy import safe_external_body
+        self.assertEqual(safe_external_body(None), '')
+
+    def _make_request(self, meta):
+        from types import SimpleNamespace
+        return SimpleNamespace(META=meta)
+
+    def test_get_client_ip_trusted_valid_cf_header(self):
+        from .views_booking import get_client_ip
+        req = self._make_request({
+            'REMOTE_ADDR': '10.0.0.1',
+            'HTTP_CF_CONNECTING_IP': '102.89.44.7',
+        })
+        self.assertEqual(get_client_ip(req), '102.89.44.7')
+
+    def test_get_client_ip_malformed_headers_fall_through(self):
+        from .views_booking import get_client_ip
+        req = self._make_request({
+            'REMOTE_ADDR': '10.0.0.1',
+            'HTTP_CF_CONNECTING_IP': 'not-an-ip',
+            'HTTP_X_REAL_IP': 'also-garbage',
+            'HTTP_X_FORWARDED_FOR': 'garbage<scrip>',
+        })
+        self.assertEqual(get_client_ip(req), '10.0.0.1')
+
+    def test_get_client_ip_xff_chain_takes_first_hop(self):
+        from .views_booking import get_client_ip
+        req = self._make_request({
+            'REMOTE_ADDR': '10.0.0.1',
+            'HTTP_X_FORWARDED_FOR': '102.89.44.7, 172.71.1.1',
+        })
+        self.assertEqual(get_client_ip(req), '102.89.44.7')
+
+    @override_settings()
+    def test_get_client_ip_proxy_headers_ignored_when_toggle_off(self):
+        import os
+        from .views_booking import get_client_ip
+        os.environ['TRUST_PROXY_IP_HEADERS'] = 'False'
+        try:
+            req = self._make_request({
+                'REMOTE_ADDR': '10.0.0.1',
+                'HTTP_CF_CONNECTING_IP': '102.89.44.7',
+                'HTTP_X_FORWARDED_FOR': '102.89.44.8',
+            })
+            self.assertEqual(get_client_ip(req), '10.0.0.1')
+        finally:
+            os.environ['TRUST_PROXY_IP_HEADERS'] = 'True'
+
+    def test_get_client_ip_defaults_to_loopback(self):
+        from .views_booking import get_client_ip
+        req = self._make_request({})
+        self.assertEqual(get_client_ip(req), '127.0.0.1')
+
+    def test_telegram_http_error_logs_masked_body(self):
+        """
+        End-to-end guard: the HTTPError handler path masks any patient phone
+        found in a provider error body before it reaches the log/AuditLog.
+        """
+        from unittest.mock import patch
+        from .services.telegram_service import TelegramService
+        from .models import AuditLog
+
+        clinic = ClinicSetting.get_settings()
+        clinic.custom_config = {'telegram_bot_token': '123456:real-token'}
+        clinic.save()
+
+        captured = {}
+
+        def fake_logger_warning(msg, *args):
+            captured['log'] = msg % args if args else msg
+
+        with patch('urllib.request.urlopen') as mock_open:
+            try:
+                raise __import__('urllib.error', fromlist=['HTTPError']).HTTPError(
+                    url='https://api.telegram.org', code=403,
+                    msg='Forbidden', hdrs=None,
+                    fp=__import__('io').BytesIO(b'chat 08030001122 blocked')
+                )
+            except Exception:
+                pass
+            err = __import__('urllib.error', fromlist=['HTTPError']).HTTPError(
+                url='https://api.telegram.org', code=403,
+                msg='Forbidden', hdrs=None,
+                fp=__import__('io').BytesIO(b'chat 08030001122 blocked')
+            )
+            mock_open.side_effect = err
+
+            with patch(
+                'appointments.services.telegram_service.logger.warning',
+                side_effect=fake_logger_warning
+            ):
+                res = TelegramService.call_api('sendMessage', {'chat_id': '1', 'text': 'x'})
+
+        self.assertFalse(res.get('ok'))
+        self.assertIn('log', captured)
+        self.assertNotIn('08030001122', captured['log'])
+        self.assertIn('1122', captured['log'])
+        audit = AuditLog.objects.filter(action='TELEGRAM_BOT_BLOCKED_BY_USER').order_by('-created_at').first()
+        self.assertIsNotNone(audit)
+        self.assertNotIn('08030001122', str(audit.changes))
+
+
+class InteractionLogAPITests(APITestCase):
+    """
+    Phase 2 / Task 2.1 — Partner Readiness Roadmap:
+    POST /api/v1/interactions/ accepts n8n Dispatcher results with the shared
+    webhook secret (fail-closed otherwise) and is idempotent on external_ref;
+    GET /api/v1/interactions/ is staff-only and filterable.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Intake',
+            email='sarah.interactions@clinic.com',
+            role='receptionist',
+            is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+
+        self.service = Service.objects.create(
+            name='Dental Consultation',
+            duration_minutes=30,
+            buffer_minutes=5,
+            price=10000,
+        )
+        self.booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0042',
+            patient_name='Amina Test',
+            patient_phone='+2348030001122',
+            service=self.service,
+            status='slots_offered',
+        )
+        self.appointment = Appointment.objects.create(
+            appointment_code='AP-1042',
+            patient_name='Amina Test',
+            patient_phone='+2348030001122',
+            doctor=Doctor.objects.create(name='Dr. Test'),
+            service=self.service,
+            start_datetime=timezone.now() + datetime.timedelta(days=1),
+            end_datetime=timezone.now() + datetime.timedelta(days=1, minutes=30),
+            status='confirmed',
+        )
+
+        self.valid_payload = {
+            'provider': 'voicebip',
+            'channel': 'voice',
+            'status': 'answered',
+            'patient_name': 'Amina Test',
+            'patient_phone': '+234 803 000 1122',  # needs E.164 normalization
+            'request_code': 'REQ-2026-0042',
+            'external_ref': 'VB-CALL-7788',
+            'call_duration_seconds': 45,
+            'summary': 'Patient accepted 10:00 slot.',
+        }
+
+    def tearDown(self):
+        cache.clear()
+
+    def _post_with_secret(self, payload=None):
+        return self.client.post(
+            '/api/v1/interactions/',
+            payload or self.valid_payload,
+            format='json',
+            HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026'
+        )
+
+    def test_post_without_secret_or_staff_rejected(self):
+        res = self.client.post('/api/v1/interactions/', self.valid_payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(InteractionLog.objects.count(), 0)
+
+    def test_post_with_wrong_secret_rejected(self):
+        res = self.client.post(
+            '/api/v1/interactions/',
+            self.valid_payload, format='json',
+            HTTP_X_WEBHOOK_SECRET='wrong-secret'
+        )
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(InteractionLog.objects.count(), 0)
+
+    def test_post_with_secret_creates_log(self):
+        res = self._post_with_secret()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(InteractionLog.objects.count(), 1)
+
+        log = InteractionLog.objects.first()
+        # E.164 normalization applied
+        self.assertEqual(log.patient_phone, '+2348030001122')
+        self.assertEqual(log.provider, 'voicebip')
+        self.assertEqual(log.channel, 'voice')
+        self.assertEqual(log.status, 'answered')
+        self.assertEqual(log.call_duration_seconds, 45)
+        # FK resolved from request_code
+        self.assertEqual(log.booking_request, self.booking)
+        self.assertEqual(res.data['request_code'], 'REQ-2026-0042')
+
+    def test_post_with_staff_jwt_creates_log(self):
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.post('/api/v1/interactions/', self.valid_payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+    def test_post_idempotent_on_external_ref(self):
+        first = self._post_with_secret()
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+
+        # Same provider delivery re-sent with an updated status
+        re_delivery = dict(self.valid_payload)
+        re_delivery['status'] = 'failed'
+        re_delivery['error_detail'] = 'Line busy.'
+        second = self._post_with_secret(re_delivery)
+
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(InteractionLog.objects.count(), 1)
+        log = InteractionLog.objects.first()
+        self.assertEqual(log.status, 'failed')
+        self.assertEqual(log.error_detail, 'Line busy.')
+
+    def test_post_invalid_request_code_rejected(self):
+        bad = dict(self.valid_payload)
+        bad['request_code'] = 'REQ-2026-9999'
+        res = self._post_with_secret(bad)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('request_code', res.data)
+        self.assertEqual(InteractionLog.objects.count(), 0)
+
+    def test_post_invalid_channel_rejected(self):
+        bad = dict(self.valid_payload)
+        bad['channel'] = 'carrier_pigeon'
+        res = self._post_with_secret(bad)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('channel', res.data)
+
+    def test_get_requires_staff(self):
+        InteractionLog.objects.create(
+            provider='voicebip', channel='voice', status='answered',
+            patient_phone='+2348030001122',
+        )
+        res = self.client.get('/api/v1/interactions/')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_get_staff_filterable(self):
+        InteractionLog.objects.create(
+            provider='voicebip', channel='voice', status='answered',
+            patient_phone='+2348030001122', booking_request=self.booking,
+        )
+        InteractionLog.objects.create(
+            provider='meta_whatsapp', channel='whatsapp', status='delivered',
+            patient_phone='+2348099999999',
+        )
+
+        self.client.force_authenticate(user=self.receptionist)
+
+        res = self.client.get('/api/v1/interactions/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 2)
+
+        res = self.client.get('/api/v1/interactions/', {'patient_phone': '+2348030001122'})
+        self.assertEqual(len(res.data), 1)
+        self.assertEqual(res.data[0]['channel'], 'voice')
+
+        res = self.client.get('/api/v1/interactions/', {'request_code': 'REQ-2026-0042'})
+        self.assertEqual(len(res.data), 1)
+
+        res = self.client.get('/api/v1/interactions/', {'channel': 'whatsapp'})
+        self.assertEqual(len(res.data), 1)
+        self.assertEqual(res.data[0]['provider'], 'meta_whatsapp')
+
+        res = self.client.get('/api/v1/interactions/', {'limit': '1'})
+        self.assertEqual(len(res.data), 1)
+
+    def test_get_includes_appointment_code(self):
+        InteractionLog.objects.create(
+            provider='meta_whatsapp', channel='whatsapp', status='delivered',
+            patient_phone='+2348030001122', appointment=self.appointment,
+        )
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.get('/api/v1/interactions/')
+        self.assertEqual(res.data[0]['appointment_code'], 'AP-1042')
+
+
+class AsyncDispatchWebhookTests(APITestCase):
+    """
+    Phase 2 / Task 2.2 — Partner Readiness Roadmap:
+    The receptionist "Approve & Dispatch" response must never wait on n8n.
+    The webhook POST is a fire-and-forget daemon thread; a slow/unreachable
+    n8n endpoint must not delay the HTTP response (receptionist modal closes
+    immediately; offers are already committed to the DB).
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Dispatch',
+            email='sarah.dispatch@clinic.com',
+            role='receptionist',
+            is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+
+        self.service = Service.objects.create(
+            name='Dental Consultation',
+            duration_minutes=30,
+            buffer_minutes=5,
+            price=10000,
+        )
+        self.doctor = Doctor.objects.create(name='Dr. Dispatch Test')
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_slow_n8n_does_not_block_response(self):
+        import time
+        import os
+        from unittest.mock import patch
+
+        self.client.force_authenticate(user=self.receptionist)
+        req = BookingRequest.objects.create(
+            patient_name='Yusuf Bello',
+            patient_phone='+2348055556666',
+            service=self.service,
+            preferred_doctor=self.doctor,
+            status='awaiting_review',
+        )
+
+        now = timezone.now()
+        slot_start = now + datetime.timedelta(days=1, hours=3)
+        slot_end = slot_start + datetime.timedelta(minutes=30)
+
+        payload = {
+            'slots': [{
+                'doctor_id': str(self.doctor.id),
+                'start_datetime': slot_start.isoformat(),
+                'end_datetime': slot_end.isoformat(),
+                'is_alternative_date': False,
+            }]
+        }
+
+        slow_calls = []
+
+        def slow_urlopen(*args, **kwargs):
+            slow_calls.append(time.monotonic())
+            time.sleep(2.0)  # simulate a hanging n8n instance
+            class FakeResp:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *a):
+                    return False
+            return FakeResp()
+
+        with patch.dict(os.environ, {'N8N_DISPATCH_WEBHOOK_URL': 'https://n8n.example.com/webhook/slot-dispatch'}):
+            with patch('appointments.services.dispatch_service.urllib.request.urlopen', side_effect=slow_urlopen):
+                started = time.monotonic()
+                res = self.client.post(
+                    f'/api/v1/booking-requests/{req.request_code}/dispatch-offers/',
+                    payload, format='json'
+                )
+                elapsed = time.monotonic() - started
+                # Let the daemon thread finish cleanly before teardown
+                import threading
+                for t in threading.enumerate():
+                    if t.name == 'n8n-dispatch-webhook' and t.is_alive():
+                        t.join(timeout=5)
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 'slots_offered')
+        # The mock was actually exercised — the test is not vacuous
+        self.assertEqual(len(slow_calls), 1, "Fire-and-forget webhook never attempted the POST")
+        # The core guarantee: response returns in well under the 2s n8n hang
+        self.assertLess(elapsed, 1.5, f"Dispatch response blocked for {elapsed:.2f}s")
 
 
 

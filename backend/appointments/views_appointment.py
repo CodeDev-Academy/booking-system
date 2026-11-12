@@ -13,6 +13,7 @@ from .models import Appointment, Doctor, FollowUpTask, AuditLog, ClinicSetting
 from .permissions import IsStaffAuthenticated
 from .services.hold_service import HoldService, SlotConflictException
 from .services.disruption_service import DisruptionService
+from .services.webhook_security import has_staff_or_webhook_access, verify_webhook_secret
 from .services.sse_bus import broadcast_event
 from .serializers_appointment import (
     SlotHoldRequestSerializer,
@@ -39,10 +40,21 @@ class SlotHoldView(APIView):
     POST /api/v1/slots/hold/ & /api/v1/appointments/hold/
     Acquires an atomic temporary 15-minute hold on a clinical slot with row-level locks.
     Prevents race conditions and double-booking.
+
+    Security (Phase 1 / Task 1.1): requires an authenticated active staff member
+    (dashboard / walk-in desk) OR a valid `X-Webhook-Secret` header (n8n Dispatcher
+    proxying a patient's slot selection). Anonymous requests without the secret are
+    rejected with 401 before any database work.
     """
     permission_classes = [AllowAny]
 
     def post(self, request):
+        if not has_staff_or_webhook_access(request):
+            return Response(
+                {'error': 'UNAUTHORIZED', 'detail': 'Valid staff credentials or X-Webhook-Secret required.'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
         serializer = SlotHoldRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data
@@ -518,14 +530,10 @@ class UpcomingRemindersView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        clinic = ClinicSetting.get_settings()
-        secret_header = request.headers.get('X-Webhook-Secret') or request.META.get('HTTP_X_WEBHOOK_SECRET')
         is_staff = request.user and getattr(request.user, 'is_authenticated', False) and getattr(request.user, 'is_active', False)
 
-        if not is_staff:
-            expected_secret = getattr(clinic, 'webhook_secret', None) or 'clinic_dev_secret_2026'
-            if not secret_header or secret_header != expected_secret:
-                return Response({'error': 'UNAUTHORIZED', 'detail': 'Valid staff credentials or X-Webhook-Secret required.'}, status=status.HTTP_401_UNAUTHORIZED)
+        if not is_staff and not verify_webhook_secret(request):
+            return Response({'error': 'UNAUTHORIZED', 'detail': 'Valid staff credentials or X-Webhook-Secret required.'}, status=status.HTTP_401_UNAUTHORIZED)
 
         now = timezone.now()
         try:

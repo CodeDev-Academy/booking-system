@@ -340,3 +340,121 @@
         6. Review Structured Summary Dossier & 1-Click Transmit to Reception
       - **Playwright E2E Suite Re-Verified**: **8/8 Passed in 31.3s (100%)**.
       - **Backend Suite Re-Verified**: `Phase2ServicesTests` (7/7 Passed), `Phase6ConcurrencyAndE2ETests` (4/4 Passed). Production Vite build: 0 errors in 3.67s.
+
+---
+
+# Partner Readiness Roadmap — Phase 1 (Hybrid Website AI Operating System)
+
+Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPERATING_SYSTEM_SPEC.md`
+(Type 3 Two-Way Sync, Option B Secure Backend API). The active execution roadmap lives in
+`ROADMAP_PARTNER_READINESS.md`; project memory / AI-handover file is `MASTER_CONTEXT.md`.
+
+- [x] **Task 1.1: Webhook Secret & Cryptographic Verification (COMPLETED 2026-11-12)**:
+  - Created `backend/appointments/services/webhook_security.py` — centralized constant-time
+    `X-Webhook-Secret` verification with resolution order: `ClinicSetting.webhook_secret` (new dedicated
+    DB field, migration `0004`) → `custom_config['webhook_secret']` → `WEBHOOK_SECRET` env →
+    `clinic_dev_secret_2026` dev fallback **only when `DEBUG=True`** → fail-closed (403) in production.
+  - Enforced staff-auth-OR-secret on `POST /api/v1/slots/hold/` + `/api/v1/appointments/hold/` and
+    `POST /api/v1/booking-requests/{id}/re-request/` (both were previously `AllowAny`).
+  - Refactored `UpcomingRemindersView` and `ExpirySweepWebhookView` onto the shared helper
+    (constant-time compare; removed unconditional hardcoded fallback).
+  - Telegram inbound hardening: fail-closed in production when no secret configured; Telegram-shaped
+    payloads only (WhatsApp/Meta traffic on the same route unaffected).
+  - `WEBHOOK_SECRET` added to `core/settings.py` and `backend/.env.example` (with production notes).
+  - New `WebhookSecurityHardeningTests` (11 tests: missing/wrong/valid secret, staff bypass,
+    inactive-staff bypass blocked, fail-closed postures for hold + Telegram).
+  - Updated 11 test `setUp`s + 7 guarded-endpoint test calls with explicit secrets.
+  - Spec documented in `SECURITY_AND_AUTH.md` §7.4.
+  - **Verification**: 95 tests total — 93 pass; the only 2 failures
+    (`test_telegram_interactive_service_booking_and_dispatch`,
+    `test_admin_cannot_create_doctor_account`) were verified PRE-EXISTING in HEAD via a clean
+    `git archive` baseline run. Zero regressions introduced.
+
+- [x] **Task 1.2: Role-Based Access Control Restrictions (COMPLETED 2026-11-12)**:
+  - **Secret masking for non-admin staff**: `ClinicSettingSerializer.to_representation` now masks any
+    `custom_config` key containing `secret` / `token` / `password` / `api_key` / `apikey` / `private`
+    as `•••••••• (admin only)` unless the requester is an active `clinic_admin` (admin saves
+    round-trip secrets uncorrupted). Applies to `GET /api/v1/clinic/settings/`, the PATCH response,
+    and the white-label export endpoint. The dedicated `ClinicSetting.webhook_secret` DB field is
+    never serialized at all.
+  - **Root-rule write gate verified & regression-proofed**: `PATCH/POST /api/v1/clinic/settings/`
+    confirmed already restricted to `IsClinicAdmin` via `get_permissions()`; tests added so a
+    receptionist PATCH returns `403` and an admin PATCH succeeds.
+  - **Doctor login-provisioning regression FIXED** (pre-existing in HEAD): `POST /api/v1/admin/staff/`
+    with `role='doctor'` + password/PIN credentials → `400` (two-role policy restored: no
+    `StaffUser(role='doctor')` can ever exist). Credential-free doctor enrolment — the
+    `AddStaffModal` path — still creates a clinical `Doctor` resource with `201`.
+  - New `RBACTighteningTests` (7 tests covering all of the above).
+  - **Verification**: 102 tests total — **101 pass**; sole remaining failure is the pre-existing
+    Telegram `book_svc` intake-flow bug (verified in clean HEAD baseline; tracked in
+    `ROADMAP_PARTNER_READINESS.md` as a standalone issue).
+
+- [x] **Task 1.3: Data Privacy & Masking (COMPLETED 2026-11-12)**:
+  - New `backend/appointments/services/privacy.py`: `mask_phone` (keeps country code + last 4 digits,
+    e.g. `+234••••••1122`), `mask_phones_in_text` (free-text regex sweep), `safe_external_body`
+    (phone-masked + truncated provider error bodies for logs/audit).
+  - Telegram dispatch success log (`views_booking.py`) now logs a safe `ok=`/`message_id=` summary —
+    the raw Telegram response echoed patient names.
+  - `TelegramService.call_api` HTTPError handler: the logged body and the
+    `AuditLog.TELEGRAM_BOT_BLOCKED_BY_USER` payload now store masked, truncated text.
+  - **Fixed latent pre-existing bug** surfaced by new tests: that EC-5 handler created `AuditLog`
+    without the non-nullable `entity_id` (would IntegrityError in production); now passes a
+    synthetic UUID.
+  - **Documented decision**: the DB (AuditLog + domain models) intentionally keeps full contact data
+    as the access-controlled authoritative store; ONLY ephemeral server logs are masked.
+  - All 8 `logger.*` sites audited; frontend bundle scanned for hardcoded secrets — clean.
+  - Tests: `PrivacyAndIPHardeningTests` (9 tests, incl. an end-to-end masked-log guard).
+
+- [x] **Task 1.4: Inbound Rate-Limiting & Anti-Spam (COMPLETED 2026-11-12)**:
+  - `get_client_ip()` in `views_booking.py` hardened: every candidate header value validated with
+    `ipaddress.ip_address`; malformed/spoofed headers are logged and skipped (fall-through to
+    REMOTE_ADDR); X-Forwarded-For chains resolve to the first hop.
+  - New `TRUST_PROXY_IP_HEADERS` env toggle (default `True` — matches Cloudflare/Railway; `False`
+    only when no reverse proxy). Documented in `backend/.env.example`.
+  - **Documented decision**: secret-guarded n8n endpoints (`/slots/hold/`, `/re-request/`, sweep/
+    reminder webhooks) deliberately get NO IP rate-limit — n8n shares a single egress IP, so the
+    shared webhook secret is the anti-abuse control there. Public intake keeps its pre-existing
+    5 req/10 min limit + honeypot.
+  - Tests: 5 IP-extraction cases inside `PrivacyAndIPHardeningTests`.
+
+- [x] **PHASE 1 COMPLETE (2026-11-12)**: full suite 111 tests / 110 pass; sole failure is the
+    pre-existing Telegram `book_svc` intake bug (tracked in the roadmap). Next: Phase 2 Task 2.1 —
+    InteractionLog model + `POST/GET /api/v1/interactions/` per the partner spec Section 6.
+
+- [x] **Task 2.1: InteractionLog Model & API (COMPLETED 2026-11-12)**:
+  - New `InteractionLog` model (migration `0005_interactionlog`): provider / channel / direction /
+    status choices, E.164-normalized patient phone (indexed), nullable `BookingRequest` +
+    `Appointment` FKs (SET_NULL), unique `external_ref` idempotency key, `call_duration_seconds`,
+    `recording_url`, `summary` / `transcript` / `error_detail`, indexed timestamps.
+  - `POST /api/v1/interactions/` (`views_interactions.py` + `serializers_interactions.py`):
+    X-Webhook-Secret (Task 1.1 helper) OR staff JWT; idempotent upsert on `external_ref`
+    (201 create / 200 re-delivery update); empty ref → NULL (unique-index safe); unknown
+    `request_code` / `appointment_code` → 400; choice validation server-side; SSE
+    `interaction_logged` broadcast (non-authoritative, spec §4B).
+  - `GET /api/v1/interactions/`: staff-only; filters `patient_phone` / `request_code` / `channel` /
+    `status`; `limit` capped 1–200 (default 50) per spec §9 pagination.
+  - Docs: `DATABASE_SCHEMA.md` ERD entry; `API_REFERENCE.md` new §8 with request contract.
+  - Tests: `InteractionLogAPITests` (10 tests: 401 without/wrong secret, 201 create +
+    normalization, staff POST, idempotent re-delivery, unknown code 400, invalid channel 400,
+    staff-only GET, filters, appointment_code resolution).
+  - **Verification**: 121 tests total — **120 pass** (sole failure = pre-existing Telegram bug).
+  NEXT: Task 2.2 — non-blocking async dispatch webhook.
+
+- [x] **Task 2.2: Non-Blocking Asynchronous Webhook Dispatcher (COMPLETED 2026-11-12)**:
+  - New `backend/appointments/services/dispatch_service.py`: `fire_and_forget_webhook` — daemon
+    thread POST to n8n (5s timeout, failures logged never raised, zero DB access inside the thread).
+  - `DispatchOffersView` n8n forward no longer blocks the receptionist response; DB rows
+    (SlotOffer + status transition) commit before the call (spec §5 persist-before-process); n8n
+    owns retries, reconciliation cron covers misses (spec §9-6).
+  - **Fixed real pre-existing production bug** surfaced by the new test: the dispatch payload's
+    `candidate_slots` serialize FKs as raw `UUID` objects → `json.dumps` TypeError → the n8n
+    dispatch webhook notification had ALWAYS silently failed. Fixed with
+    `json.dumps(payload, default=str)`.
+  - Test: `AsyncDispatchWebhookTests.test_slow_n8n_does_not_block_response` — 2s-hanging n8n,
+    response <1.5s, webhook attempt verified by call-count assertion (non-vacuous).
+  - **Verification**: 122 tests total — **121 pass** (sole failure = pre-existing Telegram bug).
+
+- [x] **PHASE 2 COMPLETE (2026-11-12)**: backend core is partner-ready for n8n integration
+    (InteractionLog API + non-blocking dispatch). Next: Phase 3 frontend tasks — 3.1 ReviewModal
+    channel selector, 3.2 patient dossier interaction history (depends on 2.1), 3.3 omnichannel
+    settings bento.

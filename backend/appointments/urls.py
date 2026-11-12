@@ -50,6 +50,7 @@ from .views_realtime import (
     InboundWebhookView,
     ExpirySweepWebhookView,
 )
+from .views_interactions import InteractionListCreateView
 from .views_analytics import (
     AnalyticsSummaryView,
 )
@@ -168,6 +169,9 @@ urlpatterns = [
 
     # Task 3.6: Analytics KPI Summary API & CSV Exports
     path('analytics/summary/', AnalyticsSummaryView.as_view(), name='analytics-summary'),
+
+    # Phase 2 / Task 2.1: Interaction Logs (n8n Dispatcher results + dashboard history)
+    path('interactions/', InteractionListCreateView.as_view(), name='interactions-list-create'),
     path('analytics/export/appointments/', ExportAppointmentsCSVView.as_view(), name='analytics-export-appointments'),
     path('analytics/export/attendance/', ExportAttendanceCSVView.as_view(), name='analytics-export-attendance'),
 ]

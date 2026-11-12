@@ -141,6 +141,16 @@ stateDiagram-v2
 
 ## 4. Role-Based Access Control (RBAC) Governance
 
+<!-- Phase 1 / Task 1.2 (2026-11-12): RBAC tightening implemented.
+     - Integration secrets inside ClinicSetting.custom_config are masked as
+       "•••••••• (admin only)" for non-admin staff in all serializer outputs
+       (settings GET, PATCH response, white-label export). clinic_admin receives
+       full values. The dedicated webhook_secret DB field is never serialized.
+     - PATCH/POST /api/v1/clinic/settings/ root-rule writes: clinic_admin only.
+     - POST /api/v1/admin/staff/ with role='doctor' + password/PIN: 400 Forbidden
+       (doctors can never be provisioned dashboard logins); credential-free doctor
+       enrolment still creates a clinical Doctor resource (201, no StaffUser). -->
+
 Access permissions are enforced strictly at both the Django REST Framework view layer (`permissions.py`) and the React navigation layer (`LeftRail.jsx`).
 
 | Feature / Endpoint | Clinic Admin | Receptionist | Doctor | Public / Anonymous |
@@ -255,6 +265,74 @@ External messaging gateways (Telegram Bot API and WhatsApp Cloud API) transmit p
       return Response({"status": "duplicate_ignored"}, status=status.HTTP_200_OK)
   ```
 - Guarantees zero duplicate slot holds or redundant confirmation messages.
+
+### 7.4 Dispatcher Shared Webhook Secret (`X-Webhook-Secret`) — Phase 1 / Task 1.1
+
+Every write endpoint the n8n Dispatcher calls requires a shared secret header:
+
+```http
+X-Webhook-Secret: <shared-secret>
+```
+
+**Guarded endpoints:**
+- `POST /api/v1/slots/hold/` (also `/api/v1/appointments/hold/`) — patient slot selection via n8n
+- `POST /api/v1/booking-requests/{id}/re-request/` — patient recovery tap via n8n
+- `POST /api/v1/webhooks/expiry-sweep/` — 60s n8n cron sweeper
+- `GET /api/v1/appointments/upcoming-reminders/` — n8n reminder cron
+
+**Access rule:** authenticated active staff (JWT) **OR** a valid `X-Webhook-Secret`. Anonymous
+requests without the secret are rejected (`401` on hold/re-request, `403 INVALID_WEBHOOK_SECRET`
+on sweeper) before any database work.
+
+**Secret resolution order** (`appointments/services/webhook_security.py`, constant-time
+`secrets.compare_digest` comparison):
+1. `ClinicSetting.webhook_secret` (dedicated DB field)
+2. `ClinicSetting.custom_config['webhook_secret']` (legacy JSON storage)
+3. `WEBHOOK_SECRET` environment variable
+4. `clinic_dev_secret_2026` dev fallback — **only when `DEBUG=True`**
+5. Unconfigured in production → **fail-closed** (every guarded request rejected)
+
+**Fail-closed Telegram posture:** a Telegram-shaped payload arriving with no
+`TELEGRAM_WEBHOOK_SECRET` / `custom_config.telegram_secret_token` configured in production is
+rejected with `403 INVALID_WEBHOOK_SECRET` instead of silently accepted. WhatsApp/Meta payloads
+on the same route are unaffected (the Telegram secret is only demanded of Telegram-shaped traffic).
+
+**n8n side:** every workflow header node sends
+`{{ $env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026' }}`; in production the partner must set
+`DJANGO_WEBHOOK_SECRET` on the n8n instance to the same value as the backend's `WEBHOOK_SECRET`.
+
+### 7.5 Data Privacy in Logs (Phase 1 / Task 1.3, 2026-11-12)
+
+Patient phone numbers must never appear unmasked in ephemeral server logs
+(hosting dashboards, log aggregators). `backend/appointments/services/privacy.py`
+provides `mask_phone` (keeps the country code + last 4 digits, e.g.
+`+234••••••1122`), `mask_phones_in_text`, and `safe_external_body` (masked +
+truncated provider error bodies). All outbound Telegram dispatch logs and
+provider HTTP error logs / `TELEGRAM_BOT_BLOCKED_BY_USER` audit payloads use
+these helpers.
+
+**Documented decision:** the database (AuditLog + domain models) intentionally
+keeps full contact data — it is the access-controlled, authoritative store.
+ONLY ephemeral logs are masked.
+
+**Bug fixed alongside:** the EC-5 403 handler previously created `AuditLog`
+without the non-nullable `entity_id` (would have raised IntegrityError in
+production); it now records a synthetic service-level UUID.
+
+### 7.6 Client-IP Trust & Rate-Limit Posture (Phase 1 / Task 1.4, 2026-11-12)
+
+`get_client_ip()` validates every candidate edge header (CF-Connecting-IP,
+X-Real-IP, X-Forwarded-For first hop) with `ipaddress.ip_address`; malformed or
+spoofed values are logged and skipped (falling through to REMOTE_ADDR). Proxy
+header inspection is controlled by the `TRUST_PROXY_IP_HEADERS` env toggle
+(default `True` — required on Railway/Cloudflare; set `False` only when the app
+is exposed without a reverse proxy).
+
+**Documented decision:** the shared-secret-guarded n8n endpoints (`/slots/hold/`,
+`/re-request/`, expiry sweep, reminders) deliberately have NO IP rate-limit —
+all n8n calls share one egress IP, so the webhook secret is the anti-abuse
+control there. The public intake endpoint keeps its 5 req/10 min limit +
+honeypot.
 
 ---
 

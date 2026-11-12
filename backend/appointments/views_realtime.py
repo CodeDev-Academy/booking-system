@@ -17,6 +17,7 @@ from rest_framework.renderers import BaseRenderer, JSONRenderer
 from .services.sse_bus import bus, broadcast_event, sse_event_stream
 from .services.telegram_service import TelegramService
 from .services.sweep_service import SweepService
+from .services.webhook_security import verify_webhook_secret
 from .serializers_realtime import PresenceUpdateSerializer, InboundWebhookSerializer
 
 
@@ -130,15 +131,31 @@ class InboundWebhookView(APIView):
     def post(self, request):
         clinic = ClinicSetting.get_settings()
 
-        # 1. Telegram Webhook Secret Token Verification (SEC-05)
+        # 1. Telegram Webhook Secret Token Verification (SEC-05 + Task 1.1 fail-closed)
+        # Only Telegram-shaped payloads require the Telegram secret, so WhatsApp/Meta
+        # deliveries on the same route are not blocked by Telegram configuration.
+        source = request.data.get('channel', 'telegram')
+        payload_is_telegram = (
+            source == 'telegram' or
+            'callback_query' in request.data or
+            'message' in request.data
+        )
         expected_tg_token = (
             clinic.custom_config.get('telegram_secret_token') or
             getattr(settings, 'TELEGRAM_WEBHOOK_SECRET', '')
         )
         received_tg_token = request.META.get('HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN')
-        if expected_tg_token:
+        if expected_tg_token and payload_is_telegram:
             if not received_tg_token or not secrets.compare_digest(str(expected_tg_token), str(received_tg_token)):
                 return Response({'error': 'INVALID_WEBHOOK_SECRET'}, status=status.HTTP_403_FORBIDDEN)
+        elif payload_is_telegram and not getattr(settings, 'DEBUG', False):
+            # Task 1.1 fail-closed: in production, a Telegram payload with no secret
+            # configured is rejected instead of silently accepted.
+            return Response(
+                {'error': 'INVALID_WEBHOOK_SECRET', 'detail': 'TELEGRAM_WEBHOOK_SECRET is not configured.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        # DEBUG with no token configured: local development convenience — accept.
 
 
         # 2. Extract update_id from raw payload or standardized serializer
@@ -152,7 +169,6 @@ class InboundWebhookView(APIView):
             return Response({'error': 'update_id or idempotency_key is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         key_str = str(raw_update_id)
-        source = request.data.get('channel', 'telegram')
         expires_at = timezone.now() + datetime.timedelta(hours=24)
 
         # 3. Concurrency-Safe Idempotency Check & Lock (Risk EC-5)
@@ -208,13 +224,9 @@ class ExpirySweepWebhookView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        secret = request.headers.get('X-Webhook-Secret') or request.META.get('HTTP_X_WEBHOOK_SECRET')
-        clinic = ClinicSetting.get_settings()
-        expected = (
-            clinic.custom_config.get('webhook_secret') or
-            getattr(settings, 'WEBHOOK_SECRET', 'clinic_dev_secret_2026')
-        )
-        if not secret or not secrets.compare_digest(str(secret), str(expected)):
+        # Phase 1 / Task 1.1: constant-time X-Webhook-Secret verification
+        # (resolution: ClinicSetting.webhook_secret -> custom_config -> env -> DEBUG-only dev fallback).
+        if not verify_webhook_secret(request):
             return Response({'error': 'INVALID_WEBHOOK_SECRET'}, status=status.HTTP_403_FORBIDDEN)
 
         actor = f"n8n:{request.data.get('triggered_by', 'cron_sweeper')}"

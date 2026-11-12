@@ -1,0 +1,127 @@
+"""
+Interaction Log API (Phase 2 / Task 2.1 — Partner Readiness Roadmap).
+
+POST /api/v1/interactions/   — n8n Dispatcher writes call/message results
+                               (X-Webhook-Secret guarded) or staff JWT writes.
+GET  /api/v1/interactions/   — dashboard reads (staff JWT only).
+
+Hybrid AI OS spec §6: the Django DB is the authoritative Interactions record;
+SSE realtime only improves visibility. Duplicate provider deliveries are
+absorbed via the unique `external_ref` upsert.
+"""
+import logging
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import AllowAny
+
+from .models import InteractionLog
+from .permissions import IsStaffAuthenticated
+from .serializers_interactions import (
+    InteractionLogSerializer,
+    InteractionWriteSerializer,
+)
+from .services.webhook_security import has_staff_or_webhook_access
+from .services.sse_bus import broadcast_event
+
+logger = logging.getLogger(__name__)
+
+
+class InteractionListCreateView(APIView):
+    """
+    POST: External interaction results (n8n Dispatcher — VoiceBip call outcomes,
+          WhatsApp/SMS delivery statuses) or staff-sent message records.
+          Auth: valid X-Webhook-Secret OR authenticated active staff.
+          Idempotent: re-delivery with the same external_ref updates the row
+          instead of duplicating it.
+    GET:  Staff-only interaction history, filterable by patient_phone,
+          request_code, channel, and status; newest first, capped page.
+    """
+    permission_classes = [AllowAny]
+
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [IsStaffAuthenticated()]
+        return [AllowAny()]
+
+    def post(self, request):
+        if not has_staff_or_webhook_access(request):
+            return Response(
+                {
+                    'error': 'UNAUTHORIZED',
+                    'detail': 'Valid X-Webhook-Secret header or staff credentials required.'
+                },
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        serializer = InteractionWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validated = serializer.validated_data
+        serializer.resolve_links(validated)
+
+        external_ref = (validated.get('external_ref') or '').strip()
+        # Empty-string external_ref must map to NULL — '' would collide on the unique index.
+        validated['external_ref'] = external_ref or None
+        created = False
+        if external_ref:
+            instance = InteractionLog.objects.filter(external_ref=external_ref).first()
+            if instance:
+                # Idempotent re-delivery: update the authoritative row.
+                for field, value in validated.items():
+                    setattr(instance, field, value)
+                instance.save()
+            else:
+                instance = InteractionLog.objects.create(**validated)
+                created = True
+        else:
+            instance = InteractionLog.objects.create(**validated)
+            created = True
+
+        payload = InteractionLogSerializer(instance).data
+
+        # SSE visibility (non-authoritative — spec §4B)
+        if created:
+            try:
+                broadcast_event('interaction_logged', {
+                    'interaction_id': str(payload['id']),
+                    'channel': payload['channel'],
+                    'provider': payload['provider'],
+                    'status': payload['status'],
+                    'patient_phone': payload['patient_phone'],
+                })
+            except Exception as sse_err:  # SSE must never break the write
+                logger.warning("SSE broadcast failed for interaction log: %s", sse_err)
+
+        return Response(
+            payload,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        )
+
+    def get(self, request):
+        qs = InteractionLog.objects.select_related('booking_request', 'appointment')
+
+        patient_phone = request.query_params.get('patient_phone', '').strip()
+        if patient_phone:
+            from .serializers_interactions import normalize_phone_e164
+            qs = qs.filter(patient_phone=normalize_phone_e164(patient_phone))
+
+        request_code = request.query_params.get('request_code', '').strip()
+        if request_code:
+            qs = qs.filter(booking_request__request_code=request_code)
+
+        channel = request.query_params.get('channel', '').strip()
+        if channel:
+            qs = qs.filter(channel=channel)
+
+        interaction_status = request.query_params.get('status', '').strip()
+        if interaction_status:
+            qs = qs.filter(status=interaction_status)
+
+        try:
+            limit = int(request.query_params.get('limit', '50'))
+        except ValueError:
+            limit = 50
+        limit = max(1, min(limit, 200))  # spec §9: capped, paginated reads
+
+        return Response(InteractionLogSerializer(qs[:limit], many=True).data)

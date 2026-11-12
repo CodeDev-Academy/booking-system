@@ -106,6 +106,36 @@ class ClinicSettingSerializer(serializers.ModelSerializer):
 
         return super().to_internal_value(data)
 
+    def to_representation(self, instance):
+        """
+        Phase 1 / Task 1.2 (RBAC): integration secrets stored inside custom_config
+        (e.g. `telegram_bot_token`, `telegram_secret_token`, `webhook_secret`) are
+        masked for non-admin staff. Only `clinic_admin` receives real values, so
+        admin-driven settings saves round-trip secrets without corruption.
+        """
+        data = super().to_representation(instance)
+        cfg = data.get('custom_config')
+        if isinstance(cfg, dict):
+            request = self.context.get('request')
+            user = getattr(request, 'user', None)
+            is_admin = bool(
+                user and
+                getattr(user, 'is_authenticated', False) and
+                getattr(user, 'is_active', False) and
+                getattr(user, 'role', None) == 'clinic_admin'
+            )
+            if not is_admin:
+                sensitive_markers = ('secret', 'token', 'password', 'api_key', 'apikey', 'private')
+                masked = {}
+                for key, value in cfg.items():
+                    key_lower = str(key).lower()
+                    if any(marker in key_lower for marker in sensitive_markers):
+                        masked[key] = '•••••••• (admin only)'
+                    else:
+                        masked[key] = value
+                data['custom_config'] = masked
+        return data
+
     def update(self, instance, validated_data):
         phones = validated_data.get('phones')
         if phones is not None:

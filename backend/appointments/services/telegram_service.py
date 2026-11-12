@@ -1,6 +1,7 @@
 import json
 import html
 import logging
+import uuid
 import urllib.request
 import urllib.error
 from django.utils import timezone
@@ -18,6 +19,7 @@ from ..models import (
     Service,
 )
 from .hold_service import HoldService, SlotConflictException
+from .privacy import safe_external_body
 from .sse_bus import broadcast_event
 
 logger = logging.getLogger(__name__)
@@ -65,14 +67,18 @@ class TelegramService:
                 return json.loads(resp_data)
         except urllib.error.HTTPError as e:
             error_body = e.read().decode('utf-8', errors='ignore')
-            logger.warning("Telegram API HTTP error %d: %s", e.code, error_body)
+            # Task 1.3 (privacy): provider error bodies are phone-masked and truncated
+            # before logging / audit storage so patient contact details never leak.
+            safe_body = safe_external_body(error_body)
+            logger.warning("Telegram API HTTP error %d: %s", e.code, safe_body)
             # EC-5: Bot blocked by patient (403 Forbidden)
             if e.code == 403:
                 AuditLog.objects.create(
                     entity_name='TelegramService',
+                    entity_id=uuid.uuid4(),  # service-level log (no domain entity)
                     action='TELEGRAM_BOT_BLOCKED_BY_USER',
                     performed_by='System',
-                    changes={'method': method, 'error': error_body}
+                    changes={'method': method, 'error': safe_body}
                 )
             return {'ok': False, 'status_code': e.code, 'error': error_body}
         except Exception as e:

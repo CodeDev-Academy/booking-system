@@ -234,4 +234,52 @@ Streams clean RFC 4180 CSV file of all clinic appointments.
 ### `GET /api/v1/analytics/export/attendance/`
 Streams clean RFC 4180 CSV summary of doctor attendance and completion rates.
 
+---
+
+## 8. Interaction Logs (Phase 2 / Task 2.1)
+
+Authoritative record of every patient-facing communication (VoiceBip call,
+WhatsApp, SMS, Telegram) — the Hybrid AI OS spec §6 "Interactions" data area.
+
+### `POST /api/v1/interactions/`
+**Auth:** `X-Webhook-Secret` header (n8n Dispatcher) OR staff JWT. Fail-closed otherwise.
+
+**Request:**
+```json
+{
+  "provider": "voicebip",              // voicebip | meta_whatsapp | telegram | system
+  "channel": "voice",                  // voice | whatsapp | sms | telegram
+  "direction": "outbound",             // outbound | inbound
+  "status": "answered",                // queued | sent | delivered | failed | answered | no_answer | expired
+  "patient_phone": "+234 803 000 1122",// E.164-normalized server-side
+  "patient_name": "Amina Test",
+  "request_code": "REQ-2026-0042",     // optional FK resolution (400 if unknown)
+  "appointment_code": "AP-1042",       // optional FK resolution (400 if unknown)
+  "external_ref": "VB-CALL-7788",      // provider's unique ID — idempotency key
+  "call_duration_seconds": 45,
+  "recording_url": "https://cdn.voicebip.com/rec/7788.mp3",
+  "summary": "Patient accepted the 10:00 slot.",
+  "transcript": "...",
+  "error_detail": ""
+}
+```
+
+**Behavior:**
+- `201` on create, `200` on re-delivery (same `external_ref` **updates** the existing row — no duplicates)
+- `401` without a valid secret/staff credentials; `400` on unknown request/appointment codes or invalid choices
+- Broadcasts `interaction_logged` over SSE (non-authoritative, spec §4B)
+
+### `GET /api/v1/interactions/`
+**Auth:** staff JWT only (receptionists and admins).
+
+**Query Parameters:**
+- `patient_phone` — E.164-normalized filter
+- `request_code` — e.g. `REQ-2026-0042`
+- `channel` — `voice` | `whatsapp` | `sms` | `telegram`
+- `status` — any of the status choices
+- `limit` — 1–200 (default 50, spec §9 pagination)
+
+**Response:** newest-first array of interaction records including resolved
+`request_code` / `appointment_code` links.
+
 

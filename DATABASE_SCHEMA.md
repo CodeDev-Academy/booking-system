@@ -172,6 +172,26 @@ erDiagram
         json changes
         datetime created_at
     }
+
+    INTERACTION_LOG {
+        uuid id PK
+        string provider "voicebip | meta_whatsapp | telegram | system"
+        string channel "voice | whatsapp | sms | telegram"
+        string direction "outbound | inbound"
+        string status "queued | sent | delivered | failed | answered | no_answer | expired"
+        string patient_name
+        string patient_phone "E.164 normalized, indexed"
+        uuid booking_request_id FK "nullable"
+        uuid appointment_id FK "nullable"
+        string external_ref "unique — provider message/call ID, idempotency key"
+        int call_duration_seconds "nullable, voice only"
+        string recording_url "nullable"
+        text summary
+        text transcript
+        text error_detail
+        datetime created_at
+        datetime updated_at
+    }
 ```
 
 ---
