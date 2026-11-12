@@ -21,6 +21,7 @@ from .permissions import IsStaffAuthenticated
 from .serializers_interactions import (
     InteractionLogSerializer,
     InteractionWriteSerializer,
+    normalize_phone_e164,
 )
 from .services.webhook_security import has_staff_or_webhook_access
 from .services.sse_bus import broadcast_event
@@ -38,7 +39,6 @@ class InteractionListCreateView(APIView):
     GET:  Staff-only interaction history, filterable by patient_phone,
           request_code, channel, and status; newest first, capped page.
     """
-    permission_classes = [AllowAny]
 
     def get_permissions(self):
         if self.request.method == 'GET':
@@ -65,15 +65,14 @@ class InteractionListCreateView(APIView):
         validated['external_ref'] = external_ref or None
         created = False
         if external_ref:
-            instance = InteractionLog.objects.filter(external_ref=external_ref).first()
-            if instance:
-                # Idempotent re-delivery: update the authoritative row.
-                for field, value in validated.items():
-                    setattr(instance, field, value)
-                instance.save()
-            else:
-                instance = InteractionLog.objects.create(**validated)
-                created = True
+            # Atomic upsert (Review Fix #2): a check-then-create race would let two
+            # concurrent n8n re-deliveries both pass the .first() check and the second
+            # create() crash with IntegrityError. update_or_create handles both outcomes.
+            defaults = {k: v for k, v in validated.items() if k != 'external_ref'}
+            instance, created = InteractionLog.objects.update_or_create(
+                external_ref=external_ref,
+                defaults=defaults,
+            )
         else:
             instance = InteractionLog.objects.create(**validated)
             created = True
@@ -103,7 +102,6 @@ class InteractionListCreateView(APIView):
 
         patient_phone = request.query_params.get('patient_phone', '').strip()
         if patient_phone:
-            from .serializers_interactions import normalize_phone_e164
             qs = qs.filter(patient_phone=normalize_phone_e164(patient_phone))
 
         request_code = request.query_params.get('request_code', '').strip()

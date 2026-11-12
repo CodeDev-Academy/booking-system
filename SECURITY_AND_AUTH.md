@@ -321,12 +321,20 @@ production); it now records a synthetic service-level UUID.
 
 ### 7.6 Client-IP Trust & Rate-Limit Posture (Phase 1 / Task 1.4, 2026-11-12)
 
-`get_client_ip()` validates every candidate edge header (CF-Connecting-IP,
-X-Real-IP, X-Forwarded-For first hop) with `ipaddress.ip_address`; malformed or
-spoofed values are logged and skipped (falling through to REMOTE_ADDR). Proxy
-header inspection is controlled by the `TRUST_PROXY_IP_HEADERS` env toggle
-(default `True` — required on Railway/Cloudflare; set `False` only when the app
-is exposed without a reverse proxy).
+`get_client_ip()` validates every candidate edge header with `ipaddress.ip_address`;
+malformed or spoofed values are logged (truncated to 64 chars — never flood logs with
+attacker-controlled garbage) and skipped, falling through to REMOTE_ADDR.
+
+**Trust policy (Review Fix #5, 2026-11-12):**
+- `CF-Connecting-IP` is always trusted when present — Cloudflare overwrites it, so a
+  client cannot forge it behind Cloudflare.
+- `X-Real-IP` / `X-Forwarded-For` are trusted only when the platform proxy OVERWRITES
+  them: controlled by the `TRUSTED_PROXY_SETS_XFF` env toggle (default `True` for
+  Railway/Cloudflare). If a proxy merely appends XFF, the first hop is
+  client-controlled and trusting it would allow rate-limit bypass by rotating forged
+  IPs — set `TRUSTED_PROXY_SETS_XFF=False` on append-only platforms.
+- The master switch `TRUST_PROXY_IP_HEADERS` (default `True`) disables all edge-header
+  trust when the app is exposed without a reverse proxy.
 
 **Documented decision:** the shared-secret-guarded n8n endpoints (`/slots/hold/`,
 `/re-request/`, expiry sweep, reminders) deliberately have NO IP rate-limit —

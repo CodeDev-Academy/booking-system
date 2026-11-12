@@ -2,7 +2,6 @@ import os
 import uuid
 import datetime
 import ipaddress
-import json
 import logging
 from django.utils import timezone
 from django.core.cache import cache
@@ -47,19 +46,28 @@ def get_client_ip(request):
     """
     SEC-04: Robust client IP extraction for rate-limiting.
 
-    Task 1.4 hardening:
+    Task 1.4 hardening + Review Fix #5 (header trust policy):
     - Every candidate value is validated with `ipaddress` — a spoofed or
-      malformed edge header (e.g. 'not-an-ip', '1.2.3.4, 5.6.7.8', private
-      garbage) is never trusted for rate-limit bucketing.
-    - Proxy-header inspection is controlled by the `TRUST_PROXY_IP_HEADERS`
-      env toggle (default 'True'). It must stay enabled on Railway/Cloudflare
-      where REMOTE_ADDR is the edge proxy, not the patient. Set to 'False'
-      only when deploying behind nothing (direct REMOTE_ADDR is trustworthy).
+      malformed edge header is never trusted for rate-limit bucketing.
+    - `CF-Connecting-IP` is always trusted when present: Cloudflare overwrites
+      it, so a client cannot forge it behind Cloudflare.
+    - `X-Real-IP` / `X-Forwarded-For` are only trusted when
+      `TRUSTED_PROXY_SETS_XFF` (default 'True' for Railway/Cloudflare) says the
+      platform proxy overwrites them. If a proxy merely appends XFF, the first
+      hop is client-controlled and trusting it would let an attacker rotate
+      IPs to bypass rate limiting.
     """
     client_ip = request.META.get('REMOTE_ADDR', '127.0.0.1')
 
     if os.environ.get('TRUST_PROXY_IP_HEADERS', 'True').strip().lower() not in ('false', '0', 'no'):
-        for header in ('HTTP_CF_CONNECTING_IP', 'HTTP_X_REAL_IP', 'HTTP_X_FORWARDED_FOR'):
+        trust_xff = os.environ.get('TRUSTED_PROXY_SETS_XFF', 'True').strip().lower() \
+            not in ('false', '0', 'no')
+
+        candidates = [('HTTP_CF_CONNECTING_IP', True)]
+        if trust_xff:
+            candidates += [('HTTP_X_REAL_IP', False), ('HTTP_X_FORWARDED_FOR', False)]
+
+        for header, _ in candidates:
             raw = request.META.get(header)
             if not raw:
                 continue
@@ -69,8 +77,9 @@ def get_client_ip(request):
                 client_ip = str(ipaddress.ip_address(candidate))
                 break
             except (ValueError, TypeError):
+                # Truncate attacker-controlled garbage: never flood logs with it
                 logger.warning(
-                    "SEC-04: Ignoring malformed IP in %s header: %r", header, candidate
+                    "SEC-04: Ignoring malformed IP in %s header: %.64r", header, candidate
                 )
 
     return client_ip

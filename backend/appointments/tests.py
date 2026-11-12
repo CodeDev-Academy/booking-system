@@ -3230,6 +3230,26 @@ class WebhookSecurityHardeningTests(APITestCase):
         res = self.client.post('/api/v1/slots/hold/', self.hold_payload, format='json')
         self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
 
+    def test_non_ascii_secret_header_rejected_not_500(self):
+        """
+        Review Fix #1: secrets.compare_digest in str mode raises TypeError on
+        non-ASCII input. A malformed header must produce a clean 401 on every
+        guarded endpoint, never an unhandled 500.
+        """
+        res = self.client.post(
+            '/api/v1/slots/hold/', self.hold_payload, format='json',
+            HTTP_X_WEBHOOK_SECRET='héllo-malformed-attacker'
+        )
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        # Same guarantee on the interactions endpoint
+        res = self.client.post(
+            '/api/v1/interactions/',
+            {'provider': 'system', 'channel': 'sms', 'patient_phone': '+2348030001122'},
+            format='json',
+            HTTP_X_WEBHOOK_SECRET='日本語ガベージヘッダー'
+        )
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
 
 class RBACTighteningTests(APITestCase):
     """
@@ -3325,6 +3345,29 @@ class RBACTighteningTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.clinic.refresh_from_db()
         self.assertEqual(self.clinic.open_time, datetime.time(7, 30))
+
+    def test_admin_settings_patch_audit_excludes_custom_config_secrets(self):
+        """
+        Review Fix #4: the settings PATCH audit row must never contain the
+        full custom_config (bot tokens etc.) even when the requester is an
+        admin whose API response legitimately includes them.
+        """
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.patch('/api/v1/clinic/settings/', {
+            'open_time': '07:45',
+            'custom_config': {'telegram_bot_token': 'fresh-secret-token-123'},
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        audit = AuditLog.objects.filter(
+            entity_name='ClinicSetting', action='CLINIC_SETTINGS_UPDATED'
+        ).order_by('-created_at').first()
+        self.assertIsNotNone(audit)
+        self.assertNotIn('custom_config', str(audit.changes))
+        self.assertNotIn('fresh-secret-token-123', str(audit.changes))
+        # The secret itself was still saved for the admin (authoritative store)
+        self.clinic.refresh_from_db()
+        self.assertEqual(self.clinic.custom_config['telegram_bot_token'], 'fresh-secret-token-123')
 
     def test_admin_clinical_doctor_enrolment_without_credentials_succeeds(self):
         """Credential-free doctor enrolment creates a Doctor resource with NO dashboard login."""
@@ -3435,6 +3478,37 @@ class PrivacyAndIPHardeningTests(TestCase):
             self.assertEqual(get_client_ip(req), '10.0.0.1')
         finally:
             os.environ['TRUST_PROXY_IP_HEADERS'] = 'True'
+
+    def test_get_client_ip_xff_ignored_when_xff_toggle_off(self):
+        """
+        Review Fix #5: when the platform proxy merely APPENDS X-Forwarded-For
+        (TRUSTED_PROXY_SETS_XFF=False), the first hop is client-controlled and
+        must not be trusted for rate-limit bucketing. CF-Connecting-IP stays
+        trusted (Cloudflare overwrites it).
+        """
+        import os
+        from .views_booking import get_client_ip
+        prev = os.environ.get('TRUSTED_PROXY_SETS_XFF')
+        os.environ['TRUSTED_PROXY_SETS_XFF'] = 'False'
+        try:
+            req = self._make_request({
+                'REMOTE_ADDR': '10.0.0.1',
+                'HTTP_CF_CONNECTING_IP': '102.89.44.7',
+                'HTTP_X_FORWARDED_FOR': '102.89.44.8',
+            })
+            self.assertEqual(get_client_ip(req), '102.89.44.7')  # CF still trusted
+
+            req = self._make_request({
+                'REMOTE_ADDR': '10.0.0.1',
+                'HTTP_X_FORWARDED_FOR': '102.89.44.8',
+                'HTTP_X_REAL_IP': '102.89.44.9',
+            })
+            self.assertEqual(get_client_ip(req), '10.0.0.1')  # XFF/X-Real-IP ignored
+        finally:
+            if prev is None:
+                os.environ.pop('TRUSTED_PROXY_SETS_XFF', None)
+            else:
+                os.environ['TRUSTED_PROXY_SETS_XFF'] = prev
 
     def test_get_client_ip_defaults_to_loopback(self):
         from .views_booking import get_client_ip
@@ -3672,6 +3746,32 @@ class InteractionLogAPITests(APITestCase):
         self.client.force_authenticate(user=self.receptionist)
         res = self.client.get('/api/v1/interactions/')
         self.assertEqual(res.data[0]['appointment_code'], 'AP-1042')
+
+    def test_phone_variants_collapse_to_one_identity(self):
+        """
+        Review Fix #3: '+234...', bare '234...', and local '0803...' must all
+        normalize to the same E.164 key so the dossier filter finds every
+        interaction for a patient regardless of source format.
+        """
+        self.client.force_authenticate(user=self.receptionist)
+        for idx, variant in enumerate(('+2348030001122', '2348030001122', '08030001122', '+234 803 000 1122'), 1):
+            res = self._post_with_secret({
+                'provider': 'meta_whatsapp',
+                'channel': 'whatsapp',
+                'status': 'delivered',
+                'patient_phone': variant,
+                'external_ref': f'ref-variant-{idx}',
+            })
+            self.assertEqual(res.status_code, status.HTTP_201_CREATED, f'variant {variant} rejected')
+
+        # All four rows share one canonical phone key
+        self.assertEqual(
+            set(InteractionLog.objects.values_list('patient_phone', flat=True)),
+            {'+2348030001122'},
+        )
+        # A dossier-style lookup with any one variant finds them all
+        res = self.client.get('/api/v1/interactions/', {'patient_phone': '08030001122'})
+        self.assertEqual(len(res.data), 4)
 
 
 class AsyncDispatchWebhookTests(APITestCase):

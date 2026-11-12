@@ -5,14 +5,32 @@ from .models import InteractionLog, BookingRequest, Appointment
 
 def normalize_phone_e164(phone):
     """
-    Light E.164 normalization (Hybrid AI OS spec §6 duplicate protection):
-    strips spaces/dashes/parentheses and keeps the leading '+'.
+    E.164 normalization (Hybrid AI OS spec §6 duplicate protection).
+
+    All supported Nigerian/international inputs collapse to one canonical key
+    so a patient is a single identity regardless of source format:
+
+        '+2348030001122'  -> '+2348030001122'  (already E.164)
+        '2348030001122'   -> '+2348030001122'  (missing plus)
+        '08030001122'     -> '+2348030001122'  (local 0-prefix)
+        '+234 803 000 1122' -> '+2348030001122' (spaces/dashes stripped)
     """
     if not phone:
         return ''
     raw = str(phone).strip()
-    return '+' + ''.join(ch for ch in raw[1:] if ch.isdigit()) if raw.startswith('+') \
-        else ''.join(ch for ch in raw if ch.isdigit())
+    digits = ''.join(ch for ch in raw if ch.isdigit())
+    if not digits:
+        return ''
+    if raw.startswith('+'):
+        return '+' + digits
+    # Local 0-prefixed Nigerian number (11 digits): drop the trunk 0, add country code
+    if len(digits) == 11 and digits.startswith('0'):
+        return '+234' + digits[1:]
+    # Bare country-code form without the plus
+    if len(digits) in (12, 13):
+        return '+' + digits
+    # Unrecognized shape — keep digits only (best effort, still deterministic)
+    return digits
 
 
 class InteractionLogSerializer(serializers.ModelSerializer):

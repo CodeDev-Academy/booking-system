@@ -150,8 +150,25 @@ external providers (VoiceBip voice, WhatsApp, SMS, Meta, etc.).
 - **InteractionLog API contract (for n8n builds / Phase 4):** `POST /api/v1/interactions/` with
   `X-Webhook-Secret`; body per `API_REFERENCE.md` §8 (provider/channel/direction/status choices,
   E.164 phone, optional `request_code`/`appointment_code`, `external_ref` idempotency key →
-  201 create / 200 re-delivery update). Dashboard reads: `GET /api/v1/interactions/`
+  201 create / 200 re-delivery update). Upsert is atomic (`update_or_create`) — concurrent
+  re-deliveries cannot crash. Dashboard reads: `GET /api/v1/interactions/`
   (staff JWT; filters patient_phone / request_code / channel / status; limit ≤ 200).
+
+- **E.164 normalization contract (Review Fix, 2026-11-12):** `normalize_phone_e164` in
+  `serializers_interactions.py` collapses ALL of `+2348030001122`, `2348030001122`, `08030001122`,
+  and spaced variants to the canonical `+2348030001122` — one patient, one identity key, for both
+  writes and dossier filters. **n8n workflows should send `+234...`** (any of the variants work,
+  but the canonical form is the contract).
+
+- **Code review fixes (2026-11-12):** external review of Phases 1–2 found 1 critical + 5 medium
+  issues; all fixed and tested. Critical: non-ASCII `X-Webhook-Secret` header caused TypeError →
+  500 on every guarded endpoint (bytes-mode compare now → clean 401). Mediums: interaction upsert
+  race (atomic `update_or_create`), E.164 identity collapse (above), settings-PATCH AuditLog no
+  longer stores `custom_config` secrets, spoofable-XFF rate-limit bypass (new `TRUSTED_PROXY_SETS_XFF`
+  env toggle, default True; CF-Connecting-IP always trusted; malformed header values truncated in
+  logs), plus hygiene (dead imports, over-masking regex requires 10–15 digits). Deferred by design:
+  InteractionLog `logged_by` field (add when Phase 4 needs automation identities) and dispatch
+  thread cap (no bulk loop exists). Suite: 126 tests / 125 pass.
 
 ### ⚠ Known PRE-EXISTING issues (present in HEAD before Phase 1 — verified via clean `git archive` baseline)
 

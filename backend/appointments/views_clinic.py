@@ -43,12 +43,16 @@ class ClinicSettingsView(APIView):
         serializer.is_valid(raise_exception=True)
         updated_clinic = serializer.save()
 
+        # Review Fix #4: never copy integration secrets into the audit trail.
+        # For an admin, serializer.data carries the FULL custom_config (bot
+        # tokens etc.) — the authoritative values already live in ClinicSetting.
+        audit_changes = {k: v for k, v in serializer.data.items() if k != 'custom_config'}
         AuditLog.objects.create(
             entity_name='ClinicSetting',
             entity_id=updated_clinic.id,
             action='CLINIC_SETTINGS_UPDATED',
             performed_by=request.user.email,
-            changes=serializer.data,
+            changes=audit_changes,
             ip_address=request.META.get('REMOTE_ADDR')
         )
 

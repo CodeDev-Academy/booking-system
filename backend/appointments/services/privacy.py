@@ -10,8 +10,10 @@ are masked via the helpers below.
 
 import re
 
-# Nigerian E.164 numbers (+234...) plus generic international formats.
-_PHONE_RE = re.compile(r'(\+?\d[\d\s\-()]{7,}\d)')
+# Nigerian E.164 numbers plus generic international formats.
+# Requires 10–15 total digits so dates ('2026-11-12'), order numbers and other
+# short numeric runs in provider error text are NOT masked as phones (Review Fix #9).
+_PHONE_RE = re.compile(r'(?=(?:\D*\d){10,15})(\+?\d[\d\s\-()]{7,}\d)')
 
 
 def mask_phone(phone):

@@ -58,7 +58,13 @@ def verify_webhook_secret(request) -> bool:
     )
     if not provided:
         return False
-    return pysecrets.compare_digest(str(provided), str(expected))
+    # Compare as bytes: str-mode compare_digest raises TypeError on any
+    # non-ASCII input (e.g. a malformed header), which would surface as an
+    # unhandled 500 on every guarded endpoint instead of a clean 401.
+    return pysecrets.compare_digest(
+        str(provided).encode('utf-8'),
+        str(expected).encode('utf-8'),
+    )
 
 
 def has_staff_or_webhook_access(request) -> bool:

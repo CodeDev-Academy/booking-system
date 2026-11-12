@@ -80,6 +80,16 @@
 
 ### ✅ PHASE 2 COMPLETE (2026-11-12) — Backend core is partner-ready for n8n integration
 
+### Code Review Fixes `[x]` ✅ COMPLETED 2026-11-12 (external review of Phases 1–2)
+- [x] **Critical**: `verify_webhook_secret` compared strings with `compare_digest` → non-ASCII header raised TypeError → 500 on all guarded endpoints. Fixed: bytes-mode comparison; test proves clean 401
+- [x] `POST /interactions/` upsert race → concurrent n8n re-delivery could IntegrityError-crash. Fixed: atomic `update_or_create`
+- [x] E.164 normalization inconsistent (`0803...` / `234...` / `+234...` = 3 identities). Fixed: all variants collapse to `+234...` canonical key; dossier filter finds every variant. **n8n contract: send `+234...` (it is normalized either way)**
+- [x] Settings-PATCH AuditLog stored full admin `custom_config` secrets. Fixed: `custom_config` excluded from audit changes (authoritative values remain in ClinicSetting)
+- [x] Rate-limit bypass via spoofed XFF first hop (append-only proxies). Fixed: new `TRUSTED_PROXY_SETS_XFF` env (default True); `CF-Connecting-IP` always trusted; malformed header values truncated in logs
+- [x] Hygiene: dead `json` import removed; redundant `permission_classes` removed; function-level import hoisted; `mask_phones_in_text` regex now requires 10–15 digits so dates/IDs survive error-body logging
+- [x] Deferred by design (tracked): InteractionLog `logged_by` attribution field (needs migration — add when Phase 4 workflows need distinct automation identities); dispatch thread cap (no bulk-dispatch loop exists yet)
+- [x] Suite: 126 tests — 125 pass (sole failure = pre-existing Telegram intake bug)
+
 ---
 
 ## 🖥️ PHASE 3 — Frontend Dashboard Workstation Enhancements
@@ -133,3 +143,4 @@
 | 2026-11-12 | **Task 1.4 — Rate-Limiting Review** | OpenCode (GLM) | `get_client_ip` ipaddress-validated + `TRUST_PROXY_IP_HEADERS` toggle. **PHASE 1 COMPLETE.** Next: Phase 2 Task 2.1 (InteractionLog). |
 | 2026-11-12 | **Task 2.1 — InteractionLog Model & API** | OpenCode (GLM) | Migration 0005; `POST/GET /api/v1/interactions/`; 10 new tests; 121 total, 120 pass. Secret-guarded writes, staff-only reads, `external_ref` idempotency. |
 | 2026-11-12 | **Task 2.2 — Async Dispatch Webhook** | OpenCode (GLM) | Fire-and-forget daemon thread; fixed silent UUID-serialization bug in n8n payload (webhook had never actually delivered). 1 new test; 122 total, 121 pass. **PHASE 2 COMPLETE.** |
+| 2026-11-12 | **Code Review Fixes (Phases 1–2)** | OpenCode (GLM) | Critical non-ASCII secret 500 fixed (bytes compare); upsert race → update_or_create; E.164 variants collapse; audit-log secrets stripped; TRUSTED_PROXY_SETS_XFF toggle. 4 new tests; 126 total, 125 pass. |

@@ -458,3 +458,24 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
     (InteractionLog API + non-blocking dispatch). Next: Phase 3 frontend tasks — 3.1 ReviewModal
     channel selector, 3.2 patient dossier interaction history (depends on 2.1), 3.3 omnichannel
     settings bento.
+
+- [x] **Code Review Fixes (COMPLETED 2026-11-12)** — external review of Phases 1–2:
+  - **Critical**: `verify_webhook_secret` str-mode `compare_digest` raised TypeError on non-ASCII
+    headers → unhandled 500 on all guarded endpoints. Fixed with bytes-mode comparison; test proves
+    clean 401 (`WebhookSecurityHardeningTests` now 12 tests).
+  - Interaction POST upsert race → concurrent re-deliveries could IntegrityError. Fixed with atomic
+    `update_or_create` (external_ref excluded from defaults to avoid lookup/defaults duplication).
+  - E.164 normalization now collapses `+234...` / bare `234...` / local `0803...` / spaced variants
+    to one canonical key (`test_phone_variants_collapse_to_one_identity`); function-level import
+    hoisted to module top.
+  - Settings PATCH AuditLog no longer stores `custom_config` secrets (admin API responses still
+    return them; authoritative store is ClinicSetting) — tested in `RBACTighteningTests` (8 tests).
+  - New `TRUSTED_PROXY_SETS_XFF` env toggle (default True): X-Real-IP/XFF trusted only when the
+    platform proxy overwrites them; `CF-Connecting-IP` always trusted; malformed header values
+    truncated to 64 chars in logs. Documented in `backend/.env.example` +
+    `PrivacyAndIPHardeningTests` (10 tests).
+  - Hygiene: dead `import json` removed from `views_booking.py`; redundant class-level
+    `permission_classes` removed from `views_interactions.py`; `mask_phones_in_text` regex now
+    requires 10–15 digits (dates/order-IDs no longer masked in error bodies).
+  - Deferred by design: InteractionLog `logged_by` attribution field; dispatch thread cap.
+  - **Verification**: 126 tests total — **125 pass** (sole failure = pre-existing Telegram bug).
