@@ -149,8 +149,12 @@ class BookingRequestCreateSerializer(serializers.Serializer):
         choices=['morning', 'afternoon', 'evening'], default='morning'
     )
     channel = serializers.ChoiceField(
-        choices=['web', 'telegram', 'whatsapp_flow'], default='web'
+        choices=['web', 'telegram', 'whatsapp_flow', 'facebook_lead_ads', 'google_ads'],
+        default='web'
     )
+    # Marketing attribution: e.g. "Meta Lead Form — Teeth Whitening Campaign" or
+    # "utm_source=google&utm_campaign=whitening" (Website form captures this from the URL).
+    lead_source = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
     patient_notes = serializers.CharField(required=False, allow_blank=True, default='')
     clinic_web_trap = serializers.CharField(required=False, allow_blank=True, default='')
     date_of_birth = serializers.DateField(required=False, allow_null=True)
@@ -239,6 +243,7 @@ class BookingRequestDetailSerializer(serializers.ModelSerializer):
             'preferred_date_range',
             'preferred_time_window',
             'channel',
+            'lead_source',
             'status',
             'channel_blocked',
             'patient_notes',

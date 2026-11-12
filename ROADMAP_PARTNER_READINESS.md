@@ -111,6 +111,11 @@
 > contracts, interaction-logging requirements, and a recommended build/test order (2026-11-12).
 
 ### Task 4.1: Slot Offer Dispatcher workflow `[~]` (05_slot_offer_dispatcher.json exists; add SMS node + 30s delay + VoiceBip call node)
+### Task 4.0: Ads Intake Channels `[x]` ✅ COMPLETED 2026-11-12
+- [x] 3rd intake method: `channel` choices extended with `facebook_lead_ads` + `google_ads`; new optional `lead_source` attribution field (migration `0006`, shown on receptionist queue card)
+- [x] Google Ads path needs NO workflow — clicks land on the website form; `lead_source` will carry `utm_*` params (frontend capture noted for Phase 3)
+- [x] Facebook/Meta Lead Ads path: n8n Workflow E added to `n8n/N8N_BUILD_SHEET.md` §6 (Meta lead → normalize E.164 → `POST /booking-requests/` → queue card via SSE → instant WhatsApp greeting → logged to `/interactions/`)
+- [x] Tests: `AdsLeadIntakeTests` (5 tests — FB/Google intake + attribution, legacy channels unaffected, invalid channel 400, blank lead_source)
 ### Task 4.2: Patient Response Handler workflow `[~]` (04 exists; add SMS "1/2/3" replies, other-channel neutralization, write to /interactions/)
 ### Task 4.3: Reminder Flows workflow `[~]` (03 exists; add dual WhatsApp+SMS 24h & 2h messages, zero calls)
 ### Task 4.4: Expiry Sweeper workflow `[~]` (02 exists; add 45-min nudge + 60-min expiry recovery card `[🔄 See New Times]`)
@@ -147,3 +152,4 @@
 | 2026-11-12 | **Task 2.1 — InteractionLog Model & API** | OpenCode (GLM) | Migration 0005; `POST/GET /api/v1/interactions/`; 10 new tests; 121 total, 120 pass. Secret-guarded writes, staff-only reads, `external_ref` idempotency. |
 | 2026-11-12 | **Task 2.2 — Async Dispatch Webhook** | OpenCode (GLM) | Fire-and-forget daemon thread; fixed silent UUID-serialization bug in n8n payload (webhook had never actually delivered). 1 new test; 122 total, 121 pass. **PHASE 2 COMPLETE.** |
 | 2026-11-12 | **Code Review Fixes (Phases 1–2)** | OpenCode (GLM) | Critical non-ASCII secret 500 fixed (bytes compare); upsert race → update_or_create; E.164 variants collapse; audit-log secrets stripped; TRUSTED_PROXY_SETS_XFF toggle. 4 new tests; 126 total, 125 pass. |
+| 2026-11-12 | **Ads Intake Channels (Task 4.0)** | OpenCode (GLM) | `facebook_lead_ads` + `google_ads` channels, `lead_source` attribution (migration 0006), build-sheet Workflow E. 5 new tests; 131 total, 130 pass. Third intake method ready. |

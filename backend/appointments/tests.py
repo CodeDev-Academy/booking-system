@@ -3868,6 +3868,86 @@ class AsyncDispatchWebhookTests(APITestCase):
         self.assertLess(elapsed, 1.5, f"Dispatch response blocked for {elapsed:.2f}s")
 
 
+class AdsLeadIntakeTests(APITestCase):
+    """
+    Ads intake channels (Phase 4 prep — 3rd intake method):
+    Facebook/Instagram Lead Ads and Google Ads leads enter the SAME
+    human-in-the-loop queue via POST /api/v1/booking-requests/, carrying
+    channel + lead_source attribution for the receptionist.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.service = Service.objects.create(
+            name='Teeth Whitening',
+            duration_minutes=45,
+            buffer_minutes=5,
+            price=50000,
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def _intake(self, channel, lead_source=''):
+        payload = {
+            'patient_name': 'Ad Lead Test',
+            'patient_phone': '+2348077771111',
+            'service': 'Teeth Whitening',
+            'channel': channel,
+            'preferred_dates': ['2026-12-01', '2026-12-03'],
+        }
+        if lead_source:
+            payload['lead_source'] = lead_source
+        return self.client.post('/api/v1/booking-requests/', payload, format='json')
+
+    def test_facebook_lead_ads_intake(self):
+        res = self._intake('facebook_lead_ads', 'Meta Lead Form — Teeth Whitening Campaign')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        req = BookingRequest.objects.filter(patient_name='Ad Lead Test').first()
+        self.assertIsNotNone(req)
+        self.assertEqual(req.channel, 'facebook_lead_ads')
+        self.assertEqual(req.lead_source, 'Meta Lead Form — Teeth Whitening Campaign')
+
+        # Attribution visible on the receptionist queue (staff GET)
+        staff = StaffUser.objects.create(
+            full_name='Sarah Ads', email='sarah.ads@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        staff.set_password('SarahPass123!')
+        staff.save()
+        self.client.force_authenticate(user=staff)
+        res = self.client.get('/api/v1/booking-requests/')
+        card = next(r for r in res.data if r.get('patient_name') == 'Ad Lead Test')
+        self.assertEqual(card['channel'], 'facebook_lead_ads')
+        self.assertEqual(card['lead_source'], 'Meta Lead Form — Teeth Whitening Campaign')
+
+    def test_google_ads_intake(self):
+        res = self._intake('google_ads', 'utm_source=google&utm_campaign=whitening')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        req = BookingRequest.objects.filter(patient_name='Ad Lead Test').first()
+        self.assertEqual(req.channel, 'google_ads')
+        self.assertEqual(req.lead_source, 'utm_source=google&utm_campaign=whitening')
+
+    def test_existing_channels_still_work(self):
+        for channel in ('web', 'telegram', 'whatsapp_flow'):
+            BookingRequest.objects.all().delete()
+            res = self._intake(channel)
+            self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+            req = BookingRequest.objects.first()
+            self.assertEqual(req.channel, channel)
+
+    def test_invalid_channel_rejected(self):
+        res = self._intake('carrier_pigeon')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('channel', res.data)
+
+    def test_lead_source_optional_blank(self):
+        res = self._intake('facebook_lead_ads')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        req = BookingRequest.objects.first()
+        self.assertEqual(req.lead_source, '')
+
+
 
 
 

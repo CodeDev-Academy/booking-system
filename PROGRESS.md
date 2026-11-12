@@ -479,3 +479,26 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
     requires 10–15 digits (dates/order-IDs no longer masked in error bodies).
   - Deferred by design: InteractionLog `logged_by` attribution field; dispatch thread cap.
   - **Verification**: 126 tests total — **125 pass** (sole failure = pre-existing Telegram bug).
+
+## 2026-11-12 — Ads Intake Channels (Phase 4 prep / Task 4.0)
+
+- Third intake method shipped: `channel` choices extended with `facebook_lead_ads` + `google_ads`
+  (`models.py`), new optional `lead_source` attribution field (max 255, blank-safe) so reception
+  sees where each patient came from, e.g. "Meta Lead Form — Whitening Campaign" or
+  "utm_source=google&utm_campaign=...". Migration `0006_bookingrequest_lead_source_and_more`.
+- Intake view (`views_booking.py`) passes `lead_source` through; detail serializer includes it on
+  the receptionist queue card. `serializers_booking.py` intake channel choices extended.
+- Deliberate split (user-confirmed 3-channel model):
+  - **Website** — form POST, unchanged; Google Ads clicks land here (no workflow needed); utm
+    capture into `lead_source` rides with Phase 3 frontend (small rider task).
+  - **WhatsApp/Telegram** — unchanged inbound bot flow.
+  - **Facebook/Meta Lead Ads** — n8n Workflow E spec added to `n8n/N8N_BUILD_SHEET.md` §6:
+    Meta lead → normalize E.164 → POST /api/v1/booking-requests/ (channel facebook_lead_ads)
+    → queue card via SSE → instant WhatsApp greeting → both logged to /api/v1/interactions/.
+  - Downstream is channel-agnostic: ad leads enter Step 3 Receptionist Review like every request.
+- Tests: new `AdsLeadIntakeTests` — 5 tests (FB intake + attribution visible on staff GET,
+  Google Ads intake, legacy channels still work, invalid channel 400, blank lead_source OK).
+  One real bug found while writing them: the intake view constructs the record manually and
+  ignored new serializer fields — `lead_source` pass-through added.
+- **Verification**: 131 tests total — **130 pass** (sole failure = pre-existing Telegram bug).
+- Committed to `partner-readiness/phase-1-2`; `main` untouched.
