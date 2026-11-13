@@ -186,6 +186,9 @@ external providers (VoiceBip voice, WhatsApp, SMS, Meta, etc.).
   checklist includes it; do not be surprised at handover).
 - Non-blocking (async) outbound webhook dispatch from `DispatchOffersView`.
 - Live n8n deployment + real VoiceBip/WhatsApp credentials (partner-dependent).
+- **Ads Leads page** (user will design): ad-generated data (Google/Facebook ads) must be stored
+  as **new leads on a dedicated page**, NOT injected into the booking request queue. See the
+  2026-11-13 decision in Section 3.
 
 ### The 5 Messaging Features (specs in `plans/voicebip-n8n/`)
 
@@ -212,6 +215,13 @@ external providers (VoiceBip voice, WhatsApp, SMS, Meta, etc.).
   codified in `ROADMAP_PARTNER_READINESS.md`.
 6. Governance rules (from `AGENTS.md`): never build without explicit user command; strictly one small
    verifiable task at a time; logic/design separation; keep all `.md` docs synchronized.
+7. **Ads/lead data flow (2026-11-13, USER DECISION):** data extracted from ads (Google/Facebook) is
+   NOT a booking request. It must be stored as **new leads on a separate dedicated page** that the
+   user will design later. An ads-intake implementation was mistakenly built straight into
+   BookingRequest (commit `7016c6a` — channels + lead_source + n8n Workflow E delivering into the
+   queue) and was **reverted the same day** (commit `e503572`, migration 0006 unapplied). The n8n
+   ads workflow is ON HOLD until the Leads page design exists. Planning-first: do NOT build any
+   leads/ads code until the user explicitly commands it.
 
 ---
 

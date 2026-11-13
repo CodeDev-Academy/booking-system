@@ -479,3 +479,19 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
     requires 10–15 digits (dates/order-IDs no longer masked in error bodies).
   - Deferred by design: InteractionLog `logged_by` attribution field; dispatch thread cap.
   - **Verification**: 126 tests total — **125 pass** (sole failure = pre-existing Telegram bug).
+
+## 2026-11-13 - REVERTED: Ads Intake Channels (Task 4.0) + corrected decision
+
+- User clarified the intent: ads data is NOT booking requests. Ad-extracted information
+  (Google/Facebook ads) must be stored as new leads on a separate dedicated page that the
+  user will design later; the booking request queue must stay untouched by ads.
+- Commit 7016c6a had mistakenly built ads intake directly into BookingRequest (channel choices
+  facebook_lead_ads/google_ads, lead_source field, migration 0006, 5 tests) and spec'd an
+  n8n Workflow E that delivered ad leads straight into the receptionist queue.
+- Reverted: dev DB unapplied to migration 0005, then git revert -> commit e503572
+  (code, migration file, tests, build-sheet Workflow E, and doc claims all rolled back).
+- Corrected decision recorded in MASTER_CONTEXT.md (Section 3, decision #7) and in the roadmap's
+  Phase 4 section: no ads/leads code until the user designs the Leads page and explicitly
+  commands the build. Suite back to the pre-Task-4.0 state (126 tests / 125 pass).
+- Process note: Task 4.0 was built on a planning exchange; future feature work waits for an
+  explicit build command per governance rule #1.

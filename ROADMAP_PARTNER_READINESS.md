@@ -111,6 +111,15 @@
 > contracts, interaction-logging requirements, and a recommended build/test order (2026-11-12).
 
 ### Task 4.1: Slot Offer Dispatcher workflow `[~]` (05_slot_offer_dispatcher.json exists; add SMS node + 30s delay + VoiceBip call node)
+
+### Ads / Lead Data — ON HOLD (user decision 2026-11-13)
+- Ads-extracted data (Google/Facebook ads) is **NOT a booking request** — it must be stored as
+  **new leads on a separate dedicated page** the user will design later.
+- An earlier attempt to put ad leads directly into the request queue (`channel` choices +
+  `lead_source` on BookingRequest + n8n "Workflow E" delivering into the queue) was built by
+  mistake and **reverted** (commit `7016c6a` → reverted in `e503572`; migration 0006 unapplied).
+- No leads/ads code until the user designs the Leads page and explicitly commands the build.
+
 ### Task 4.2: Patient Response Handler workflow `[~]` (04 exists; add SMS "1/2/3" replies, other-channel neutralization, write to /interactions/)
 ### Task 4.3: Reminder Flows workflow `[~]` (03 exists; add dual WhatsApp+SMS 24h & 2h messages, zero calls)
 ### Task 4.4: Expiry Sweeper workflow `[~]` (02 exists; add 45-min nudge + 60-min expiry recovery card `[🔄 See New Times]`)
