@@ -185,6 +185,15 @@ export const buildMockRequests = () => [
     status: 'awaiting_review',
     reRequested: false,
     reviewingBy: null,
+    // Task 3.4 demo seed: a delivery failure so the Needs Attention tab has
+    // something to show in the pitch simulator (live mode comes from InteractionLog).
+    deliveryFailures: 1,
+    lastFailure: {
+      channel: 'whatsapp',
+      status: 'failed',
+      error_detail: 'Template not approved (demo)',
+      created_at: new Date(minutesAgo(36)).toISOString(),
+    },
     createdAt: minutesAgo(38),
   },
   {

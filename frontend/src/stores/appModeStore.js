@@ -78,6 +78,7 @@ export const useAppModeStore = create((set) => ({
   queueCounts: {
     newRequests: 4,
     reRequested: 2,
+    needsAttention: 1,
     expiredOffers: 1,
     todaySchedule: 8,
   },

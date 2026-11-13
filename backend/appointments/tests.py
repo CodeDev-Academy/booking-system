@@ -4298,6 +4298,108 @@ class RecalculateExcludesShownSlotsTests(APITestCase):
         self.assertEqual(len(set(first_starts) & set(second_starts)), 0)
 
 
+class NeedsAttentionFieldsTests(APITestCase):
+    """
+    Task 3.4: the queue list serializer exposes delivery-failure visibility
+    (delivery_failures count + last_failure detail) computed from InteractionLog
+    statuses failed / no_answer / expired — no new models.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Needs', email='sarah.needs@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+        self.service = Service.objects.create(
+            name='Dental Consultation', duration_minutes=30, buffer_minutes=5, price=10000,
+        )
+        self.booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0200',
+            patient_name='Amina Attention',
+            patient_phone='+2348055550001',
+            service=self.service,
+            status='slots_offered',
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def _queue_item(self):
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.get('/api/v1/booking-requests/?status=slots_offered')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        return next(item for item in res.data if item['request_code'] == 'REQ-2026-0200')
+
+    def test_no_failures_means_zero_and_null(self):
+        InteractionLog.objects.create(
+            provider='telegram', channel='telegram', direction='outbound',
+            status='delivered', patient_phone='+2348055550001',
+            booking_request=self.booking,
+        )
+        item = self._queue_item()
+        self.assertEqual(item['delivery_failures'], 0)
+        self.assertIsNone(item['last_failure'])
+
+    def test_failure_count_excludes_successful_statuses(self):
+        InteractionLog.objects.create(
+            provider='meta_whatsapp', channel='whatsapp', status='failed',
+            patient_phone='+2348055550001', booking_request=self.booking,
+            error_detail='Template not approved',
+        )
+        InteractionLog.objects.create(
+            provider='voicebip', channel='voice', status='no_answer',
+            patient_phone='+2348055550001', booking_request=self.booking,
+        )
+        InteractionLog.objects.create(
+            provider='voicebip', channel='sms', status='delivered',
+            patient_phone='+2348055550001', booking_request=self.booking,
+        )
+        item = self._queue_item()
+        self.assertEqual(item['delivery_failures'], 2)
+        self.assertIsNotNone(item['last_failure'])
+        self.assertIn(item['last_failure']['status'], ('failed', 'no_answer'))
+
+    def test_last_failure_is_the_most_recent_failure(self):
+        older = InteractionLog.objects.create(
+            provider='meta_whatsapp', channel='whatsapp', status='failed',
+            patient_phone='+2348055550001', booking_request=self.booking,
+            error_detail='Old failure',
+        )
+        InteractionLog.objects.create(
+            provider='voicebip', channel='voice', status='no_answer',
+            patient_phone='+2348055550001', booking_request=self.booking,
+            summary='Call not answered',
+        )
+        # auto_now_add pins created_at; bump the older row explicitly
+        InteractionLog.objects.filter(pk=older.pk).update(
+            created_at=timezone.now() - datetime.timedelta(minutes=10)
+        )
+        item = self._queue_item()
+        self.assertEqual(item['delivery_failures'], 2)
+        self.assertEqual(item['last_failure']['channel'], 'voice')
+        self.assertEqual(item['last_failure']['status'], 'no_answer')
+        self.assertEqual(item['last_failure']['summary'], 'Call not answered')
+
+    def test_failures_do_not_leak_between_requests(self):
+        other = BookingRequest.objects.create(
+            request_code='REQ-2026-0201',
+            patient_name='Other Patient',
+            patient_phone='+2348055550002',
+            service=self.service,
+            status='slots_offered',
+        )
+        InteractionLog.objects.create(
+            provider='meta_whatsapp', channel='whatsapp', status='failed',
+            patient_phone='+2348055550002', booking_request=other,
+        )
+        item = self._queue_item()
+        self.assertEqual(item['delivery_failures'], 0)
+        self.assertIsNone(item['last_failure'])
+
+
 
 
 

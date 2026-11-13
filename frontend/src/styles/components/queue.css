@@ -162,6 +162,14 @@ textarea.field-input { min-height: 80px; padding: var(--space-2) var(--space-3);
   border-color: #334155;
 }
 
+/* Task 3.4: Needs Attention — red delivery-failure count */
+.queue-tab-count.tone-danger,
+.queue-tab.active .queue-tab-count.tone-danger {
+  background: rgba(255, 79, 121, 0.15);
+  color: var(--rose);
+  border-color: rgba(255, 79, 121, 0.35);
+}
+
 .queue-grid { display: grid; grid-template-columns: 1fr; gap: var(--space-4); width: 100%; }
 
 .queue-card {

@@ -211,6 +211,11 @@ class BookingRequestDetailSerializer(serializers.ModelSerializer):
     preferred_doctor_specialty = serializers.CharField(source='preferred_doctor.specialty', read_only=True, allow_null=True)
 
     patient_dossier = serializers.SerializerMethodField()
+    # Task 3.4 "Needs Attention": delivery-failure visibility driven by the shared
+    # InteractionLog — n8n logs provider failures (failed / no_answer / expired)
+    # there, and the dashboard queue surfaces them without new models.
+    delivery_failures = serializers.SerializerMethodField()
+    last_failure = serializers.SerializerMethodField()
     slot_offers = SlotOfferSerializer(many=True, read_only=True)
     request_id = serializers.CharField(source='request_code', read_only=True)
 
@@ -244,6 +249,8 @@ class BookingRequestDetailSerializer(serializers.ModelSerializer):
             'patient_notes',
             'offer_expires_at',
             'patient_dossier',
+            'delivery_failures',
+            'last_failure',
             'slot_offers',
             'created_at',
             'updated_at',
@@ -252,3 +259,24 @@ class BookingRequestDetailSerializer(serializers.ModelSerializer):
 
     def get_patient_dossier(self, obj):
         return get_patient_dossier(obj.patient_phone)
+
+    # --- Task 3.4: Needs Attention fields -------------------------------
+    FAILURE_STATUSES = ('failed', 'no_answer', 'expired')
+
+    def _failure_queryset(self, obj):
+        return obj.interactions.filter(status__in=self.FAILURE_STATUSES)
+
+    def get_delivery_failures(self, obj):
+        return self._failure_queryset(obj).count()
+
+    def get_last_failure(self, obj):
+        latest = self._failure_queryset(obj).order_by('-created_at').first()
+        if latest is None:
+            return None
+        return {
+            'channel': latest.channel,
+            'status': latest.status,
+            'summary': latest.summary or '',
+            'error_detail': latest.error_detail or '',
+            'created_at': latest.created_at.isoformat(),
+        }

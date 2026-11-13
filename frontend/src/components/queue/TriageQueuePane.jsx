@@ -5,6 +5,7 @@ import { QueueCard } from './QueueCard';
 const EMPTY_COPY = {
   new: 'No new requests. Fresh patient requests will appear here, oldest first.',
   rerequested: 'No re-requested slots right now.',
+  needs_attention: 'No delivery problems. Messages and calls are going out cleanly.',
   expired: 'No expired offers to follow up.',
 };
 

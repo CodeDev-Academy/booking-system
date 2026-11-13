@@ -171,6 +171,9 @@ export const useQueueStore = create(
           // Task 3.3: real attendance history from the backend (computed by
           // get_patient_dossier) — replaces the demo registry for live mode.
           patientDossier: item.patient_dossier || null,
+          // Task 3.4: delivery-failure visibility (Needs Attention tab).
+          deliveryFailures: item.delivery_failures || 0,
+          lastFailure: item.last_failure || null,
         };
       });
 

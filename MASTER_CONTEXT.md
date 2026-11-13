@@ -5,7 +5,7 @@
 > **Standing rule:** after every completed task, decision, or architecture change — update this file
 > (and `ROADMAP_PARTNER_READINESS.md`) immediately. Any AI inheriting this project must continue this
 > practice so the next one can resume exactly where we stopped.
-> Last updated: 2026-11-13 (OpenCode session - Phase 1 complete + Phase 2 FULLY COMPLETED; Phase 3 tasks 3.1/3.2/3.3 committed; next: Task 3.4 Needs Attention tab + user n8n builds D→C→B).
+> Last updated: 2026-11-13 (OpenCode session - Phase 1 complete + Phase 2 FULLY COMPLETED; Phase 3 tasks 3.1/3.2/3.3/3.4 committed; next: user n8n builds D→C→B against the build sheet → Phase 5 handover).
 
 ---
 
@@ -232,6 +232,26 @@ external providers (VoiceBip voice, WhatsApp, SMS, Meta, etc.).
   Tests: `RecalculateExcludesShownSlotsTests` (2: first call returns slots; excluding shown
   starts returns only fresh slots). Suite: **145 tests / 144 pass** (sole failure = the
   pre-existing Telegram bug). Frontend build passes.
+
+- **Task 3.4 "Needs Attention" tab (2026-11-13):** delivery-failure visibility for reception —
+  the answer to "how does reception know a send failed without re-opening every patient?".
+  Driven entirely by the shared interaction logbook (no new models). **Backend:** queue list
+  serializer (`BookingRequestDetailSerializer`) exposes `delivery_failures` (count of
+  InteractionLog rows with status `failed` / `no_answer` / `expired`, scoped to that booking
+  request) and `last_failure` (`{channel, status, summary, error_detail, created_at}` — most
+  recent failure or null). **Frontend:** `syncFromBackend` maps both; the queue gains a 5th
+  tab **Needs Attention** (red `tone-danger` count, hint "Delivery issues") listing every
+  request with ≥1 failure regardless of status, most recent failure first; **QueueCard** shows
+  a red `⚠ N FAILED` chip with a tooltip naming the last failing channel; the LeftRail Requests
+  Queue item gets a red badge; a Web-Audio chime plays when the failure count grows (respects
+  the audio setting). Clicking a card opens the normal review modal where the Task 3.2
+  timeline shows exactly which channel failed and the provider's error text. Demo mode seeds
+  one failure (`REQ-2026-0044`) so the pitch simulator demonstrates the tab; live mode is
+  real. Retry remains n8n's job (build sheet: retry once → SMS fallback → log) — this tab
+  catches what still needs a human. Tests: `NeedsAttentionFieldsTests` (4: no-failure
+  zero/null, counts exclude delivered, latest failure wins, no cross-request leakage).
+  Suite: **149 tests / 148 pass** (sole failure = pre-existing Telegram bug). Frontend build
+  passes.
 
 - **Code review fixes (2026-11-12):** external review of Phases 1–2 found 1 critical + 5 medium
   issues; all fixed and tested. Critical: non-ASCII `X-Webhook-Secret` header caused TypeError →

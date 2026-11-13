@@ -98,6 +98,14 @@ export const LeftRail = () => {
                 {queueCounts.newRequests}
               </span>
             )}
+            {queueCounts.needsAttention > 0 && (
+              <span
+                className="nav-count-badge nav-count-badge-danger tabular-nums"
+                title="Requests with failed deliveries — open the Needs Attention tab"
+              >
+                ⚠ {queueCounts.needsAttention}
+              </span>
+            )}
           </NavLink>
 
           <NavLink

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useQueueStore } from '../stores/useQueueStore';
 import { useStaffStore } from '../stores/useStaffStore';
 import { useAppModeStore } from '../stores/appModeStore';
@@ -20,6 +20,7 @@ import {
 } from '../services/slotEngine';
 import { normalizeE164, formatPhoneDisplay, matchesPhone } from '../services/phoneUtils';
 import { apiService } from '../services/apiService';
+import { soundService } from '../services/soundService';
 import {
   getAgingLevel,
   AGING_LABELS,
@@ -85,9 +86,19 @@ export const useTriageQueue = () => {
   const buckets = useMemo(() => {
     const awaiting = requests.filter((r) => r.status === 'awaiting_review');
     const byAge = (a, b) => a.createdAt - b.createdAt; // strict FIFO
+    // Task 3.4: any request with a logged delivery failure (failed / no_answer /
+    // expired interaction) needs a human — regardless of its queue status.
+    const needsAttention = requests
+      .filter((r) => (r.deliveryFailures || 0) > 0)
+      .sort((a, b) => {
+        const fa = a.lastFailure ? new Date(a.lastFailure.created_at).getTime() : a.createdAt;
+        const fb = b.lastFailure ? new Date(b.lastFailure.created_at).getTime() : b.createdAt;
+        return fb - fa; // most recent failure first
+      });
     return {
       new: awaiting.filter((r) => !r.reRequested).sort(byAge),
       rerequested: awaiting.filter((r) => r.reRequested).sort(byAge),
+      needs_attention: needsAttention,
       expired: requests.filter((r) => r.status === 'offer_expired').sort(byAge),
     };
   }, [requests]);
@@ -96,17 +107,31 @@ export const useTriageQueue = () => {
     () => [
       { id: 'new', label: 'New Requests', hint: 'FIFO', count: buckets.new.length, tone: 'amber' },
       { id: 'rerequested', label: 'Re-Requested', hint: 'Priority', count: buckets.rerequested.length, tone: 'ember' },
+      { id: 'needs_attention', label: 'Needs Attention', hint: 'Delivery issues', count: buckets.needs_attention.length, tone: 'danger' },
       { id: 'expired', label: 'Expired Offers', hint: null, count: buckets.expired.length, tone: 'neutral' },
       { id: 'today', label: "Today's Schedule", hint: null, count: appointments.length, tone: 'info' },
     ],
     [buckets, appointments]
   );
 
+  // Task 3.4: audible alert when a NEW delivery failure lands (count grows)
+  // — reception shouldn't have to watch the tab to know something broke.
+  const prevNeedsAttentionRef = useRef(null);
+  useEffect(() => {
+    const count = buckets.needs_attention.length;
+    const prev = prevNeedsAttentionRef.current;
+    prevNeedsAttentionRef.current = count;
+    if (prev !== null && count > prev && useAppModeStore.getState().audioEnabled) {
+      soundService.playChime();
+    }
+  }, [buckets.needs_attention.length]);
+
   // Keep the left-rail nav badges in sync with real queue counts
   useEffect(() => {
     setQueueCounts({
       newRequests: buckets.new.length,
       reRequested: buckets.rerequested.length,
+      needsAttention: buckets.needs_attention.length,
       expiredOffers: buckets.expired.length,
       todaySchedule: appointments.length,
     });
@@ -130,6 +155,11 @@ export const useTriageQueue = () => {
         doctorName: doctor ? doctor.name : 'Any available doctor',
         windowLabel: (TIME_WINDOWS[r.timeWindow] || {}).label || '',
         channel: r.channel,
+        // Task 3.4: Needs Attention chips
+        failureCount: r.deliveryFailures || 0,
+        lastFailureLabel: r.lastFailure
+          ? `${(r.lastFailure.channel || 'channel').replace('_', ' ')} ${(r.lastFailure.status || 'failed').replace('_', ' ')}`
+          : null,
         isEmergency: Boolean(r.isEmergency || r.is_emergency),
         gender: r.gender || '',
         dateOfBirth: r.dateOfBirth || r.date_of_birth || null,

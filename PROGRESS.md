@@ -604,3 +604,28 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
   (sole failure = pre-existing Telegram bug, unchanged). Frontend build passes.
 - Committed to `partner-readiness/phase-1-2`. Next: **Task 3.4 — Needs Attention tab**
   (delivery-failure visibility queue, user-approved design).
+
+## 2026-11-13 — Task 3.4: Needs Attention tab (approved build)
+
+- Goal: reception must never manually re-open dispatched patients to discover a send failed.
+  The system surfaces delivery problems in the queue itself. No new models — driven by the
+  Phase 2 InteractionLog ("logbook") statuses `failed` / `no_answer` / `expired`.
+- Backend: `BookingRequestDetailSerializer` gained `delivery_failures` (count scoped to that
+  booking request) and `last_failure` (`{channel, status, summary, error_detail, created_at}`,
+  most recent failure or null). Applies to the queue list (`GET /api/v1/booking-requests/`)
+  and any detail response using the serializer.
+- Frontend: `syncFromBackend` maps `delivery_failures` → `deliveryFailures` and `last_failure`
+  → `lastFailure`. Queue gains a 5th tab **Needs Attention** (red count, "Delivery issues"
+  hint) that lists every request with ≥1 failure, most recent failure first, regardless of
+  queue status; empty state = "No delivery problems". `QueueCard` shows a red
+  "⚠ N FAILED" chip with a tooltip naming the last failing channel; the LeftRail Requests
+  Queue item gets a red badge (`.nav-count-badge-danger`); a Web-Audio chime plays when the
+  count grows (respects the audio setting). Clicking a card opens the normal review modal
+  where the Task 3.2 timeline shows the exact failure + provider error text.
+- Demo mode: one seeded failure on `REQ-2026-0044` (WhatsApp failed, demo error text) so the
+  pitch simulator demonstrates the tab; live mode values are real. Automatic retry stays
+  n8n's job — this tab only humanizes what the logbook reports.
+- Tests: `NeedsAttentionFieldsTests` (4). Suite: **149 total, 148 pass** (sole failure =
+  pre-existing Telegram bug). Frontend build passes.
+- Committed to `partner-readiness/phase-1-2`. **All three Phase 3 dashboard tasks complete.**
+  Next: user builds n8n Workflow D → C → B (build sheet), then Phase 5 partner handover.

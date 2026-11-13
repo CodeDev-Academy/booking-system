@@ -70,6 +70,21 @@ export const QueueCard = ({ card, onOpen }) => {
             >
               {isReturning ? 'RETURNING' : 'NEW'}
             </span>
+            {card.failureCount > 0 && (
+              <span
+                className="event-type-pill"
+                title={`${card.failureCount} delivery problem${card.failureCount > 1 ? 's' : ''}${card.lastFailureLabel ? ` — last: ${card.lastFailureLabel}` : ''}. Open to see the full timeline.`}
+                style={{
+                  background: 'rgba(255, 79, 121, 0.15)',
+                  color: 'var(--rose)',
+                  border: '1px solid rgba(255, 79, 121, 0.3)',
+                  fontWeight: 700,
+                  fontSize: '9px',
+                }}
+              >
+                ⚠ {card.failureCount} FAILED
+              </span>
+            )}
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
