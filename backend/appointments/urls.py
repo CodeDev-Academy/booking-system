@@ -17,6 +17,7 @@ from .views_booking import (
     CheckSlotsView,
     DispatchOffersView,
     DispatchStatusView,
+    BookingChannelAvailabilityView,
     AskInfoView,
     BookingRequestReRequestView,
 )
@@ -117,6 +118,7 @@ urlpatterns = [
     path('booking-requests/<str:id>/check-slots/', CheckSlotsView.as_view(), name='booking-check-slots'),
     path('booking-requests/<str:id>/dispatch-offers/', DispatchOffersView.as_view(), name='booking-dispatch-offers'),
     path('booking-requests/<str:id>/dispatch-status/', DispatchStatusView.as_view(), name='booking-dispatch-status'),
+    path('booking-requests/<str:id>/channel-availability/', BookingChannelAvailabilityView.as_view(), name='booking-channel-availability'),
     path('booking-requests/<str:id>/ask-info/', AskInfoView.as_view(), name='booking-ask-info'),
     path('booking-requests/<str:id>/re-request/', BookingRequestReRequestView.as_view(), name='booking-re-request'),
     path('requests/', BookingRequestListCreateView.as_view(), name='requests-list-create'),

@@ -4565,6 +4565,149 @@ class DispatchContractEnrichmentTests(APITestCase):
         self.assertTrue(res.data['has_confirmed_booking'])
 
 
+class ChannelAvailabilityTests(APITestCase):
+    """
+    Option B, Layer 1 — read-only channel availability resolver + endpoint.
+
+    Purely additive: DispatchOffersView is untouched in this layer, so these
+    tests also assert that availability reporting changes no dispatch behaviour.
+
+    Coverage:
+    - resolver: no providers + no Telegram → `none` is True,
+    - Telegram chat id + bot token makes the `whatsapp` leg reachable via Telegram
+      (matching what DispatchOffersView actually does today),
+    - explicit provider flags (SMS_ENABLED / VOICE_ENABLED / WHATSAPP_ENABLED) mark
+      the matching channel reachable,
+    - a chat id without a bot token is NOT reachable,
+    - GET endpoint: 200 shape, 401 unauthenticated, 404 unknown request.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Availability',
+            email='sarah.availability@clinic.com',
+            role='receptionist',
+            is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+
+        self.service = Service.objects.create(
+            name='Dental Consultation', duration_minutes=30, buffer_minutes=5, price=10000,
+        )
+        self.booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0400',
+            patient_name='Grace Availability',
+            patient_phone='+2348088880001',
+            service=self.service,
+            status='awaiting_review',
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def _flags(self, **overrides):
+        """Deterministic provider flags regardless of the developer's shell env."""
+        values = {'WHATSAPP_ENABLED': '', 'SMS_ENABLED': '', 'VOICE_ENABLED': ''}
+        values.update(overrides)
+        import os
+        from unittest.mock import patch
+        return patch.dict(os.environ, values)
+
+    def _url(self):
+        return f'/api/v1/booking-requests/{self.booking.request_code}/channel-availability/'
+
+    # ---------------------------------------------------------------- resolver
+    def test_no_providers_and_no_telegram_reports_none(self):
+        from .services.channel_availability import resolve_channel_availability
+        with self._flags(), override_settings(TELEGRAM_BOT_TOKEN=''):
+            data = resolve_channel_availability(self.booking)
+
+        self.assertTrue(data['none'])
+        self.assertEqual(data['reachable'], [])
+        self.assertEqual(data['unreachable'], ['whatsapp', 'sms', 'voice'])
+        self.assertIsNone(data['telegram_chat_id'])
+        self.assertFalse(data['channels']['telegram']['reachable'])
+
+    def test_telegram_chat_id_and_token_makes_whatsapp_leg_reachable(self):
+        from .services.channel_availability import resolve_channel_availability
+        self.booking.patient_notes = 'telegram_chat_id: 55882'
+        self.booking.save(update_fields=['patient_notes'])
+
+        with self._flags(), override_settings(TELEGRAM_BOT_TOKEN='test-bot-token'):
+            data = resolve_channel_availability(self.booking)
+
+        self.assertFalse(data['none'])
+        self.assertEqual(data['telegram_chat_id'], '55882')
+        self.assertIn('whatsapp', data['reachable'])
+        self.assertEqual(data['channels']['whatsapp']['via'], 'telegram')
+        self.assertNotIn('sms', data['reachable'])
+        self.assertNotIn('voice', data['reachable'])
+        self.assertTrue(data['channels']['telegram']['reachable'])
+
+    def test_explicit_provider_flags_mark_channels_reachable(self):
+        from .services.channel_availability import resolve_channel_availability
+        with self._flags(WHATSAPP_ENABLED='true', SMS_ENABLED='true', VOICE_ENABLED='true'), \
+                override_settings(TELEGRAM_BOT_TOKEN=''):
+            data = resolve_channel_availability(self.booking)
+
+        self.assertFalse(data['none'])
+        self.assertEqual(sorted(data['reachable']), ['sms', 'voice', 'whatsapp'])
+        self.assertEqual(data['channels']['whatsapp']['via'], 'whatsapp')
+        self.assertIsNone(data['channels']['sms']['reason'])
+
+    def test_chat_id_without_bot_token_is_not_reachable(self):
+        from .services.channel_availability import resolve_channel_availability
+        self.booking.patient_notes = 'telegram_chat_id: 55882'
+        self.booking.save(update_fields=['patient_notes'])
+
+        with self._flags(), override_settings(TELEGRAM_BOT_TOKEN=''):
+            data = resolve_channel_availability(self.booking)
+
+        self.assertEqual(data['telegram_chat_id'], '55882')
+        self.assertFalse(data['channels']['whatsapp']['reachable'])
+        self.assertTrue(data['none'])
+
+    def test_explicit_request_chat_id_overrides_stored_value(self):
+        from .services.channel_availability import resolve_channel_availability
+        with self._flags(), override_settings(TELEGRAM_BOT_TOKEN='test-bot-token'):
+            data = resolve_channel_availability(
+                self.booking, request_data={'telegram_chat_id': '99001'}
+            )
+
+        self.assertEqual(data['telegram_chat_id'], '99001')
+        self.assertIn('whatsapp', data['reachable'])
+
+    # ---------------------------------------------------------------- endpoint
+    def test_endpoint_returns_availability_shape(self):
+        self.client.force_authenticate(user=self.receptionist)
+        self.booking.patient_notes = 'telegram_chat_id: 55882'
+        self.booking.save(update_fields=['patient_notes'])
+
+        with self._flags(), override_settings(TELEGRAM_BOT_TOKEN='test-bot-token'):
+            res = self.client.get(self._url())
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['request_id'], 'REQ-2026-0400')
+        self.assertIn('channels', res.data)
+        self.assertIn('whatsapp', res.data['reachable'])
+        self.assertFalse(res.data['none'])
+        self.assertEqual(
+            set(res.data['channels'].keys()),
+            {'whatsapp', 'sms', 'voice', 'telegram'},
+        )
+
+    def test_endpoint_requires_staff_auth(self):
+        res = self.client.get(self._url())
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_endpoint_unknown_request_returns_404(self):
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.get('/api/v1/booking-requests/REQ-2099-9999/channel-availability/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
 
 
 

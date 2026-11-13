@@ -318,6 +318,31 @@ A web patient with no Telegram and no configured WhatsApp/SMS/voice currently re
 
 Availability is reported by the backend (config-driven), never hardcoded in React.
 
+**Implementation status (2026-11-13):**
+
+| Layer | Scope | State |
+|---|---|---|
+| 1 | Read-only resolver `appointments/services/channel_availability.py` + `GET /api/v1/booking-requests/{id}/channel-availability/` | **DONE** (8 tests, behaviour-neutral) |
+| 2 | Advisory `delivery` / `delivery_warning` fields on `dispatch-offers` (status stays 200) | planned |
+| 3 | Dashboard availability hints in the ReviewModal + `409 NO_REACHABLE_CHANNEL` rollback | planned |
+| 4 | Enforcement behind `DISPATCH_REQUIRE_REACHABLE_CHANNEL` (default **off**) | planned |
+
+Layer 1 contract (also documented in `API_REFERENCE.md`):
+
+- Config signals: `TELEGRAM_BOT_TOKEN` (Django sends that leg itself) plus the explicit
+  enable flags `WHATSAPP_ENABLED`, `SMS_ENABLED`, `VOICE_ENABLED`. Flags — not credentials —
+  because provider secrets live in n8n.
+- Telegram `chat_id` + token makes the **`whatsapp`** channel reachable (`via: "telegram"`),
+  matching today's dispatch behaviour where Telegram is the WhatsApp stand-in.
+- Response keys: `channels` (whatsapp/sms/voice/telegram, each with
+  `configured`/`reachable`/`via`/`reason`), `reachable`, `unreachable`, `none`,
+  `telegram_chat_id`, `request_id`.
+- **No side effects:** no DB writes, no network calls, no provider invocation. Nothing in
+  `DispatchOffersView` changed in this layer.
+- Why it is not a duplicate of **Needs Attention**: that tab is reactive (an attempted send
+  failed and wrote an `InteractionLog`). A dispatch that reaches nobody writes no log at all,
+  so the tab stays green while the patient receives nothing. The guard closes that gap.
+
 ### 5.7 Build sequence (mock-first, so "connect the API" is the only step left)
 
 1. **Channel-availability guard** — backend + dashboard (no provider needed; fully testable).

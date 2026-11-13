@@ -78,6 +78,36 @@ Receptionist approves selected slots and initiates the 60-minute (1-hour) offer 
 
 ---
 
+### `GET /api/v1/booking-requests/{request_id}/channel-availability/`
+**Option B (preventive layer, read-only).** Reports which delivery channels can actually reach this patient under the current deployment configuration, so reception sees an unreachable patient *before* clicking Approve & Dispatch.
+
+- **Auth:** staff JWT (`receptionist` / `clinic_admin`). No webhook-secret access.
+- **Side effects:** none — no DB writes, no network calls, no provider invocation.
+- **Provider config signals:** `TELEGRAM_BOT_TOKEN` (Django sends that leg itself) and the explicit enable flags `WHATSAPP_ENABLED`, `SMS_ENABLED`, `VOICE_ENABLED` (provider credentials live in n8n, not Django).
+- **Telegram rule:** the `whatsapp` checkbox is the instant-message leg; a patient with a Telegram `chat_id` counts as reachable through it — matching what `dispatch-offers` already does.
+
+```json
+{
+  "request_id": "REQ-2026-0042",
+  "channels": {
+    "whatsapp": { "configured": false, "reachable": true,  "via": "telegram", "reason": "Delivered through the Telegram card (WhatsApp stand-in)." },
+    "sms":      { "configured": false, "reachable": false, "via": null, "reason": "SMS is not enabled (set SMS_ENABLED=true when VoiceBip credentials are live)." },
+    "voice":    { "configured": false, "reachable": false, "via": null, "reason": "Voice is not enabled (set VOICE_ENABLED=true when the Vapi assistant is live)." },
+    "telegram": { "configured": true,  "reachable": true,  "via": "telegram", "reason": null }
+  },
+  "reachable": ["whatsapp"],
+  "unreachable": ["sms", "voice"],
+  "none": false,
+  "telegram_chat_id": "55882"
+}
+```
+
+`reachable` / `unreachable` list only the dispatch channels (`whatsapp`, `sms`, `voice`) so callers can intersect them with the receptionist's checkbox selection; `telegram` is informational. `none: true` means the patient cannot be reached by any channel.
+
+**Relationship to Needs Attention:** this endpoint is *preventive* (before a send). The Needs Attention tab is *reactive* (after an attempted send that failed and produced an `InteractionLog`). A dispatch that reaches nobody creates no log row, which is exactly the blind spot this endpoint closes.
+
+---
+
 ### `POST /api/v1/booking-requests/{request_id}/channel-failed/`
 Invoked by n8n when Telegram returns `403 Forbidden` (patient blocked bot) or WhatsApp delivery fails. Sets `channel_blocked = true` and generates a priority alert badge on the receptionist dashboard: `[⚠️ Call Patient]`.
 

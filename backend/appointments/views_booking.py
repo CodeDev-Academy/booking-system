@@ -22,6 +22,7 @@ from .serializers_booking import (
     sanitize_phone_e164,
 )
 from .services.availability import AvailabilityEngine
+from .services.channel_availability import resolve_channel_availability
 from .services.dispatch_service import fire_and_forget_webhook
 from .services.sse_bus import broadcast_event
 from .services.telegram_service import TelegramService
@@ -612,6 +613,28 @@ class DispatchStatusView(APIView):
             # n8n-friendly single flag: true → skip the 30s voice-call nudge
             'should_skip_voice_call': bool(booked),
         }, status=status.HTTP_200_OK)
+
+
+class BookingChannelAvailabilityView(APIView):
+    """
+    GET /api/v1/booking-requests/{id}/channel-availability/
+
+    Option B (preventive layer): reports which delivery channels can actually
+    reach this patient under the current deployment configuration. Reception
+    sees this BEFORE clicking Approve & Dispatch, so a dispatch that would
+    reach nobody is never created silently.
+
+    Read-only and behaviour-neutral: DispatchOffersView is untouched until the
+    optional enforcement flag is enabled in a later layer.
+    """
+    permission_classes = [IsStaffAuthenticated]
+
+    def get(self, request, id):
+        booking = get_booking_or_404(id)
+        return Response(
+            resolve_channel_availability(booking),
+            status=status.HTTP_200_OK,
+        )
 
 
 class AskInfoView(APIView):

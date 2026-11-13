@@ -667,3 +667,31 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
   history" and read `dossier.reliabilityTone`/`lastVisits` unconditionally → React crash (blank
   screen) when opening a first-time patient whose messages were logged. Reliability card is now
   conditional; timeline renders alone for new patients (`36b0df0`).
+
+
+## 2026-11-13 - Option B Layer 1: channel-availability resolver + read-only endpoint
+
+- New `backend/appointments/services/channel_availability.py`:
+  `resolve_channel_availability(booking, request_data=None)` returns a per-channel
+  reachability map (`whatsapp`, `sms`, `voice`, `telegram`) plus `reachable`,
+  `unreachable`, `none` and `telegram_chat_id`. Read-only: no DB writes, no network
+  calls, no provider invocation.
+- Config signals are explicit enable flags - `WHATSAPP_ENABLED`, `SMS_ENABLED`,
+  `VOICE_ENABLED` - because provider credentials live in n8n, not Django. Telegram is
+  detected from `settings.TELEGRAM_BOT_TOKEN` because Django sends that leg itself.
+- Telegram rule preserved: a patient with a `chat_id` + token makes the `whatsapp`
+  checkbox reachable (`via: "telegram"`), matching what `DispatchOffersView` already
+  does today (Telegram is the WhatsApp stand-in).
+- New `GET /api/v1/booking-requests/{id}/channel-availability/` (staff auth only).
+  Registered beside `dispatch-status` in `appointments/urls.py`.
+- **Dispatch behaviour unchanged** - `DispatchOffersView` was not touched in this layer.
+- Tests: `ChannelAvailabilityTests` (8) - resolver matrix (no providers -> `none`,
+  Telegram via chat_id + token, explicit flags, chat_id without token, request-level
+  override) and endpoint (200 shape, 401 unauthenticated, 404 unknown).
+- Suite: **162 total, 161 pass** (sole failure = pre-existing Telegram bug at
+  `Phase5TelegramTests.test_telegram_interactive_service_booking_and_dispatch`).
+- Docs: `API_REFERENCE.md` (endpoint contract + Needs Attention distinction),
+  `n8n.md` section 5.6 (layer status table + contract).
+- Next: Layer 2 (advisory `delivery` / `delivery_warning` on dispatch, status stays 200),
+  then Layer 3 (ReviewModal hints + `409 NO_REACHABLE_CHANNEL` rollback), then the
+  `DISPATCH_REQUIRE_REACHABLE_CHANNEL` flag (default off).
