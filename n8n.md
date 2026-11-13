@@ -230,7 +230,139 @@ To onboard a new clinic client in under 15 minutes:
 
 ---
 
-## 5. Summary Matrix of Workflow JSONs
+## 5. Voice & SMS Provider Integration — Connection Model & Readiness Plan
+
+**Status: PLANNING (2026-11-13). No code yet.** Decisions below are locked; the build follows
+the sequence in §5.7.
+
+### 5.1 The two directions (why the Vapi video looked so simple)
+
+The video showed a **Vapi agent with the n8n webhook URL pasted into it**. That is only the
+**inbound** half of the integration:
+
+```
+OUTBOUND (we start the call)              INBOUND (provider reports back)
+n8n ──API key──► Provider                Provider ──webhook URL──► n8n
+POST /call {assistantId, to, params}     {event: ended, status, transcript…}
+```
+
+- Pasting the webhook URL in the agent config makes the provider **call us** on call events.
+- It does **not** let us start a call — that needs the provider's **API key + outbound endpoint**.
+- Both halves are required for the dispatch nudge: n8n starts the call, then logs the outcome.
+
+### 5.2 Actual provider split (decided)
+
+| Capability | Provider | Why |
+|---|---|---|
+| Voice call (nudge) | **Vapi** (partner's agents) | Agent + script already configured on their side |
+| SMS | **VoiceBip** account | Partner supplies sender ID + SMS endpoint |
+| WhatsApp / Telegram | Telegram (current stand-in) → WhatsApp Cloud API later | Unchanged |
+
+The adapter is **provider-agnostic**: voice and SMS are separate config blocks, so if VoiceBip
+also exposes voice later, only the config changes.
+
+### 5.3 Voice is a NUDGE ONLY (no DTMF — decided)
+
+- The call says: *"Your appointment options are ready — please check your WhatsApp/SMS and pick
+  a time."* It does **not** read the options and does **not** accept 1/2/3 keypad input.
+- Consequences: no DTMF handler, no option resolution by voice, no re-prompt loop.
+- Option numbers are still resolved only by the backend (Workflow C), never by the call.
+- If a patient presses keys anyway, the agent ignores it — the booking still happens on
+  WhatsApp/SMS/Telegram.
+
+### 5.4 Script ownership (decided: partner now, platform later)
+
+- **Now:** the prompt/script lives on the Vapi agent. n8n sends only dynamic variables
+  (`patient_name`, `clinic_name`, `service_name`, `options_count`, `expiry_minutes`).
+- **Future:** script moves to our platform. Reserved config switch:
+  `VOICE_SCRIPT_SOURCE=partner | platform`, plus a reserved payload field
+  `assistant_overrides` (prompt/firstMessage/voice) that is simply omitted today.
+- The adapter must be written so that adding `assistant_overrides` is a **config change**, not
+  a graph rebuild.
+
+### 5.5 Config contract (the only thing that changes when credentials land)
+
+```
+# Voice (Vapi)
+VAPI_API_URL=https://api.vapi.ai
+VAPI_API_KEY=
+VAPI_ASSISTANT_DISPATCH=
+VAPI_ASSISTANT_REMINDER=
+VAPI_PHONE_NUMBER_ID=
+VOICE_SCRIPT_SOURCE=partner
+
+# SMS (VoiceBip)
+VOICEBIP_API_URL=
+VOICEBIP_API_KEY=
+VOICEBIP_SMS_SENDER_ID=Cedarcare
+
+# Test switch — mock adapter returns realistic responses + simulated callbacks
+PROVIDER_MOCK=true
+```
+
+Rules: no node hardcodes a URL or key; one adapter Code node builds every provider request;
+switching provider = editing this block only.
+
+### 5.6 Channel-availability guard (Option B — decided)
+
+A web patient with no Telegram and no configured WhatsApp/SMS/voice currently receives
+**nothing** while the dashboard says "dispatched". Fix, in two layers:
+
+1. **Backend (authoritative):** `DispatchOffersView` computes reachable channels for the
+   patient (telegram if `telegram_chat_id`; whatsapp/sms/voice if provider configured and the
+   checkbox is on). If none are reachable → reject with a clear error code
+   (e.g. `409 NO_REACHABLE_CHANNEL`) instead of silently firing nothing.
+2. **Dashboard (preventive):** the ReviewModal shows channel availability next to the
+   checkboxes (disabled + reason when a provider is not configured), so reception sees the
+   problem before clicking Approve & Dispatch.
+
+Availability is reported by the backend (config-driven), never hardcoded in React.
+
+### 5.7 Build sequence (mock-first, so "connect the API" is the only step left)
+
+1. **Channel-availability guard** — backend + dashboard (no provider needed; fully testable).
+2. **Mock provider adapter** — `PROVIDER_MOCK=true` returns fake call IDs/statuses and can
+   simulate callbacks; lets the whole D graph, logging and dashboard run today.
+3. **Voice guard** — Wait 30s → `GET dispatch-status/` → skip when the patient already replied.
+4. **InteractionLog nodes** — after every provider branch (sent / failed / no_answer), tested
+   against mock responses.
+5. **Callback receiver** — one authenticated webhook for provider events; idempotent upsert by
+   `external_ref`; status rank so late events never downgrade a row.
+6. **Flip to live** — fill §5.5, set `PROVIDER_MOCK=false`, enable the provider nodes, re-run
+   the sample payload, then one real call to a test number.
+
+### 5.8 Edge cases owned by this integration
+
+- Partial dispatch where the only checked channel is unconfigured → guard blocks it (§5.6).
+- Duplicate dispatch → existing `PATIENT_ALREADY_BOOKED` guard + idempotency key per provider call.
+- Offer expires while the call is ringing → log the call, flag the mismatch, never resurrect the offer.
+- Call window 08:00–19:00 Africa/Lagos; call started at 18:59 still completes.
+- Retry policy: max 2 attempts, backoff; each attempt logged separately with its own `external_ref`.
+- DND / invalid number → `failed` (not `no_answer`).
+- Duplicate or out-of-order callbacks → upsert by `external_ref`, status rank enforced.
+- Provider key missing/invalid → the branch logs `failed` and the request appears in Needs
+  Attention; never silently succeeds.
+- NDPR: recordings/transcripts are sensitive; consent line in the agent script, retention policy
+  before storing them in InteractionLog.
+
+### 5.9 What to request from the partner (checklist)
+
+| # | Item | Needed for |
+|---|---|---|
+| 1 | Vapi **private API key** + confirmation of outbound endpoint (`POST /call`, assistantId + customer number) | Starting the call |
+| 2 | **Assistant IDs** for dispatch nudge / reminder / follow-up | Selecting the right agent |
+| 3 | **Server URL** slot in each assistant (paste our n8n webhook) + which **server messages** are enabled | Callback events |
+| 4 | Callback **signature/secret** scheme (if any) | Authenticating inbound events |
+| 5 | **Phone number ID / caller ID** (+234 DID) | Caller display |
+| 6 | VoiceBip **SMS endpoint**, auth scheme, **sender ID**, length/encoding limits | SMS leg |
+| 7 | SMS **delivery-report** callback format | Logging delivered vs failed |
+| 8 | **Sandbox/test** numbers and keys | End-to-end test without real patients |
+| 9 | Rate limits, concurrent-call limit, retry/backoff expectations | Burst control |
+| 10 | Call outcome vocabulary (answered/no_answer/failed/voicemail) + error codes | Status mapping |
+
+---
+
+## 6. Summary Matrix of Workflow JSONs
 
 | Workflow Name | File Path | Trigger | Primary Action |
 | :--- | :--- | :--- | :--- |

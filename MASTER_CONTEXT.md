@@ -35,6 +35,9 @@ external providers (VoiceBip voice, WhatsApp, SMS, Meta, etc.).
 | Booking consistency | Backend must validate + atomically lock the slot **before** any agent tells a patient "confirmed" |
 | Provider flexibility | Provider-agnostic; n8n normalizes VoiceBip/WhatsApp/SMS/Meta into clean `/api/v1/` calls |
 | Reference implementation | This existing Cedarcare clinic dashboard |
+| Voice platform | **Vapi** (partner's agents) — voice is a **nudge only, no DTMF**; script stays on Vapi now, moves to our platform later via `VOICE_SCRIPT_SOURCE=partner\|platform` |
+| SMS provider | **VoiceBip** account (same partner account) — sender ID `Cedarcare` |
+| Unreachable-patient guard | **Option B** — backend rejects a dispatch when the patient has no reachable channel (`NO_REACHABLE_CHANNEL`), dashboard shows channel availability before dispatch |
 
 ### Division of Ownership (current agreement)
 
