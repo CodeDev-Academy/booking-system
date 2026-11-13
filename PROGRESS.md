@@ -495,3 +495,19 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
   commands the build. Suite back to the pre-Task-4.0 state (126 tests / 125 pass).
 - Process note: Task 4.0 was built on a planning exchange; future feature work waits for an
   explicit build command per governance rule #1.
+
+## 2026-11-13 — Architecture arrangement approved (planning only, no code)
+
+- User walked through the remaining gaps (Step 3 channel toggle, Step 4 n8n workflows, Step 5
+  handover) and asked for a full alignment plan with options, plus how to structure the code so
+  each workflow owns its own tasks while staying connected to one system.
+- Presented 3 options: (A) Feature-Sliced — each feature = vertical slice across Django + n8n +
+  dashboard over one shared spine; (B) Central orchestrator — Django brain, dumb n8n; (C)
+  n8n-centric. Recommended A; **user approved A**.
+- Key principle locked: features may only ADD slices (new modules/endpoints/workflows) and reuse
+  the spine (secret guard, E.164, InteractionLog, SSE) — never reach into another feature. Every
+  feature follows the 5-beat rhythm: intake → human review → n8n acts → atomic response → logged.
+- **Execution order approved:** Step 3.1 channel selector → user builds n8n A→B→C→D → Step 5
+  partner handover → Leads page last (user designs first).
+- Recorded in `MASTER_CONTEXT.md` (decisions #8, #9) and the roadmap Phase 4 header. No code
+  written this session — planning and docs only.

@@ -110,6 +110,12 @@
 > **Build guide:** `n8n/N8N_BUILD_SHEET.md` — per-workflow node-by-node specs with verified Django
 > contracts, interaction-logging requirements, and a recommended build/test order (2026-11-12).
 
+> **Architecture (user-approved 2026-11-13): Option A — Feature-Sliced.** Each feature owns its
+> backend service module, n8n workflow file, and dashboard tab; all share one spine
+> (`webhook_security`, E.164 phones, InteractionLog, SSE). Features only ADD slices — they never
+> modify another feature's internals. Agreed order: Step 3.1 channel selector → user builds
+> workflows A→B→C→D → Step 5 handover → Leads page last (user designs it first).
+
 ### Task 4.1: Slot Offer Dispatcher workflow `[~]` (05_slot_offer_dispatcher.json exists; add SMS node + 30s delay + VoiceBip call node)
 
 ### Ads / Lead Data — ON HOLD (user decision 2026-11-13)

@@ -222,6 +222,17 @@ external providers (VoiceBip voice, WhatsApp, SMS, Meta, etc.).
    queue) and was **reverted the same day** (commit `e503572`, migration 0006 unapplied). The n8n
    ads workflow is ON HOLD until the Leads page design exists. Planning-first: do NOT build any
    leads/ads code until the user explicitly commands it.
+8. **Architecture arrangement (2026-11-13, USER APPROVED) — Option A: Feature-Sliced.** Every
+   feature is a vertical slice across Django + n8n + dashboard; each feature = own backend service
+   module, own n8n workflow file, own dashboard tab — all sharing ONE spine (X-Webhook-Secret
+   guard, E.164 phones, InteractionLog logging, SSE bus). Features may only ADD new
+   modules/endpoints/workflows and reuse the spine; never reach into another feature's internals.
+   Every feature follows the same 5-beat rhythm: intake → human review → n8n acts → patient
+   responds (atomic backend) → everything logged. New intake methods and the future Leads page
+   plug in without touching the core.
+9. **Execution order (2026-11-13, USER APPROVED):** Step 3.1 channel selector (dispatch_channel
+   backend field + ReviewModal toggle) → user builds n8n workflows A→B→C→D per
+   `n8n/N8N_BUILD_SHEET.md` → Step 5 partner handover → Leads page last (user designs first).
 
 ---
 
