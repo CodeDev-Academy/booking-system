@@ -695,3 +695,24 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
 - Next: Layer 2 (advisory `delivery` / `delivery_warning` on dispatch, status stays 200),
   then Layer 3 (ReviewModal hints + `409 NO_REACHABLE_CHANNEL` rollback), then the
   `DISPATCH_REQUIRE_REACHABLE_CHANNEL` flag (default off).
+
+
+## 2026-11-13 - Option B Layer 2: advisory delivery plan on dispatch (never blocking)
+
+- `dispatch-offers` response now includes `delivery` (`requested`, `reachable`,
+  `unreachable`, `warning`) and `delivery_warning` (same string, or null).
+- `build_delivery_plan()` added to `services/channel_availability.py`: intersects the
+  receptionist's checkbox selection with the resolver verdict and phrases the warning.
+- Behaviour is unchanged by design: status stays **200**, offers are still created,
+  Telegram + n8n still fire, and every pre-existing response key is preserved.
+- `PATIENT_ALREADY_BOOKED` remains the first guard; its 409 response has no `delivery`
+  key, and availability is computed only after that guard passes.
+- Tests: `DispatchDeliveryAdvisoryTests` (5) - no reachable channel is advisory only
+  (offers still created), partial reachability via Telegram, warning null when all
+  reachable, existing response keys preserved, 409 precedence preserved.
+- Suite: **167 total, 166 pass** (sole failure = pre-existing Telegram bug).
+- Docs: `API_REFERENCE.md` (dispatch response contract), `n8n.md` section 5.6 (layer
+  table + Layer 2 contract).
+- Next: Layer 3 - dashboard availability hints in the ReviewModal, `409
+  NO_REACHABLE_CHANNEL` rollback in the queue store, then the
+  `DISPATCH_REQUIRE_REACHABLE_CHANNEL` enforcement flag (default off).

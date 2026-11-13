@@ -323,7 +323,7 @@ Availability is reported by the backend (config-driven), never hardcoded in Reac
 | Layer | Scope | State |
 |---|---|---|
 | 1 | Read-only resolver `appointments/services/channel_availability.py` + `GET /api/v1/booking-requests/{id}/channel-availability/` | **DONE** (8 tests, behaviour-neutral) |
-| 2 | Advisory `delivery` / `delivery_warning` fields on `dispatch-offers` (status stays 200) | planned |
+| 2 | Advisory `delivery` / `delivery_warning` fields on `dispatch-offers` (status stays 200) | **DONE** (5 tests, nothing blocked) |
 | 3 | Dashboard availability hints in the ReviewModal + `409 NO_REACHABLE_CHANNEL` rollback | planned |
 | 4 | Enforcement behind `DISPATCH_REQUIRE_REACHABLE_CHANNEL` (default **off**) | planned |
 
@@ -342,6 +342,20 @@ Layer 1 contract (also documented in `API_REFERENCE.md`):
 - Why it is not a duplicate of **Needs Attention**: that tab is reactive (an attempted send
   failed and wrote an `InteractionLog`). A dispatch that reaches nobody writes no log at all,
   so the tab stays green while the patient receives nothing. The guard closes that gap.
+
+Layer 2 contract — advisory `delivery` / `delivery_warning` on `dispatch-offers`:
+
+- `delivery = {requested, reachable, unreachable, warning}`; `requested` is the receptionist's
+  checkbox selection intersected with the dispatch channels, `reachable`/`unreachable` are that
+  selection split by the resolver's verdict, and `delivery_warning` mirrors `delivery.warning`.
+- Warning wording: partial → *"SMS and voice call cannot reach this patient — only WhatsApp
+  will be used."*; none reachable → *"None of the selected channels can reach this patient —
+  nothing will be delivered. Call the patient directly, or configure a provider."*;
+  all reachable → `null`.
+- **Never blocking:** status stays `200`, offers are still created, Telegram/n8n still fire
+  exactly as before. Existing response keys are untouched (pinned by a regression test).
+- `PATIENT_ALREADY_BOOKED` remains the **first** guard and its `409` response carries no
+  `delivery` key (precedence pinned by a test).
 
 ### 5.7 Build sequence (mock-first, so "connect the API" is the only step left)
 

@@ -173,3 +173,68 @@ def resolve_channel_availability(booking, request_data=None):
         'none': not reachable,
         'telegram_chat_id': chat_id,
     }
+
+
+_CHANNEL_LABELS = {
+    'whatsapp': 'WhatsApp',
+    'sms': 'SMS',
+    'voice': 'voice call',
+}
+
+
+def _join_labels(channels):
+    """'WhatsApp', 'SMS and voice call', 'WhatsApp, SMS and voice call'."""
+    labels = [_CHANNEL_LABELS.get(c, c) for c in channels]
+    if len(labels) <= 1:
+        return ''.join(labels)
+    return f"{', '.join(labels[:-1])} and {labels[-1]}"
+
+
+def build_delivery_plan(availability, dispatch_channels):
+    """
+    Layer 2 (advisory): intersect the receptionist's checkbox selection with the
+    reachable channels, and phrase a human warning when some (or all) of the
+    selection cannot reach the patient.
+
+    This NEVER blocks a dispatch — ``DispatchOffersView`` still returns 200 and
+    still creates the offers. It only tells reception the truth about delivery.
+    Enforcement is a separate, flag-gated layer.
+
+    Shape::
+
+        {
+          "requested":   ["whatsapp", "sms", "voice"],
+          "reachable":   ["whatsapp"],
+          "unreachable": ["sms", "voice"],
+          "warning":     "SMS and voice call cannot reach this patient — only WhatsApp will be used."
+        }
+    """
+    requested = [c for c in DISPATCH_CHANNELS if c in (dispatch_channels or [])]
+    channels = availability.get('channels', {}) if availability else {}
+    reachable = [
+        c for c in requested if channels.get(c, {}).get('reachable')
+    ]
+    unreachable = [c for c in requested if c not in reachable]
+
+    if not requested:
+        warning = None
+    elif not reachable:
+        warning = (
+            'None of the selected channels can reach this patient — nothing will be '
+            'delivered. Call the patient directly, or configure a provider.'
+        )
+    elif unreachable:
+        warning = (
+            f"{_join_labels(unreachable)} cannot reach this patient — "
+            f"only {_join_labels(reachable)} will be used."
+        )
+    else:
+        warning = None
+
+    return {
+        'requested': requested,
+        'reachable': reachable,
+        'unreachable': unreachable,
+        'warning': warning,
+    }
+

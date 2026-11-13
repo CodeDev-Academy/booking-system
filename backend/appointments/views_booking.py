@@ -22,7 +22,10 @@ from .serializers_booking import (
     sanitize_phone_e164,
 )
 from .services.availability import AvailabilityEngine
-from .services.channel_availability import resolve_channel_availability
+from .services.channel_availability import (
+    build_delivery_plan,
+    resolve_channel_availability,
+)
 from .services.dispatch_service import fire_and_forget_webhook
 from .services.sse_bus import broadcast_event
 from .services.telegram_service import TelegramService
@@ -345,6 +348,14 @@ class DispatchOffersView(APIView):
                 'appointment_code': active_appt.appointment_code,
             }, status=status.HTTP_409_CONFLICT)
 
+        # Option B, Layer 2 (advisory): report which of the ticked channels can
+        # actually reach this patient. Computed from config + the patient's
+        # Telegram chat id only (no network calls). This NEVER blocks dispatch —
+        # the response stays 200 and the offers are still created; enforcement is
+        # a separate flag-gated layer.
+        availability = resolve_channel_availability(booking, request_data=request.data)
+        delivery = build_delivery_plan(availability, dispatch_channels)
+
         offers_data = request.data.get('slots') or request.data.get('offers') or []
         created_offers = []
 
@@ -566,6 +577,8 @@ class DispatchOffersView(APIView):
             "offer_expires_at": expires_at.isoformat(),
             "offers": SlotOfferSerializer(created_offers, many=True).data,
             "telegram_payload": telegram_payload,
+            "delivery": delivery,
+            "delivery_warning": delivery['warning'],
         }, status=status.HTTP_200_OK)
 
 

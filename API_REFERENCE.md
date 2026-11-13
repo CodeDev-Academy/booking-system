@@ -76,6 +76,25 @@ Calculates valid slot candidates according to clinic scheduling rules without mo
 ### `POST /api/v1/booking-requests/{request_id}/dispatch-offers/`
 Receptionist approves selected slots and initiates the 60-minute (1-hour) offer window. Dispatches webhook to deliver Telegram / WhatsApp interactive buttons.
 
+**Option B, Layer 2 — advisory delivery plan (additive, never blocking).** The response now also contains:
+
+```json
+{
+  "delivery": {
+    "requested":   ["whatsapp", "sms", "voice"],
+    "reachable":   ["whatsapp"],
+    "unreachable": ["sms", "voice"],
+    "warning":     "SMS and voice call cannot reach this patient — only WhatsApp will be used."
+  },
+  "delivery_warning": "SMS and voice call cannot reach this patient — only WhatsApp will be used."
+}
+```
+
+- Computed from config + the patient's Telegram chat id (see `channel-availability/`); no network calls.
+- **Status stays `200`** and the offers are still created — this layer only tells reception the truth. A dispatch that reaches nobody returns `delivery.reachable: []` and a `delivery_warning` starting *"None of the selected channels…"*.
+- `delivery_warning` is `null` when every selected channel is reachable.
+- `PATIENT_ALREADY_BOOKED` still returns `409` **before** availability is computed, and that response has no `delivery` key.
+
 ---
 
 ### `GET /api/v1/booking-requests/{request_id}/channel-availability/`

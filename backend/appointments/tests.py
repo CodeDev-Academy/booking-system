@@ -4708,6 +4708,150 @@ class ChannelAvailabilityTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
 
+class DispatchDeliveryAdvisoryTests(APITestCase):
+    """
+    Option B, Layer 2 — advisory `delivery` / `delivery_warning` on dispatch.
+
+    These tests pin the safety properties of the layer:
+    - dispatch still returns 200 and still creates the offers (nothing blocked),
+    - every pre-existing response key is still present,
+    - the advisory tells the truth about reachable / unreachable channels,
+    - `PATIENT_ALREADY_BOOKED` still wins (first guard, unchanged precedence).
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Advisory',
+            email='sarah.advisory@clinic.com',
+            role='receptionist',
+            is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+        self.client.force_authenticate(user=self.receptionist)
+
+        self.service = Service.objects.create(
+            name='Dental Consultation', duration_minutes=30, buffer_minutes=5, price=10000,
+        )
+        self.doctor = Doctor.objects.create(name='Dr. Advisory Test')
+        self.booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0500',
+            patient_name='Grace Advisory',
+            patient_phone='+2348099990001',
+            service=self.service,
+            status='awaiting_review',
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def _flags(self, **overrides):
+        import os
+        from unittest.mock import patch
+        values = {
+            'WHATSAPP_ENABLED': '',
+            'SMS_ENABLED': '',
+            'VOICE_ENABLED': '',
+            'N8N_DISPATCH_WEBHOOK_URL': '',
+        }
+        values.update(overrides)
+        return patch.dict(os.environ, values)
+
+    def _dispatch(self, extra=None):
+        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        payload = {'slots': [{
+            'doctor_id': str(self.doctor.id),
+            'start_datetime': slot_start.isoformat(),
+            'end_datetime': (slot_start + datetime.timedelta(minutes=30)).isoformat(),
+            'is_alternative_date': False,
+        }]}
+        if extra:
+            payload.update(extra)
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.client.post(
+                f'/api/v1/booking-requests/{self.booking.request_code}/dispatch-offers/',
+                payload, format='json',
+            )
+
+    def test_no_reachable_channel_is_advisory_only(self):
+        with self._flags(), override_settings(TELEGRAM_BOT_TOKEN=''):
+            res = self._dispatch()
+
+        # Behaviour unchanged: still succeeds and still creates the offers.
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 'slots_offered')
+        self.assertEqual(len(res.data['offers']), 1)
+        self.assertEqual(
+            SlotOffer.objects.filter(request=self.booking).count(), 1
+        )
+
+        self.assertEqual(res.data['delivery']['requested'], ['whatsapp', 'sms', 'voice'])
+        self.assertEqual(res.data['delivery']['reachable'], [])
+        self.assertEqual(
+            res.data['delivery']['unreachable'], ['whatsapp', 'sms', 'voice']
+        )
+        self.assertIn('None of the selected channels', res.data['delivery_warning'])
+        self.assertEqual(res.data['delivery_warning'], res.data['delivery']['warning'])
+
+    def test_partial_reachability_via_telegram_is_reported(self):
+        self.booking.patient_notes = 'telegram_chat_id: 55882'
+        self.booking.save(update_fields=['patient_notes'])
+
+        from unittest.mock import patch
+        with self._flags(), override_settings(TELEGRAM_BOT_TOKEN='test-bot-token'), \
+                patch('appointments.views_booking.TelegramService') as mock_tg:
+            mock_tg.format_slot_offers.return_value = ('Offer text', 'Markup')
+            mock_tg.send_message.return_value = {'ok': True, 'result': {'message_id': 77}}
+            res = self._dispatch({'dispatch_channels': ['whatsapp', 'sms']})
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['delivery']['requested'], ['whatsapp', 'sms'])
+        self.assertEqual(res.data['delivery']['reachable'], ['whatsapp'])
+        self.assertEqual(res.data['delivery']['unreachable'], ['sms'])
+        self.assertIn('SMS cannot reach this patient', res.data['delivery_warning'])
+        self.assertIn('only WhatsApp will be used', res.data['delivery_warning'])
+
+    def test_warning_is_none_when_every_selected_channel_is_reachable(self):
+        with self._flags(WHATSAPP_ENABLED='true', SMS_ENABLED='true', VOICE_ENABLED='true'), \
+                override_settings(TELEGRAM_BOT_TOKEN=''):
+            res = self._dispatch()
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['delivery']['unreachable'], [])
+        self.assertIsNone(res.data['delivery_warning'])
+
+    def test_existing_response_keys_are_preserved(self):
+        with self._flags(), override_settings(TELEGRAM_BOT_TOKEN=''):
+            res = self._dispatch()
+
+        for key in ('detail', 'request_id', 'status', 'offer_expires_at',
+                    'offers', 'telegram_payload'):
+            self.assertIn(key, res.data)
+
+    def test_patient_already_booked_still_wins(self):
+        Appointment.objects.create(
+            appointment_code='AP-5001',
+            patient_name=self.booking.patient_name,
+            patient_phone=self.booking.patient_phone,
+            doctor=self.doctor,
+            service=self.service,
+            booking_request=self.booking,
+            start_datetime=timezone.now() + datetime.timedelta(days=1),
+            end_datetime=timezone.now() + datetime.timedelta(days=1, minutes=30),
+            status='held',
+            hold_expires_at=timezone.now() + datetime.timedelta(minutes=10),
+        )
+
+        with self._flags(), override_settings(TELEGRAM_BOT_TOKEN=''):
+            res = self._dispatch()
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['error'], 'PATIENT_ALREADY_BOOKED')
+        self.assertNotIn('delivery', res.data)
+
+
 
 
 
