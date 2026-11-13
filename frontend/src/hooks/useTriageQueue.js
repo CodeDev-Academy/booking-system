@@ -260,13 +260,36 @@ export const useTriageQueue = () => {
   useEffect(() => {
     setInteractionState({ items: [], loading: false, error: null });
     if (!selectedRequestPhone) return undefined;
+    // Task 3.4 demo parity: in demo mode there is no /interactions/ backend, so
+    // surface the seeded failure as a single timeline entry — the same story the
+    // card chip and Needs Attention tab tell. Live mode always uses the real log.
+    if (useAppModeStore.getState().isDemoMode) {
+      const lf = selectedRequest?.lastFailure;
+      if (lf) {
+        setInteractionState({
+          items: [{
+            id: `demo-failure-${selectedRequest.id}`,
+            channel: lf.channel || 'whatsapp',
+            direction: 'outbound',
+            status: lf.status || 'failed',
+            summary: 'Appointment options sent (demo)',
+            error_detail: lf.error_detail || '',
+            call_duration_seconds: null,
+            created_at: lf.created_at || new Date().toISOString(),
+          }],
+          loading: false,
+          error: null,
+        });
+      }
+      return undefined;
+    }
     fetchInteractions(selectedRequestPhone);
     // Light live-refresh while the review modal is open — every n8n touchpoint
     // (message sent, call outcome, patient reply) is logged via /interactions/,
     // so this timeline stays current. (SSE `interaction_logged` consumer wiring lands later.)
     const interval = setInterval(() => fetchInteractions(selectedRequestPhone), 20000);
     return () => clearInterval(interval);
-  }, [selectedRequestPhone, fetchInteractions]);
+  }, [selectedRequestPhone, selectedRequest, fetchInteractions]);
 
   const review = useMemo(() => {
     if (!selectedRequest) return null;
