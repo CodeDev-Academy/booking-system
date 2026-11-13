@@ -274,8 +274,6 @@ class BookingRequest(models.Model):
         ('web', 'Web Booking Form'),
         ('telegram', 'Telegram Bot'),
         ('whatsapp_flow', 'WhatsApp Flow'),
-        ('facebook_lead_ads', 'Facebook/Instagram Lead Ads'),
-        ('google_ads', 'Google Ads Landing'),
     )
 
     STATUS_CHOICES = (
@@ -312,9 +310,6 @@ class BookingRequest(models.Model):
     preferred_date_range = models.JSONField(default=dict)  # {'start': '2026-10-16', 'end': '2026-10-30'}
     preferred_time_window = models.CharField(max_length=16, choices=TIME_WINDOW_CHOICES, default='morning')
     channel = models.CharField(max_length=32, choices=CHANNEL_CHOICES, default='web')
-    # Marketing attribution (Review-path: shown on the queue card so reception
-    # knows where the patient came from, e.g. "Meta Lead Form — Whitening Campaign").
-    lead_source = models.CharField(max_length=255, blank=True, default='')
     status = models.CharField(max_length=32, choices=STATUS_CHOICES, default='awaiting_review', db_index=True)
     channel_blocked = models.BooleanField(default=False)
     patient_notes = models.TextField(blank=True, default='')

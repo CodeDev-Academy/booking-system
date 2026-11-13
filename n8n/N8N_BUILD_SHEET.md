@@ -184,25 +184,7 @@ Either format labels in n8n (`{{$json.candidate_slots}}` → n8n Code node can b
 
 ---
 
-## 6. Workflow E — Lead Ads → Booking Request (ads intake, the 3rd channel)
-
-**Purpose:** Facebook/Instagram **Lead Ads** instant forms become booking requests in the same receptionist queue. Google Ads needs NO workflow (clicks land on the website form) — just capture `utm_source=google` into `lead_source` on the site (small frontend task).
-
-**Backend support (shipped):** `POST /api/v1/booking-requests/` now accepts
-`channel: "facebook_lead_ads" | "google_ads"` and an optional `lead_source` string
-(e.g. `"Meta Lead Form — Whitening Campaign"`) — attribution shown on the receptionist's queue card.
-
-| Step | Node | Detail |
-|---|---|---|
-| Trigger | Meta Lead Ads node (or webhook) | Connect your Meta page's lead-gen form; Meta delivers: name, phone, email, form/campaign name |
-| 1 | Normalize | E.164 the phone (`+234...`); trim name |
-| 2 | Create request | `POST {base}/api/v1/booking-requests/` (public, rate-limited 5/10min/IP — Meta sends few, fine): `{"patient_name": "...", "patient_phone": "+234...", "service": "<from ad form>", "channel": "facebook_lead_ads", "lead_source": "Meta Lead Form — <campaign>", "preferred_dates": []}` → `201` with `request_id` (REQ-…). Card appears in the queue instantly (SSE). |
-| 3 | Instant greeting | `POST https://graph.facebook.com/v18.0/{{$env.WHATSAPP_PHONE_NUMBER_ID}}/messages` — warm welcome: *"Thank you {{name}}! Cedarcare has received your interest in {{service}}. Our front desk will review and send you available times shortly."* |
-| 4 | Log | InteractionLog: `direction:"inbound"`, `provider:"meta_whatsapp"` (the lead capture) + one for the greeting send. |
-
-**Downstream is unchanged:** the ad lead enters Step 3 (Receptionist Review) like every other request — no special handling.
-
-## 7. Existing JSON skeletons (what's already in `n8n/`)
+## 6. Existing JSON skeletons (what's already in `n8n/`)
 
 | File | State | Your job |
 |---|---|---|
@@ -212,12 +194,11 @@ Either format labels in n8n (`{{$json.candidate_slots}}` → n8n Code node can b
 | `04_patient_response_handler.json` | Response skeleton | Per §4 — add SMS "1/2/3" replies, re-request, channel neutralization, logging |
 | `05_slot_offer_dispatcher.json` | Has Telegram path | Per §5 — add WhatsApp + SMS + 30s wait + VoiceBip call + static-data map + logging |
 
-## 8. Build & test order (recommended)
+## 7. Build & test order (recommended)
 
 1. **Reminders (A)** — validates secret, GET endpoint, one provider send, logging. Testable with Telegram-only sends before partner creds arrive.
 2. **Sweeper (B)** — validates cron + sweep API + recovery. Testable end-to-end today: create a request, dispatch, wait 60 min (or temporarily set `offer_expiry_minutes` low in Clinic Settings).
 3. **Response handler (C)** — testable today via the **Telegram** channel end-to-end (bot buttons already work); WhatsApp/SMS legs once partner creds land.
 4. **Dispatcher (D)** — needs partner WhatsApp template + VoiceBip key for full test; the Telegram leg works today.
-5. **Lead Ads (E)** — needs your Meta page + a lead-gen form; fully testable with a test lead submission (WhatsApp greeting needs the access token).
 
 **Definition of done (Phase 4):** a full journey — *form request → receptionist dispatch → WhatsApp+SMS+call received → patient replies "2" → confirmation message → interactions visible in dashboard → 24h+2h reminders → reschedule reply* — all logged in `GET /api/v1/interactions/`.

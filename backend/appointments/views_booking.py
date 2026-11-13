@@ -183,7 +183,6 @@ class BookingRequestListCreateView(APIView):
             preferred_date_range=validated.get('normalized_date_range', {}),
             preferred_time_window=validated.get('preferred_time_window', 'morning'),
             channel=validated.get('channel', 'web'),
-            lead_source=validated.get('lead_source', ''),
             status='awaiting_review',
             patient_notes=validated.get('patient_notes', ''),
         )

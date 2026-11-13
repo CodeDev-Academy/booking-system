@@ -170,20 +170,6 @@ external providers (VoiceBip voice, WhatsApp, SMS, Meta, etc.).
   InteractionLog `logged_by` field (add when Phase 4 needs automation identities) and dispatch
   thread cap (no bulk loop exists). Suite: 126 tests / 125 pass.
 
-- **Ads intake channels (Phase 4 prep / Task 4.0): ✅ COMPLETED 2026-11-12.** The system now has
-  **3 intake methods**: (1) Website form, (2) WhatsApp — starting with Telegram until the WhatsApp
-  API arrives, (3) Ads — `channel` choices extended with `facebook_lead_ads` + `google_ads` and a
-  new optional `lead_source` attribution field (e.g. `"Meta Lead Form — Whitening Campaign"` or
-  `"utm_source=google&utm_campaign=..."`), shown on the receptionist queue card (migration `0006`).
-  Intake view passes `lead_source` through (`views_booking.py`). **Deliberate split:** Google Ads
-  needs NO workflow (clicks land on the website form; utm capture rides with Phase 3 frontend),
-  while Facebook/Meta Lead Ads → n8n **Workflow E** (Meta lead → normalize E.164 →
-  `POST /api/v1/booking-requests/` with `channel: facebook_lead_ads` → queue card via SSE →
-  instant WhatsApp greeting → logged to `/interactions/`), spec'd in `n8n/N8N_BUILD_SHEET.md` §6.
-  Downstream is channel-agnostic: ad leads enter Step 3 Receptionist Review like every request.
-  Tests: `AdsLeadIntakeTests` (5 tests). Suite: **131 tests / 130 pass** (sole failure = the
-  pre-existing Telegram bug). NEXT: Phase 3 Task 3.1 — ReviewModal channel selector.
-
 ### ⚠ Known PRE-EXISTING issues (present in HEAD before Phase 1 — verified via clean `git archive` baseline)
 
 1. ~~`StaffAuthSecurityHardeningTests.test_admin_cannot_create_doctor_account`~~ — **FIXED in Task 1.2**
@@ -194,13 +180,12 @@ external providers (VoiceBip voice, WhatsApp, SMS, Meta, etc.).
 
 ### What is MISSING (planned, not built)
 
-- ~~`InteractionLog` model + `POST/GET /api/v1/interactions/`~~ — **DONE in Phase 2 Task 2.1** (see above).
-- ~~Non-blocking (async) outbound webhook dispatch from `DispatchOffersView`~~ — **DONE in Phase 2 Task 2.2**.
+- `InteractionLog` model + `POST/GET /api/v1/interactions/` (call outcomes, durations, transcripts,
+  recording URLs, WhatsApp/SMS delivery statuses — partner spec Section 6 requirement).
 - Visual Outbound Campaign Manager UI (partner spec Scenario E requirement — partner's acceptance
   checklist includes it; do not be surprised at handover).
+- Non-blocking (async) outbound webhook dispatch from `DispatchOffersView`.
 - Live n8n deployment + real VoiceBip/WhatsApp credentials (partner-dependent).
-- ReviewModal channel selector, patient dossier interaction history, omnichannel settings bento
-  (Phase 3 tasks 3.1–3.3).
 
 ### The 5 Messaging Features (specs in `plans/voicebip-n8n/`)
 
