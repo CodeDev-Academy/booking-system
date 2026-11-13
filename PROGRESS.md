@@ -559,3 +559,22 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
   Telegram leg respects checkbox, blocked dispatch fires nothing); `AsyncDispatchWebhookTests`
   updated for on-commit semantics. Frontend build passes. Suite: **143 total, 142 pass**
   (sole failure = pre-existing Telegram bug). Committed to `partner-readiness/phase-1-2`.
+
+## 2026-11-13 — Task 3.2: Patient dossier communication history (approved build)
+
+- Goal: make every n8n touchpoint visible to reception — provider failures (WhatsApp failed,
+  call not answered) are no longer silent; reception sees the timeline and acts (resend/call).
+- Logic layer: `apiService.getInteractions(phone, limit)` → staff-auth
+  `GET /api/v1/interactions/?patient_phone=<E.164>&limit=50`; `useTriageQueue` fetches when the
+  review modal opens for the normalized patient phone, auto-refreshes every 20s while open
+  (SSE `interaction_logged` consumer wiring is a separate later task), manual refresh button,
+  demo-mode safe, fetch failure = non-fatal "History unavailable" note. `interaction_logged`
+  registered in the SSE named-events list for future wiring.
+- Design layer: `PatientDossier` timeline — channel icon (WhatsApp/SMS/voice/Telegram),
+  inbound/outbound arrow, status chip (ok/pending/bad tones), summary, call duration, provider
+  error detail in rose; empty states for new patients/no history/loading/error; styled in
+  `queue.css` matching the existing dossier language; NDPR "clinical notes never shown" note
+  untouched. `ReviewModal` passes `review.interactions` + `onRefresh`.
+- No backend changes this task (the interactions API was built in Phase 2). Frontend build
+  passes. With this, the system side of the patient-booking feature is 100% complete;
+  remaining work on the feature = the user's n8n builds (D → C → B) per the build sheet.

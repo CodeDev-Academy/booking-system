@@ -19,6 +19,7 @@ import {
   slotEnd,
 } from '../services/slotEngine';
 import { normalizeE164, formatPhoneDisplay, matchesPhone } from '../services/phoneUtils';
+import { apiService } from '../services/apiService';
 import {
   getAgingLevel,
   AGING_LABELS,
@@ -206,6 +207,37 @@ export const useTriageQueue = () => {
   // ---------- Review modal view model ----------
   const selectedRequest = requests.find((r) => r.id === selectedId) || null;
 
+  // ---------- Task 3.2: patient communication history (dossier timeline) ----------
+  const [interactionState, setInteractionState] = useState({ items: [], loading: false, error: null });
+  const selectedRequestPhone = useMemo(() => {
+    if (!selectedRequest) return null;
+    const p = normalizeE164(selectedRequest.phone, CLINIC_RULES.defaultCountryCode);
+    return p.value || selectedRequest.phone || null;
+  }, [selectedRequest]);
+
+  const fetchInteractions = useCallback(async (phone) => {
+    if (!phone || useAppModeStore.getState().isDemoMode) return;
+    setInteractionState((s) => ({ ...s, loading: true }));
+    try {
+      const items = await apiService.getInteractions(phone, 50);
+      setInteractionState({ items: Array.isArray(items) ? items : [], loading: false, error: null });
+    } catch (err) {
+      console.warn('Interaction history fetch failed:', err);
+      setInteractionState({ items: [], loading: false, error: 'History unavailable right now' });
+    }
+  }, []);
+
+  useEffect(() => {
+    setInteractionState({ items: [], loading: false, error: null });
+    if (!selectedRequestPhone) return undefined;
+    fetchInteractions(selectedRequestPhone);
+    // Light live-refresh while the review modal is open — every n8n touchpoint
+    // (message sent, call outcome, patient reply) is logged via /interactions/,
+    // so this timeline stays current. (SSE `interaction_logged` consumer wiring lands later.)
+    const interval = setInterval(() => fetchInteractions(selectedRequestPhone), 20000);
+    return () => clearInterval(interval);
+  }, [selectedRequestPhone, fetchInteractions]);
+
   const review = useMemo(() => {
     if (!selectedRequest) return null;
     const r = selectedRequest;
@@ -289,6 +321,7 @@ export const useTriageQueue = () => {
         ? `${r.startDate || r.preferredDateRange?.start || r.preferred_date_range?.start} → ${r.endDate || r.preferredDateRange?.end || r.preferred_date_range?.end}`
         : null,
       channel: r.channel,
+      interactions: interactionState,
       serviceOptions: SERVICES.map((s) => ({ id: s.id, name: s.name })),
       doctorOptions: [{ id: '', name: '⚡ Auto-Balance by Clinic Load (Recommended)' }, ...dynamicDoctors.map((d) => ({ id: d.id, name: d.name }))],
       windowOptions: Object.entries(TIME_WINDOWS).map(([id, w]) => ({ id, name: w.label })),
@@ -308,7 +341,7 @@ export const useTriageQueue = () => {
             ? `${collisions} slot${collisions > 1 ? 's' : ''} blocked by the Double-Booking Shield`
             : '',
     };
-  }, [selectedRequest, slotsByRequest, busyBlocks, infoPanelOpen, staffList]);
+  }, [selectedRequest, slotsByRequest, busyBlocks, infoPanelOpen, staffList, interactionState]);
 
   // ---------- Handlers (stable, passed down as props) ----------
   const updateField = useCallback(
@@ -340,6 +373,7 @@ export const useTriageQueue = () => {
     dispatchOffers: (selectedSlotIds = null, dispatchChannels = ['whatsapp', 'sms', 'voice']) =>
       selectedRequest && review && review.canDispatch &&
       useQueueStore.getState().dispatchOffers(selectedRequest.id, selectedSlotIds, dispatchChannels),
+    refreshInteractions: () => fetchInteractions(selectedRequestPhone),
     confirmSingleSlot: (slotId) =>
       selectedRequest && useQueueStore.getState().confirmSingleSlot({ requestId: selectedRequest.id, slotId }),
     openTodayAppointment: (id) => setSelectedTodayAppointmentId(id),

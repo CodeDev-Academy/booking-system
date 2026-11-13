@@ -166,7 +166,11 @@ export const ReviewModal = ({ review, actions }) => {
               </div>
             )}
 
-            <PatientDossier dossier={review.dossier} />
+            <PatientDossier
+              dossier={review.dossier}
+              interactions={review.interactions}
+              onRefresh={actions.refreshInteractions}
+            />
 
             <label className="field-label" htmlFor="rv-service">Service</label>
             <select

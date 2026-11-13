@@ -279,6 +279,13 @@ export const apiService = {
     });
   },
 
+  // Task 3.2: patient communication history (dossier timeline).
+  // Backend GET /api/v1/interactions/ is staff-auth; phones are E.164.
+  async getInteractions(patientPhone, limit = 50) {
+    const query = `patient_phone=${encodeURIComponent(patientPhone)}&limit=${limit}`;
+    return request(`/interactions/?${query}`);
+  },
+
   async askInfo(requestId, message, promptCode = 'custom') {
     return request(`/booking-requests/${requestId}/ask-info/`, {
       method: 'POST',
@@ -571,6 +578,7 @@ export const apiService = {
         'presence.reviewing',
         'appointment.updated',
         'calendar.slot_updated',
+        'interaction_logged',
       ];
       namedEvents.forEach((evtName) => {
         eventSource.addEventListener(evtName, (event) => {

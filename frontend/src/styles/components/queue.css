@@ -317,6 +317,37 @@ textarea.field-input { min-height: 80px; padding: var(--space-2) var(--space-3);
 .dossier-visits li { display: flex; justify-content: space-between; gap: var(--space-3); }
 .dossier-note { display: flex; align-items: center; gap: var(--space-1); margin-top: var(--space-2); font-size: 10px; color: var(--text-3); }
 
+/* Task 3.2: communication timeline */
+.dossier-timeline-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin-top: var(--space-3); padding-top: var(--space-2); border-top: 1px solid var(--line); }
+.dossier-refresh { background: transparent; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-3); cursor: pointer; display: inline-flex; padding: 3px; }
+.dossier-refresh:hover { color: var(--text); border-color: var(--line-strong); }
+.dossier-refresh:disabled { opacity: 0.5; cursor: default; }
+.dossier-refresh .spin { animation: dossier-spin 900ms linear infinite; }
+@keyframes dossier-spin { to { transform: rotate(360deg); } }
+.dossier-timeline-empty { margin-top: var(--space-2); font-size: 11px; color: var(--text-3); }
+.dossier-timeline-error { display: flex; align-items: center; gap: var(--space-1); color: var(--rose); }
+.dossier-timeline { list-style: none; display: flex; flex-direction: column; margin-top: var(--space-2); max-height: 180px; overflow-y: auto; }
+.dossier-timeline-item { display: flex; gap: var(--space-2); padding: var(--space-1) 0; border-bottom: 1px solid var(--line); }
+.dossier-timeline-item:last-child { border-bottom: none; }
+.timeline-icon { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: var(--radius-sm); background: var(--surface-1); border: 1px solid var(--line); color: var(--text-2); margin-top: 1px; }
+.timeline-icon.channel-voice { color: var(--amber); border-color: rgba(255, 181, 71, 0.3); }
+.timeline-icon.channel-whatsapp { color: #047857; border-color: rgba(16, 185, 129, 0.3); }
+.timeline-icon.channel-sms { color: var(--text-1); }
+.timeline-icon.channel-telegram { color: #2563eb; border-color: rgba(37, 99, 235, 0.3); }
+.timeline-body { min-width: 0; flex: 1; }
+.timeline-top { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.timeline-kind { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600; color: var(--text-1); white-space: nowrap; }
+.timeline-kind .dir-inbound { color: #047857; }
+.timeline-kind .dir-outbound { color: var(--text-3); }
+.timeline-status { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px; background: var(--surface-1); border: 1px solid var(--line); color: var(--text-2); }
+.timeline-status.tone-ok { color: #047857; border-color: rgba(16, 185, 129, 0.3); }
+.timeline-status.tone-bad { color: var(--rose); border-color: rgba(255, 79, 121, 0.35); }
+.timeline-status.tone-pending { color: #b45309; border-color: rgba(255, 181, 71, 0.35); }
+.timeline-time { margin-left: auto; font-size: 10px; color: var(--text-3); white-space: nowrap; }
+.timeline-summary { font-size: 11px; color: var(--text-2); margin-top: 1px; overflow-wrap: anywhere; }
+.timeline-meta { font-size: 10px; color: var(--text-3); margin-top: 1px; }
+.timeline-error-detail { display: flex; align-items: center; gap: 3px; color: var(--rose); overflow-wrap: anywhere; }
+
 /* Slots */
 .slots-empty { padding: var(--space-6) var(--space-4); border: 1px dashed var(--line); border-radius: var(--radius-md); color: var(--text-2); font-size: var(--text-sm); text-align: center; }
 .slot-list { display: flex; flex-direction: column; gap: var(--space-3); }

@@ -194,6 +194,20 @@ external providers (VoiceBip voice, WhatsApp, SMS, Meta, etc.).
   optimistic state + shows the backend's explanation on 409. Tests: `DispatchChannelSelectionTests`
   (9 tests). Suite: **143 tests / 142 pass** (sole failure = pre-existing Telegram bug).
 
+- **Patient dossier communication history (Task 3.2, 2026-11-13):** the review modal's
+  PatientDossier now shows a live timeline of every message/call touchpoint fed from
+  `GET /api/v1/interactions/?patient_phone=<E.164>` (staff JWT): channel icon
+  (WhatsApp/SMS/voice/Telegram), direction arrow, status chip (delivered/failed/no_answer…),
+  summary, call duration, provider error detail in red. Refresh button + auto-refresh every 20s
+  while the modal is open; graceful empty states ("New patient", "No messages logged yet",
+  "History unavailable"). Logic in `useTriageQueue`/`apiService.getInteractions` (demo-mode
+  safe); rendering in `PatientDossier.jsx` + `queue.css` timeline styles (matches existing
+  dossier design language, NDPR note untouched). `interaction_logged` added to the SSE
+  named-events list in `apiService.connectEventStream` — the events flow once an SSE consumer
+  is wired (separate future task; polling covers the interim). This is what makes n8n
+  provider failures VISIBLE to reception instead of silent. Frontend build passes; no backend
+  changes in this task.
+
 - **Code review fixes (2026-11-12):** external review of Phases 1–2 found 1 critical + 5 medium
   issues; all fixed and tested. Critical: non-ASCII `X-Webhook-Secret` header caused TypeError →
   500 on every guarded endpoint (bytes-mode compare now → clean 401). Mediums: interaction upsert
