@@ -532,3 +532,30 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
   documents 200-held / 200-ALREADY_CONFIRMED / 400-expired / 409-conflict.
 - Tests: `SlotOptionNumberHoldTests` — 8 tests. Suite: **134 total, 133 pass** (sole failure =
   pre-existing Telegram bug). Committed to `partner-readiness/phase-1-2`.
+
+## 2026-11-13 — Task 3.1: Dispatch channel checkboxes + already-booked guard (approved build)
+
+- Pre-build decisions (user-approved via planning exchange): THREE independent checkboxes
+  (WhatsApp/SMS/Voice Call) instead of a 2-mode toggle; **all three pre-checked** by default;
+  dispatch BLOCKED when the patient has an active hold/booking, with a clear explanation shown
+  on the dashboard (hover/inline + toast); include the transaction-hygiene fix in 3.1.
+- Edge-case plan agreed before building (documented in chat): WhatsApp-send failure → 1 retry →
+  auto-SMS fallback + `failed` log; all-channels-failed → reception alerted via logbook; call
+  no-answer → VoiceBip retry, never resend messages; fast replier (<30s) → Workflow D checks
+  request status before placing the call; invalid channel values/empty selection rejected.
+- Backend (`views_booking.py` DispatchOffersView): `dispatch_channels` parsing (default all
+  three = backward compatible), 400 on empty/invalid; 409 `PATIENT_ALREADY_BOOKED` guard
+  (active hold/confirmed appointment; expired holds do NOT block — recovery path stays open)
+  firing BEFORE any outbound call; Telegram instant-message leg now respects the "whatsapp"
+  checkbox; Telegram send + n8n fire moved to `transaction.on_commit` (a slow Telegram server
+  can no longer freeze the receptionist's screen or hold the DB row lock); n8n payload gains
+  `dispatch_channels`.
+- Logic/design separation kept: checkbox state + payload in `useQueueStore`/`useTriageQueue`/
+  `apiService` (logic); strip + tooltips + reason line in `ReviewModal` (design); store rolls
+  back optimistic state and shows the backend's explanation on 409 (no chime); `.toast-error`
+  style added to `queue.css`.
+- Tests: `DispatchChannelSelectionTests` (9: default-all-three, subset pass-through, empty/
+  invalid 400, active-hold & confirmed blocks with clear detail, expired hold does NOT block,
+  Telegram leg respects checkbox, blocked dispatch fires nothing); `AsyncDispatchWebhookTests`
+  updated for on-commit semantics. Frontend build passes. Suite: **143 total, 142 pass**
+  (sole failure = pre-existing Telegram bug). Committed to `partner-readiness/phase-1-2`.

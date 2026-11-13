@@ -12,6 +12,7 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny
 
 from django.db import transaction
+from django.db.models import Q
 from .models import BookingRequest, SlotOffer, Doctor, ClinicSetting, AuditLog, Appointment
 from .permissions import IsStaffAuthenticated
 from .serializers_booking import (
@@ -299,6 +300,44 @@ class DispatchOffersView(APIView):
         booking = get_booking_or_404(id, for_update=True)
         clinic = ClinicSetting.get_settings()
 
+        # Task 3.1: receptionist picks the delivery channels (checkboxes in the
+        # ReviewModal). Default = all three (full dual experience) so older callers
+        # behave exactly as before. This is HOW reception reaches the patient now —
+        # distinct from `channel`, which records where the patient CAME FROM.
+        raw_channels = request.data.get('dispatch_channels')
+        if raw_channels is None:
+            dispatch_channels = ['whatsapp', 'sms', 'voice']
+        else:
+            if (not isinstance(raw_channels, list) or not raw_channels
+                    or any(c not in ('whatsapp', 'sms', 'voice') for c in raw_channels)):
+                return Response({
+                    'error': 'INVALID_DISPATCH_CHANNELS',
+                    'detail': 'dispatch_channels must be a non-empty list drawn from: whatsapp, sms, voice.',
+                }, status=status.HTTP_400_BAD_REQUEST)
+            dispatch_channels = raw_channels
+
+        # Task 3.1 guard: never dispatch fresh options for a patient who already has
+        # an active hold or confirmed booking — the queue state would lie and the
+        # patient would receive confusing duplicate messages. The dashboard shows
+        # `detail` verbatim as the explanation (hover/inline message requirement).
+        # Note: deliberately ACTIVE-appointment-only — a converted request whose
+        # appointment was cancelled must remain re-dispatchable (recovery path).
+        now_guard = timezone.now()
+        active_appt = Appointment.objects.filter(
+            booking_request=booking,
+        ).filter(
+            Q(status='confirmed') | Q(status='held', hold_expires_at__gt=now_guard)
+        ).first()
+        if active_appt:
+            return Response({
+                'error': 'PATIENT_ALREADY_BOOKED',
+                'detail': (
+                    f"Patient already has an active booking ({active_appt.appointment_code}). "
+                    "Cancel or reschedule that booking before dispatching new slot options."
+                ),
+                'appointment_code': active_appt.appointment_code,
+            }, status=status.HTTP_409_CONFLICT)
+
         offers_data = request.data.get('slots') or request.data.get('offers') or []
         created_offers = []
 
@@ -407,7 +446,10 @@ class DispatchOffersView(APIView):
             'offer_expires_at': expires_at.isoformat(),
         })
 
-        # Auto-dispatch interactive buttons to patient on Telegram if request originated from Telegram
+        # Auto-dispatch interactive buttons to patient on Telegram if request originated from Telegram.
+        # Task 3.1: this is the "WhatsApp" checkbox leg — during the Telegram-first era the
+        # instant-message leg for a telegram-intake patient is the Telegram card; when the
+        # WhatsApp API key arrives the same checkbox flips to Meta WhatsApp (n8n Workflow D).
         custom_cfg = getattr(booking, 'custom_config', None) or {}
         chat_id = request.data.get('telegram_chat_id') or custom_cfg.get('telegram_chat_id')
         notes_text = getattr(booking, 'patient_notes', '') or ''
@@ -417,41 +459,45 @@ class DispatchOffersView(APIView):
             except Exception:
                 pass
 
-        if chat_id:
-            try:
-                tg_text, tg_markup = TelegramService.format_slot_offers(booking, created_offers, clinic)
-                dispatch_res = TelegramService.send_message(chat_id, tg_text, tg_markup)
-                # Task 1.3 (privacy): log a safe summary only — the raw Telegram
-                # response echoes the full offer text containing the patient's name.
-                tg_ok = bool(dispatch_res.get('ok')) if isinstance(dispatch_res, dict) else False
-                tg_msg_id = (
-                    dispatch_res.get('result', {}).get('message_id')
-                    if isinstance(dispatch_res, dict) and isinstance(dispatch_res.get('result'), dict)
-                    else None
-                )
-                logger.info(
-                    "Telegram slot offer dispatched to chat_id %s: ok=%s message_id=%s",
-                    chat_id, tg_ok, tg_msg_id
-                )
-            except Exception as tg_err:
-                logger.error("Failed to send slot offers to Telegram chat %s: %s", chat_id, tg_err, exc_info=True)
+        # Task 2.2 + 3.1 hygiene: BOTH outbound calls (Telegram card + n8n webhook) run
+        # AFTER commit via transaction.on_commit — a slow Telegram server can never hold
+        # the receptionist's response or the DB row lock, and n8n never sees uncommitted
+        # offers (spec §5 persist-before-process, now actually true).
+        def _post_commit_outbound():
+            if 'whatsapp' in dispatch_channels and chat_id:
+                try:
+                    tg_text, tg_markup = TelegramService.format_slot_offers(booking, created_offers, clinic)
+                    dispatch_res = TelegramService.send_message(chat_id, tg_text, tg_markup)
+                    # Task 1.3 (privacy): log a safe summary only — the raw Telegram
+                    # response echoes the full offer text containing the patient's name.
+                    tg_ok = bool(dispatch_res.get('ok')) if isinstance(dispatch_res, dict) else False
+                    tg_msg_id = (
+                        dispatch_res.get('result', {}).get('message_id')
+                        if isinstance(dispatch_res, dict) and isinstance(dispatch_res.get('result'), dict)
+                        else None
+                    )
+                    logger.info(
+                        "Telegram slot offer dispatched to chat_id %s: ok=%s message_id=%s",
+                        chat_id, tg_ok, tg_msg_id
+                    )
+                except Exception as tg_err:
+                    logger.error("Failed to send slot offers to Telegram chat %s: %s", chat_id, tg_err, exc_info=True)
 
-        # Forward to n8n Slot Offer Dispatcher Webhook (05_slot_offer_dispatcher.json) if configured.
-        # Task 2.2 (async): fire-and-forget daemon thread — the receptionist response is
-        # returned immediately; slow/unreachable n8n never blocks the modal (offers are
-        # already committed to the DB above, satisfying spec §5 persist-before-process).
-        n8n_dispatch_url = os.environ.get('N8N_DISPATCH_WEBHOOK_URL') or custom_cfg.get('n8n_dispatch_url')
-        if n8n_dispatch_url:
-            n8n_payload = {
-                'request_id': booking.request_code,
-                'patient_name': booking.patient_name,
-                'patient_phone': booking.patient_phone,
-                'service_name': booking.service.name if booking.service else 'Consultation',
-                'telegram_chat_id': chat_id,
-                'channel': booking.channel,
-                'candidate_slots': SlotOfferSerializer(created_offers, many=True).data,
-            }
-            fire_and_forget_webhook(n8n_dispatch_url, n8n_payload)
+            n8n_dispatch_url = os.environ.get('N8N_DISPATCH_WEBHOOK_URL') or custom_cfg.get('n8n_dispatch_url')
+            if n8n_dispatch_url:
+                n8n_payload = {
+                    'request_id': booking.request_code,
+                    'patient_name': booking.patient_name,
+                    'patient_phone': booking.patient_phone,
+                    'service_name': booking.service.name if booking.service else 'Consultation',
+                    'telegram_chat_id': chat_id,
+                    'channel': booking.channel,
+                    'dispatch_channels': dispatch_channels,
+                    'candidate_slots': SlotOfferSerializer(created_offers, many=True).data,
+                }
+                fire_and_forget_webhook(n8n_dispatch_url, n8n_payload)
+
+        transaction.on_commit(_post_commit_outbound)
 
         return Response({
             "detail": "Offers dispatched successfully.",

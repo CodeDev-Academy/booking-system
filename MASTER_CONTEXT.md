@@ -177,6 +177,23 @@ external providers (VoiceBip voice, WhatsApp, SMS, Meta, etc.).
   ids at different times could create two appointments (no time conflict to stop it).
   Tests: `SlotOptionNumberHoldTests` (8 tests, incl. the renumbering-trap proof).
 
+- **Dispatch channel checkboxes (Task 3.1, 2026-11-13):** `POST /booking-requests/{id}/dispatch-offers/`
+  accepts `dispatch_channels` — any non-empty combination of `whatsapp`/`sms`/`voice` (default all
+  three). The "WhatsApp" checkbox controls the instant-message leg: during the Telegram-first era
+  a telegram-intake patient gets the Telegram card; when the WhatsApp API key arrives the same
+  checkbox flips to Meta WhatsApp — **no rebuild needed**. Distinct from `channel` (intake origin).
+  **New guard:** dispatch is REFUSED with **409 `PATIENT_ALREADY_BOOKED`** (human-readable `detail`
+  shown on the dashboard hover/inline + error toast) when the patient already has an active
+  hold/confirmed appointment — expired holds do NOT block (reception can re-dispatch). The guard
+  fires BEFORE any outbound call: nothing is sent, no offers created, no state change.
+  **Commit-hygiene fix:** the Telegram send + n8n fire now run via `transaction.on_commit` — a
+  slow Telegram server can no longer hold the receptionist's response or the DB row lock (spec §5
+  persist-before-process now actually true; `AsyncDispatchWebhookTests` updated to
+  `captureOnCommitCallbacks`). Frontend: ReviewModal channel strip (all three pre-checked),
+  Approve disabled with reason until ≥1 channel, hover tooltip on the button, store rolls back
+  optimistic state + shows the backend's explanation on 409. Tests: `DispatchChannelSelectionTests`
+  (9 tests). Suite: **143 tests / 142 pass** (sole failure = pre-existing Telegram bug).
+
 - **Code review fixes (2026-11-12):** external review of Phases 1–2 found 1 critical + 5 medium
   issues; all fixed and tested. Critical: non-ASCII `X-Webhook-Secret` header caused TypeError →
   500 on every guarded endpoint (bytes-mode compare now → clean 401). Mediums: interaction upsert

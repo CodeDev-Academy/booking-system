@@ -155,6 +155,7 @@ fire-and-forget with this payload (verified against `DispatchOffersView`):
   "service_name": "Dental Consultation",
   "telegram_chat_id": "<or null>",
   "channel": "web" | "telegram" | "whatsapp_flow",
+  "dispatch_channels": ["whatsapp", "sms", "voice"],
   "candidate_slots": [
     { "id": "<slot_offer uuid>", "doctor_name": "Dr. Bello Ibrahim",
       "start_datetime": "2026-11-10T10:00:00+01:00", "end_datetime": "...",
@@ -163,6 +164,16 @@ fire-and-forget with this payload (verified against `DispatchOffersView`):
   ]
 }
 ```
+
+**`dispatch_channels` (Task 3.1, 2026-11-13):** the receptionist's checkbox selection in the
+ReviewModal — any non-empty combination of `whatsapp` / `sms` / `voice`; default is all three.
+- `whatsapp` checked → send the WhatsApp leg; if the patient came via Telegram (Telegram-first
+  era, `telegram_chat_id` present) the instant-message leg is the Telegram card instead.
+- `whatsapp` NOT checked → skip the instant-message leg entirely (no WhatsApp, no Telegram).
+- `sms` → VoiceBip SMS leg. `voice` → the 30s-wait → VoiceBip call leg.
+- Distinct from `channel` (where the patient CAME FROM) — never confuse the two.
+- Backend guard: if the patient already has an active hold/confirmed booking, Django returns
+  **409 `PATIENT_ALREADY_BOOKED`** and fires NOTHING — no workflow run, no wasted messages.
 
 ⚠ **Spec gap:** the spec's richer payload (`dispatch_channel`, `voice_nudge_enabled`,
 `expiry.window_minutes`, pre-formatted `date_label`/`time_label`, shortlinks) is NOT sent yet.

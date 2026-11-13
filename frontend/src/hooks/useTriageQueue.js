@@ -337,8 +337,9 @@ export const useTriageQueue = () => {
       selectedRequest && useQueueStore.getState().addCustomSlot(selectedRequest.id, doctorId, fromDatetimeLocal(datetimeValue)),
     toggleInfoPanel: () => useQueueStore.getState().toggleInfoPanel(),
     sendInfoRequest: (message) => selectedRequest && useQueueStore.getState().sendInfoRequest(selectedRequest.id, message),
-    dispatchOffers: (selectedSlotIds = null) =>
-      selectedRequest && review && review.canDispatch && useQueueStore.getState().dispatchOffers(selectedRequest.id, selectedSlotIds),
+    dispatchOffers: (selectedSlotIds = null, dispatchChannels = ['whatsapp', 'sms', 'voice']) =>
+      selectedRequest && review && review.canDispatch &&
+      useQueueStore.getState().dispatchOffers(selectedRequest.id, selectedSlotIds, dispatchChannels),
     confirmSingleSlot: (slotId) =>
       selectedRequest && useQueueStore.getState().confirmSingleSlot({ requestId: selectedRequest.id, slotId }),
     openTodayAppointment: (id) => setSelectedTodayAppointmentId(id),

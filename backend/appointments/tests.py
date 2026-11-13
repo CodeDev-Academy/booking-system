@@ -3849,10 +3849,13 @@ class AsyncDispatchWebhookTests(APITestCase):
         with patch.dict(os.environ, {'N8N_DISPATCH_WEBHOOK_URL': 'https://n8n.example.com/webhook/slot-dispatch'}):
             with patch('appointments.services.dispatch_service.urllib.request.urlopen', side_effect=slow_urlopen):
                 started = time.monotonic()
-                res = self.client.post(
-                    f'/api/v1/booking-requests/{req.request_code}/dispatch-offers/',
-                    payload, format='json'
-                )
+                # Task 3.1 hygiene: the fire now happens AFTER commit (transaction.on_commit);
+                # captureOnCommitCallbacks executes those callbacks so the test stays non-vacuous.
+                with self.captureOnCommitCallbacks(execute=True):
+                    res = self.client.post(
+                        f'/api/v1/booking-requests/{req.request_code}/dispatch-offers/',
+                        payload, format='json'
+                    )
                 elapsed = time.monotonic() - started
                 # Let the daemon thread finish cleanly before teardown
                 import threading
@@ -4008,6 +4011,211 @@ class SlotOptionNumberHoldTests(APITestCase):
         res = self._hold({'request_id': 'REQ-2099-0000', 'option_number': 1})
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('request_id', res.data)
+
+
+class DispatchChannelSelectionTests(APITestCase):
+    """
+    Task 3.1 — receptionist channel checkboxes (Approve & Dispatch):
+    - dispatch-offers accepts `dispatch_channels` ([whatsapp, sms, voice]; default = all
+      three, so existing callers behave exactly as before),
+    - the Telegram instant-message leg (the "WhatsApp" checkbox during the Telegram-first
+      era) is skipped when 'whatsapp' is unchecked, and both outbound calls now run
+      AFTER commit (transaction.on_commit),
+    - dispatch is REFUSED with 409 PATIENT_ALREADY_BOOKED (clear detail message) when the
+      patient already has an active hold or confirmed booking.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Channels',
+            email='sarah.channels@clinic.com',
+            role='receptionist',
+            is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+        self.client.force_authenticate(user=self.receptionist)
+
+        self.service = Service.objects.create(
+            name='Dental Consultation',
+            duration_minutes=30,
+            buffer_minutes=5,
+            price=10000,
+        )
+        self.doctor = Doctor.objects.create(name='Dr. Channel Test')
+        self.booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0077',
+            patient_name='Grace Channel',
+            patient_phone='+2348066667777',
+            service=self.service,
+            status='awaiting_review',
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def _slot_payload(self):
+        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        return {'slots': [{
+            'doctor_id': str(self.doctor.id),
+            'start_datetime': slot_start.isoformat(),
+            'end_datetime': (slot_start + datetime.timedelta(minutes=30)).isoformat(),
+            'is_alternative_date': False,
+        }]}
+
+    def _dispatch(self, extra=None, execute_commit=True):
+        payload = self._slot_payload()
+        if extra:
+            payload.update(extra)
+        if execute_commit:
+            with self.captureOnCommitCallbacks(execute=True):
+                return self.client.post(
+                    f'/api/v1/booking-requests/{self.booking.request_code}/dispatch-offers/',
+                    payload, format='json'
+                )
+        return self.client.post(
+            f'/api/v1/booking-requests/{self.booking.request_code}/dispatch-offers/',
+            payload, format='json'
+        )
+
+    def _capture_fire(self):
+        """Patch the n8n pipe + env so we can inspect the exact payload handed over."""
+        import os
+        from unittest.mock import patch
+        return patch.dict(os.environ, {'N8N_DISPATCH_WEBHOOK_URL': 'https://n8n.example.com/dispatch'}), \
+            patch('appointments.views_booking.fire_and_forget_webhook')
+
+    def test_default_channels_are_all_three(self):
+        env_patch, fire_patch = self._capture_fire()
+        with env_patch, fire_patch as mock_fire:
+            res = self._dispatch()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        payload = mock_fire.call_args[0][1]
+        self.assertEqual(payload['dispatch_channels'], ['whatsapp', 'sms', 'voice'])
+
+    def test_custom_subset_passed_through(self):
+        env_patch, fire_patch = self._capture_fire()
+        with env_patch, fire_patch as mock_fire:
+            res = self._dispatch({'dispatch_channels': ['whatsapp', 'voice']})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        payload = mock_fire.call_args[0][1]
+        self.assertEqual(payload['dispatch_channels'], ['whatsapp', 'voice'])
+
+    def test_empty_channels_rejected(self):
+        res = self._dispatch({'dispatch_channels': []})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res.data['error'], 'INVALID_DISPATCH_CHANNELS')
+
+    def test_invalid_channel_value_rejected(self):
+        res = self._dispatch({'dispatch_channels': ['carrier_pigeon']})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res.data['error'], 'INVALID_DISPATCH_CHANNELS')
+
+    def test_active_hold_blocks_dispatch_with_clear_message(self):
+        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        Appointment.objects.create(
+            appointment_code='AP-2001',
+            patient_name=self.booking.patient_name,
+            patient_phone=self.booking.patient_phone,
+            doctor=self.doctor,
+            service=self.service,
+            booking_request=self.booking,
+            start_datetime=slot_start,
+            end_datetime=slot_start + datetime.timedelta(minutes=30),
+            status='held',
+            hold_expires_at=timezone.now() + datetime.timedelta(minutes=10),
+        )
+        res = self._dispatch()
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['error'], 'PATIENT_ALREADY_BOOKED')
+        self.assertIn('AP-2001', res.data['detail'])
+        self.assertIn('Cancel or reschedule', res.data['detail'])
+        # Nothing was dispatched and no offers were created
+        self.assertEqual(SlotOffer.objects.filter(request=self.booking).count(), 0)
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.status, 'awaiting_review')
+
+    def test_confirmed_booking_blocks_dispatch(self):
+        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        Appointment.objects.create(
+            appointment_code='AP-2002',
+            patient_name=self.booking.patient_name,
+            patient_phone=self.booking.patient_phone,
+            doctor=self.doctor,
+            service=self.service,
+            booking_request=self.booking,
+            start_datetime=slot_start,
+            end_datetime=slot_start + datetime.timedelta(minutes=30),
+            status='confirmed',
+        )
+        res = self._dispatch()
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['error'], 'PATIENT_ALREADY_BOOKED')
+
+    def test_expired_hold_does_NOT_block_dispatch(self):
+        """A hold that already timed out is dead — reception can dispatch fresh options."""
+        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        Appointment.objects.create(
+            appointment_code='AP-2003',
+            patient_name=self.booking.patient_name,
+            patient_phone=self.booking.patient_phone,
+            doctor=self.doctor,
+            service=self.service,
+            booking_request=self.booking,
+            start_datetime=slot_start,
+            end_datetime=slot_start + datetime.timedelta(minutes=30),
+            status='held',
+            hold_expires_at=timezone.now() - datetime.timedelta(minutes=10),
+        )
+        res = self._dispatch()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_telegram_leg_respects_whatsapp_checkbox(self):
+        from unittest.mock import patch
+        self.booking.patient_notes = 'telegram_chat_id: 555001'
+        self.booking.save(update_fields=['patient_notes'])
+
+        # WhatsApp unchecked → instant-message leg skipped entirely
+        with patch('appointments.views_booking.TelegramService') as mock_tg, \
+                patch('appointments.views_booking.fire_and_forget_webhook'):
+            res = self._dispatch({'dispatch_channels': ['sms', 'voice']})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        mock_tg.format_slot_offers.assert_not_called()
+        mock_tg.send_message.assert_not_called()
+
+        # Default (all three) → Telegram leg fires after commit, exactly as before 3.1
+        with patch('appointments.views_booking.TelegramService') as mock_tg, \
+                patch('appointments.views_booking.fire_and_forget_webhook'):
+            mock_tg.format_slot_offers.return_value = ('Offer text', 'Markup')
+            res = self._dispatch()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        mock_tg.format_slot_offers.assert_called_once()
+        mock_tg.send_message.assert_called_once()
+
+    def test_dispatch_blocked_means_no_n8n_fire(self):
+        """The 409 guard fires BEFORE any outbound call — no wasted messages, ever."""
+        from unittest.mock import patch
+        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        Appointment.objects.create(
+            appointment_code='AP-2004',
+            patient_name=self.booking.patient_name,
+            patient_phone=self.booking.patient_phone,
+            doctor=self.doctor,
+            service=self.service,
+            booking_request=self.booking,
+            start_datetime=slot_start,
+            end_datetime=slot_start + datetime.timedelta(minutes=30),
+            status='confirmed',
+        )
+        env_patch, fire_patch = self._capture_fire()
+        with env_patch, fire_patch as mock_fire, \
+                patch('appointments.views_booking.TelegramService') as mock_tg:
+            res = self._dispatch()
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        mock_fire.assert_not_called()
+        mock_tg.format_slot_offers.assert_not_called()
 
 
 

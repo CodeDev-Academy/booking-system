@@ -12,6 +12,8 @@ export const ReviewModal = ({ review, actions }) => {
   const [customDoctor, setCustomDoctor] = useState('');
   const [customTime, setCustomTime] = useState('');
   const [selectedSlotIds, setSelectedSlotIds] = useState([]);
+  // Task 3.1: delivery-channel checkboxes (all three pre-checked per approved UX)
+  const [channels, setChannels] = useState({ whatsapp: true, sms: true, voice: true });
 
   const lastRequestIdRef = React.useRef(null);
 
@@ -56,16 +58,22 @@ export const ReviewModal = ({ review, actions }) => {
 
   const selectedCount = selectedSlotIds.length;
   const hasSelectedAny = selectedCount > 0;
-  const canDispatchOrApprove = review.phoneValid && hasSelectedAny && review.collisions === 0;
+  const dispatchChannelList = Object.entries(channels).filter(([, on]) => on).map(([key]) => key);
+  const hasChannel = dispatchChannelList.length > 0;
+  const canDispatchOrApprove = review.phoneValid && hasSelectedAny && review.collisions === 0 && hasChannel;
 
   const handleDispatchOrApprove = () => {
     if (!canDispatchOrApprove) return;
     if (selectedCount === 1) {
       actions.confirmSingleSlot(selectedSlotIds[0]);
     } else {
-      actions.dispatchOffers(selectedSlotIds);
+      actions.dispatchOffers(selectedSlotIds, dispatchChannelList);
     }
   };
+
+  const channelSummary = dispatchChannelList.length
+    ? `Sends via ${dispatchChannelList.map((c) => (c === 'voice' ? 'voice call' : c)).join(' + ')}`
+    : 'Choose at least 1 delivery channel';
 
   const actionButtonText =
     selectedCount === 1
@@ -393,14 +401,63 @@ export const ReviewModal = ({ review, actions }) => {
           </div>
 
           <div className="dispatch-wrap">
+            {/* Task 3.1: delivery-channel checkboxes — receptionist picks any combination */}
+            <div
+              className="channel-strip"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '10px',
+                justifyContent: 'flex-end',
+                marginBottom: '6px',
+                fontSize: '11px',
+              }}
+            >
+              <span style={{ color: 'var(--text-3)' }}>Send via:</span>
+              {[
+                { key: 'whatsapp', label: 'WhatsApp' },
+                { key: 'sms', label: 'SMS' },
+                { key: 'voice', label: 'Voice Call' },
+              ].map(({ key, label }) => (
+                <label
+                  key={key}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    cursor: 'pointer',
+                    color: channels[key] ? 'var(--text-1)' : 'var(--text-3)',
+                    fontWeight: channels[key] ? 600 : 400,
+                    userSelect: 'none',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={channels[key]}
+                    onChange={(e) => setChannels((prev) => ({ ...prev, [key]: e.target.checked }))}
+                    style={{ accentColor: '#32c850', width: '13px', height: '13px', cursor: 'pointer' }}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+            <div
+              className="field-hint"
+              style={{ textAlign: 'right', marginBottom: '4px', color: hasChannel ? 'var(--text-3)' : 'var(--rose)' }}
+            >
+              {channelSummary}
+            </div>
             {!canDispatchOrApprove && (
-              <span className="dispatch-reason">
+              <span className="dispatch-reason" title="Hover shows why dispatch is unavailable">
                 {!review.phoneValid
                   ? 'Fix patient phone number first'
                   : !hasSelectedAny
                   ? 'Select at least 1 slot option'
                   : review.collisions > 0
                   ? `${review.collisions} slot conflict detected`
+                  : !hasChannel
+                  ? 'Choose at least 1 delivery channel'
                   : ''}
               </span>
             )}
@@ -409,6 +466,11 @@ export const ReviewModal = ({ review, actions }) => {
               className="btn-base btn-primary dispatch-btn"
               disabled={!canDispatchOrApprove}
               onClick={handleDispatchOrApprove}
+              title={
+                canDispatchOrApprove
+                  ? `Dispatch now — patient gets these options via ${channelSummary.replace('Sends via ', '')}. Options expire after ${review.offerExpiryMin} minutes so other patients can book them.`
+                  : 'Dispatch unavailable — fix the reason shown beside this button'
+              }
             >
               <Rocket size={14} /> {actionButtonText}
             </button>

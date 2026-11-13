@@ -238,9 +238,14 @@ export const useQueueStore = create(
   },
 
   // [Approve & Dispatch Options] — starts the offer-expiry window
-  dispatchOffers: (requestId, selectedSlotIds = null) => {
+  // Task 3.1: `dispatchChannels` = receptionist's checkbox selection
+  // (['whatsapp','sms','voice'] — all three by default per the approved UX).
+  dispatchOffers: async (requestId, selectedSlotIds = null, dispatchChannels = ['whatsapp', 'sms', 'voice']) => {
     const { requests, slotsByRequest } = get();
     const request = requests.find((r) => r.id === requestId);
+    const prevRequest = request
+      ? { status: request.status, reviewingBy: request.reviewingBy, offerExpiresAt: request.offerExpiresAt, reRequested: request.reRequested }
+      : null;
     let updatedSlots = slotsByRequest[requestId] || [];
     if (selectedSlotIds && Array.isArray(selectedSlotIds) && selectedSlotIds.length > 0) {
       updatedSlots = updatedSlots.filter((s) => selectedSlotIds.includes(s.id));
@@ -276,9 +281,28 @@ export const useQueueStore = create(
       );
       if (!isLocalMock) {
         const lookupKey = request?.backendUuid || request?.code || requestId;
-        apiService.dispatchOffers(lookupKey, updatedSlots).catch((err) => {
+        try {
+          await apiService.dispatchOffers(lookupKey, updatedSlots, dispatchChannels);
+        } catch (err) {
           console.warn('Backend dispatchOffers failed:', err);
-        });
+          // Task 3.1 guard surfaced: patient already has an active hold/booking.
+          // Roll the optimistic update back and explain clearly (hover-message UX).
+          if (err.status === 409 && err.details?.error === 'PATIENT_ALREADY_BOOKED') {
+            set((state) => ({
+              requests: state.requests.map((r) =>
+                r.id === requestId && prevRequest
+                  ? { ...r, ...prevRequest }
+                  : r
+              ),
+              toast: {
+                tone: 'error',
+                text: err.details.detail ||
+                  'Dispatch blocked: patient already has an active booking. Cancel or reschedule it first.',
+              },
+            }));
+            return; // no chime for a blocked dispatch
+          }
+        }
       }
     }
 

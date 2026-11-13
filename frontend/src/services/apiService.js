@@ -239,7 +239,7 @@ export const apiService = {
     });
   },
 
-  async dispatchOffers(requestId, slots = []) {
+  async dispatchOffers(requestId, slots = [], dispatchChannels = null) {
     const formattedSlots = Array.isArray(slots)
       ? slots.map((s) => {
           if (typeof s === 'object' && s !== null) {
@@ -266,9 +266,16 @@ export const apiService = {
         })
       : [];
 
+    // Task 3.1: receptionist channel checkboxes — HOW reception reaches the patient
+    // (distinct from `channel`, which records where the patient came FROM).
+    const body = { slots: formattedSlots };
+    if (Array.isArray(dispatchChannels) && dispatchChannels.length > 0) {
+      body.dispatch_channels = dispatchChannels;
+    }
+
     return request(`/booking-requests/${requestId}/dispatch-offers/`, {
       method: 'POST',
-      body: JSON.stringify({ slots: formattedSlots }),
+      body: JSON.stringify(body),
     });
   },
 
