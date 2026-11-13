@@ -285,6 +285,12 @@ export const apiService = {
     });
   },
 
+  // Option B: read-only channel availability for the ReviewModal.
+  // Tells reception which ticked channels can actually reach this patient.
+  async getChannelAvailability(requestId) {
+    return request(`/booking-requests/${requestId}/channel-availability/`);
+  },
+
   // Task 3.2: patient communication history (dossier timeline).
   // Backend GET /api/v1/interactions/ is staff-auth; phones are E.164.
   async getInteractions(patientPhone, limit = 50) {

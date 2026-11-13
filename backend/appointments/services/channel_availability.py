@@ -190,6 +190,11 @@ def _join_labels(channels):
     return f"{', '.join(labels[:-1])} and {labels[-1]}"
 
 
+def _sentence(text):
+    """Capitalise the first letter so a warning can start with any channel name."""
+    return text[:1].upper() + text[1:] if text else text
+
+
 def build_delivery_plan(availability, dispatch_channels):
     """
     Layer 2 (advisory): intersect the receptionist's checkbox selection with the
@@ -225,7 +230,7 @@ def build_delivery_plan(availability, dispatch_channels):
         )
     elif unreachable:
         warning = (
-            f"{_join_labels(unreachable)} cannot reach this patient — "
+            f"{_sentence(_join_labels(unreachable))} cannot reach this patient — "
             f"only {_join_labels(reachable)} will be used."
         )
     else:

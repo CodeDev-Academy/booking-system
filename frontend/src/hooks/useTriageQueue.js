@@ -291,6 +291,40 @@ export const useTriageQueue = () => {
     return () => clearInterval(interval);
   }, [selectedRequestPhone, selectedRequest, fetchInteractions]);
 
+  // ---------- Option B: channel availability (preventive layer, display only) ----------
+  // Asks the backend which ticked channels can actually reach this patient. The
+  // payload is advisory: nothing here blocks dispatch. While it loads (or in demo
+  // mode, or on error) `data` stays null, so the modal shows no hints at all —
+  // no flicker and no false alarms.
+  const [availabilityState, setAvailabilityState] = useState({ data: null, loading: false, error: null });
+
+  const selectedRequestLookupKey = selectedRequest
+    ? (selectedRequest.backendUuid || selectedRequest.code || selectedRequest.id)
+    : null;
+
+  useEffect(() => {
+    setAvailabilityState({ data: null, loading: false, error: null });
+    if (!selectedRequestLookupKey) return undefined;
+    if (useAppModeStore.getState().isDemoMode) return undefined;
+
+    let cancelled = false;
+    setAvailabilityState({ data: null, loading: true, error: null });
+    apiService
+      .getChannelAvailability(selectedRequestLookupKey)
+      .then((data) => {
+        if (!cancelled) setAvailabilityState({ data, loading: false, error: null });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.warn('Channel availability fetch failed:', err);
+        setAvailabilityState({ data: null, loading: false, error: 'Availability unavailable right now' });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRequestLookupKey]);
+
   const review = useMemo(() => {
     if (!selectedRequest) return null;
     const r = selectedRequest;
@@ -391,6 +425,25 @@ export const useTriageQueue = () => {
         : null,
       channel: r.channel,
       interactions: interactionState,
+      // Option B (advisory): null channels = unknown (loading / demo / error),
+      // so the modal shows no hints rather than inventing them.
+      availability: availabilityState.data
+        ? {
+            channels: availabilityState.data.channels || null,
+            reachable: availabilityState.data.reachable || [],
+            unreachable: availabilityState.data.unreachable || [],
+            none: Boolean(availabilityState.data.none),
+            loading: false,
+            error: null,
+          }
+        : {
+            channels: null,
+            reachable: [],
+            unreachable: [],
+            none: false,
+            loading: availabilityState.loading,
+            error: availabilityState.error,
+          },
       serviceOptions: SERVICES.map((s) => ({ id: s.id, name: s.name })),
       doctorOptions: [{ id: '', name: '⚡ Auto-Balance by Clinic Load (Recommended)' }, ...dynamicDoctors.map((d) => ({ id: d.id, name: d.name }))],
       windowOptions: Object.entries(TIME_WINDOWS).map(([id, w]) => ({ id, name: w.label })),
@@ -410,7 +463,7 @@ export const useTriageQueue = () => {
             ? `${collisions} slot${collisions > 1 ? 's' : ''} blocked by the Double-Booking Shield`
             : '',
     };
-  }, [selectedRequest, slotsByRequest, busyBlocks, infoPanelOpen, staffList, interactionState]);
+  }, [selectedRequest, slotsByRequest, busyBlocks, infoPanelOpen, staffList, interactionState, availabilityState]);
 
   // ---------- Handlers (stable, passed down as props) ----------
   const updateField = useCallback(

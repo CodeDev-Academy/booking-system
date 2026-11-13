@@ -75,6 +75,13 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 - [ ] `T-503`: **Graceful 60m Expiry Re-engagement**: `[🔄 See New Times]` button dispatched upon expiration.
 - [ ] `T-504`: **24-Hour Reminder Flow**: Dispatch notice with `[Confirm]`, `[Reschedule]`, `[Cancel]` buttons.
 
+### Suite G: Delivery Reliability — Channel Availability (Option B)
+- [x] `T-601`: **Resolver Matrix**: no providers + no Telegram → `none: true`; Telegram `chat_id` + token makes the `whatsapp` leg reachable (`via: "telegram"`); explicit `WHATSAPP_ENABLED` / `SMS_ENABLED` / `VOICE_ENABLED` flags; `chat_id` without token is not reachable. Verified in `ChannelAvailabilityTests` (8 tests).
+- [x] `T-602`: **Read-Only Endpoint**: `GET /api/v1/booking-requests/{id}/channel-availability/` returns the availability shape with staff auth, `401` unauthenticated, `404` unknown request. No DB writes, no network calls.
+- [x] `T-603`: **Advisory Dispatch Plan**: `dispatch-offers` still returns `200` and creates offers, and adds `delivery` / `delivery_warning`; partial reachability, all-reachable (`null`), and `PATIENT_ALREADY_BOOKED` precedence are pinned in `DispatchDeliveryAdvisoryTests` (5 tests).
+- [x] `T-604`: **Dashboard Hints**: ReviewModal marks unreachable channels with a ⚠ (reason on hover) and shows the advisory sentence; checkboxes stay enabled, dispatch is never blocked; a post-dispatch `delivery_warning` replaces the success toast with an amber warning. Demo mode and loading/error states show no hints. Verified via `npm run build` + `npm run lint` (no new warnings).
+- [ ] `T-605`: **Enforcement Flag (Layer 4)**: with `DISPATCH_REQUIRE_REACHABLE_CHANNEL=true`, a selection with no reachable channel returns `409 NO_REACHABLE_CHANNEL` and the dashboard rolls the optimistic update back. Default remains **off**.
+
 ---
 
 ## 3. Test Execution Log
@@ -92,6 +99,8 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 | 2026-10-16 | Review Sub-Agent | `Suite E / Formal QA Audit & Fixes` | **PASSED** | Independent Browser Subagent QA of `/simulator`, `/queue`, and `/admin/settings`. Verified dynamic island phone bezel, Web/Telegram dual tabs, real-time sync (<466ms), and Web Audio synthesis. Resolved 2 audit issues: REV-01 (dynamic service & time window in `LiveSyncMonitor.jsx`) and REV-02 (doctor selector & clean imports in `WebIntakeForm.jsx`). Frontend production build verified clean (1999 modules, 0 errors, 1.23s). Backend 12/12 unit tests 100% pass. |
 | 2026-10-31 | Review Sub-Agent | `Suite D / Phase 3 Backend Verification` | **PASSED** | Django test runner verified all 83 backend test specifications (`python manage.py test appointments`: 83/83 OK in 233.24s). Verified API authentication, slot booking, concurrency locks, Telegram notifications, and SSE streams. |
 | 2026-10-31 | Review Sub-Agent | `Playwright E2E Suite / Tests 1-8` | **PASSED** | Full Playwright E2E suite executed via Chrome browser channel on `http://localhost:5173`. Verified 8 complete user journeys across Triage Queue, Candidate Slot Review Modal, Client Pitch Simulator, Master Calendar Grid, Live Clinic Visits 3-swimlane flow & Walk-In admission, Staff Directory & Credentials, Clinic Settings & Web Audio Chimes, and Staff Login Portal security rejection & NDPR notice. 8/8 tests passed in 26.1s. |
+| 2026-11-13 | Brain Agent | `Suite G / T-601, T-602, T-603` | **PASSED** | Option B Layers 1-2. `ChannelAvailabilityTests` (8) + `DispatchDeliveryAdvisoryTests` (5) pass. Full suite 167 tests / 166 pass; sole failure is the known pre-existing `Phase5TelegramTests.test_telegram_interactive_service_booking_and_dispatch` (`prompted_date_range` vs `booking_request_created`). Dispatch behaviour unchanged: status 200, offers created, `PATIENT_ALREADY_BOOKED` still first. |
+| 2026-11-13 | Brain Agent | `Suite G / T-604` | **PASSED** | Option B Layer 3 (dashboard hints). `npm run build` clean; `npm run lint` reports no new warnings. Availability fetch is demo-safe and fails silent (no hints) so no false alarms; post-dispatch `delivery_warning` swaps the success toast for an amber warning; `409 NO_REACHABLE_CHANNEL` rollback path is in place for the flag-gated Layer 4. |
 
 ---
 

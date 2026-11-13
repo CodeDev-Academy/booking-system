@@ -324,7 +324,7 @@ Availability is reported by the backend (config-driven), never hardcoded in Reac
 |---|---|---|
 | 1 | Read-only resolver `appointments/services/channel_availability.py` + `GET /api/v1/booking-requests/{id}/channel-availability/` | **DONE** (8 tests, behaviour-neutral) |
 | 2 | Advisory `delivery` / `delivery_warning` fields on `dispatch-offers` (status stays 200) | **DONE** (5 tests, nothing blocked) |
-| 3 | Dashboard availability hints in the ReviewModal + `409 NO_REACHABLE_CHANNEL` rollback | planned |
+| 3 | Dashboard availability hints in the ReviewModal + `409 NO_REACHABLE_CHANNEL` rollback | **DONE** (display only, no blocking) |
 | 4 | Enforcement behind `DISPATCH_REQUIRE_REACHABLE_CHANNEL` (default **off**) | planned |
 
 Layer 1 contract (also documented in `API_REFERENCE.md`):
@@ -356,6 +356,20 @@ Layer 2 contract — advisory `delivery` / `delivery_warning` on `dispatch-offer
   exactly as before. Existing response keys are untouched (pinned by a regression test).
 - `PATIENT_ALREADY_BOOKED` remains the **first** guard and its `409` response carries no
   `delivery` key (precedence pinned by a test).
+
+Layer 3 contract — dashboard hints (display only, never blocks):
+
+- `apiService.getChannelAvailability(id)` → the Layer 1 endpoint; the hook
+  (`useTriageQueue`) fetches it when the ReviewModal opens for the selected request.
+- **Fail silent:** while loading, in demo mode, or on error the payload is `null` and the
+  modal shows **no hints** — never a false alarm, and no flicker.
+- Each unreachable channel gets a ⚠ marker with the backend `reason` on hover; the checkbox
+  stays **enabled** and dispatch is never blocked. A single advisory sentence appears under
+  the channel strip (`services/channelAvailability.js` mirrors the backend wording).
+- After dispatch, a returned `delivery_warning` replaces the success toast with an **amber**
+  warning — reception is told the truth even though the offers were created.
+- `409 NO_REACHABLE_CHANNEL` (Layer 4) already has its rollback path in the queue store,
+  mirroring `PATIENT_ALREADY_BOOKED`; it is dormant until the flag is enabled.
 
 ### 5.7 Build sequence (mock-first, so "connect the API" is the only step left)
 

@@ -3,6 +3,11 @@ import { X, Zap, Plus, MessageSquare, Rocket, ShieldCheck, ShieldAlert, Phone, A
 import { PatientDossier } from './PatientDossier';
 import { CandidateSlotCard } from './CandidateSlotCard';
 import { AskInfoPanel } from './AskInfoPanel';
+import {
+  buildDeliveryWarning,
+  channelReason,
+  isChannelReachable,
+} from '../../services/channelAvailability';
 
 /**
  * ReviewModal — Active review stage for one booking request.
@@ -74,6 +79,17 @@ export const ReviewModal = ({ review, actions }) => {
   const channelSummary = dispatchChannelList.length
     ? `Sends via ${dispatchChannelList.map((c) => (c === 'voice' ? 'voice call' : c)).join(' + ')}`
     : 'Choose at least 1 delivery channel';
+
+  // Option B (advisory): availability arrives from the backend. When it is not
+  // known yet (loading / demo / error) every channel is treated as reachable so
+  // no false warning is ever shown.
+  const availability = review.availability || null;
+  const availabilityKnown = Boolean(availability?.channels);
+  const deliveryWarning = availabilityKnown
+    ? buildDeliveryWarning(availability, dispatchChannelList)
+    : null;
+  const noReachableSelected = availabilityKnown && dispatchChannelList.length > 0 &&
+    dispatchChannelList.every((key) => !isChannelReachable(availability, key));
 
   const actionButtonText =
     selectedCount === 1
@@ -423,28 +439,36 @@ export const ReviewModal = ({ review, actions }) => {
                 { key: 'whatsapp', label: 'WhatsApp' },
                 { key: 'sms', label: 'SMS' },
                 { key: 'voice', label: 'Voice Call' },
-              ].map(({ key, label }) => (
-                <label
-                  key={key}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    cursor: 'pointer',
-                    color: channels[key] ? 'var(--text-1)' : 'var(--text-3)',
-                    fontWeight: channels[key] ? 600 : 400,
-                    userSelect: 'none',
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={channels[key]}
-                    onChange={(e) => setChannels((prev) => ({ ...prev, [key]: e.target.checked }))}
-                    style={{ accentColor: '#32c850', width: '13px', height: '13px', cursor: 'pointer' }}
-                  />
-                  {label}
-                </label>
-              ))}
+              ].map(({ key, label }) => {
+                const unreachable = availabilityKnown && !isChannelReachable(availability, key);
+                const reason = unreachable ? channelReason(availability, key) : null;
+                return (
+                  <label
+                    key={key}
+                    title={reason || undefined}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      cursor: 'pointer',
+                      color: channels[key] ? 'var(--text-1)' : 'var(--text-3)',
+                      fontWeight: channels[key] ? 600 : 400,
+                      userSelect: 'none',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={channels[key]}
+                      onChange={(e) => setChannels((prev) => ({ ...prev, [key]: e.target.checked }))}
+                      style={{ accentColor: '#32c850', width: '13px', height: '13px', cursor: 'pointer' }}
+                    />
+                    {label}
+                    {unreachable && (
+                      <AlertCircle size={11} color="var(--amber)" aria-label={`${label} cannot reach this patient`} />
+                    )}
+                  </label>
+                );
+              })}
             </div>
             <div
               className="field-hint"
@@ -452,6 +476,23 @@ export const ReviewModal = ({ review, actions }) => {
             >
               {channelSummary}
             </div>
+            {deliveryWarning && (
+              <div
+                className="field-hint"
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  justifyContent: 'flex-end',
+                  gap: '4px',
+                  textAlign: 'right',
+                  marginBottom: '4px',
+                  color: noReachableSelected ? 'var(--rose)' : 'var(--amber)',
+                }}
+              >
+                <AlertCircle size={12} style={{ flexShrink: 0, marginTop: '1px' }} />
+                <span>{deliveryWarning}</span>
+              </div>
+            )}
             {!canDispatchOrApprove && (
               <span className="dispatch-reason" title="Hover shows why dispatch is unavailable">
                 {!review.phoneValid

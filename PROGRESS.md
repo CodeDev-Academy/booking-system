@@ -716,3 +716,31 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
 - Next: Layer 3 - dashboard availability hints in the ReviewModal, `409
   NO_REACHABLE_CHANNEL` rollback in the queue store, then the
   `DISPATCH_REQUIRE_REACHABLE_CHANNEL` enforcement flag (default off).
+
+
+## 2026-11-13 - Option B Layer 3: dashboard channel-availability hints (display only)
+
+- New `frontend/src/services/channelAvailability.js` (logic layer): channel labels,
+  `isChannelReachable`, `channelReason`, and `buildDeliveryWarning` mirroring the backend
+  wording. Unknown availability always counts as reachable, so the UI never raises a
+  false alarm.
+- `apiService.getChannelAvailability(id)` calls the Layer 1 endpoint; `useTriageQueue`
+  fetches it when the ReviewModal opens for the selected request (demo mode, loading and
+  errors leave the payload null -> no hints at all, no flicker).
+- `ReviewModal`: unreachable channels show a warning marker with the backend reason on
+  hover, plus one advisory sentence under the channel strip (amber, rose when nothing
+  selected can reach the patient). Checkboxes stay **enabled** - nothing is blocked.
+- `useQueueStore.dispatchOffers`: a returned `delivery_warning` replaces the success toast
+  with an amber warning (offers are still created), and a `409 NO_REACHABLE_CHANNEL`
+  response now rolls the optimistic update back exactly like `PATIENT_ALREADY_BOOKED`
+  (dormant until the Layer 4 flag is enabled).
+- `queue.css`: added `.toast-amber` (the queue toast previously styled only
+  success/info/error).
+- Backend polish: `build_delivery_plan` capitalises the first word so a voice-only warning
+  does not start lowercase. No behaviour change.
+- Verified: `npm run build` clean; `npm run lint` shows no new warnings. Backend suite
+  **167 tests / 166 pass** (sole failure = pre-existing Telegram bug).
+- Docs: `n8n.md` section 5.6 (Layer 3 contract, table now 1-3 DONE), `TEST.md` Suite G
+  (T-601..T-604 passed, T-605 pending for the flag).
+- Next: Layer 4 - `DISPATCH_REQUIRE_REACHABLE_CHANNEL` enforcement (default off) with
+  `override_settings` tests for both flag states.

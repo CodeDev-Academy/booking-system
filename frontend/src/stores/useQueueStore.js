@@ -299,7 +299,16 @@ export const useQueueStore = create(
       if (!isLocalMock) {
         const lookupKey = request?.backendUuid || request?.code || requestId;
         try {
-          await apiService.dispatchOffers(lookupKey, updatedSlots, dispatchChannels);
+          const dispatchResponse = await apiService.dispatchOffers(lookupKey, updatedSlots, dispatchChannels);
+          // Option B (advisory): the backend reports which of the ticked channels
+          // could actually reach the patient. Never roll back — just replace the
+          // success toast with the truthful warning so reception isn't misled.
+          const deliveryWarning = dispatchResponse?.delivery_warning
+            || dispatchResponse?.delivery?.warning
+            || null;
+          if (deliveryWarning) {
+            set({ toast: { tone: 'amber', text: deliveryWarning } });
+          }
         } catch (err) {
           console.warn('Backend dispatchOffers failed:', err);
           // Task 3.1 guard surfaced: patient already has an active hold/booking.
@@ -318,6 +327,24 @@ export const useQueueStore = create(
               },
             }));
             return; // no chime for a blocked dispatch
+          }
+          // Option B (Layer 4, flag-gated backend): no selected channel can reach
+          // the patient. Mirror the rollback so the queue never claims a dispatch
+          // that reached nobody.
+          if (err.status === 409 && err.details?.error === 'NO_REACHABLE_CHANNEL') {
+            set((state) => ({
+              requests: state.requests.map((r) =>
+                r.id === requestId && prevRequest
+                  ? { ...r, ...prevRequest }
+                  : r
+              ),
+              toast: {
+                tone: 'error',
+                text: err.details.detail ||
+                  'Dispatch blocked: no selected channel can reach this patient.',
+              },
+            }));
+            return;
           }
         }
       }
