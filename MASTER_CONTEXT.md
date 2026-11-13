@@ -160,6 +160,23 @@ external providers (VoiceBip voice, WhatsApp, SMS, Meta, etc.).
   writes and dossier filters. **n8n workflows should send `+234...`** (any of the variants work,
   but the canonical form is the contract).
 
+- **Option-number hold contract (Phase 4 prep, 2026-11-13):** `POST /api/v1/slots/hold/` now
+  accepts `{"request_id": "REQ-...", "option_number": 2}` as an alternative to `slot_offer_id` —
+  the BACKEND resolves the reply number against the request's SlotOffers in ORIGINAL dispatch
+  order (`offered_at`; never renumbered by prior selections) inside the locked transaction.
+  n8n Workflow C sends exactly ONE call — no static-data map, no Workflow-D dependency, zero
+  added latency. Resolution rules: both `slot_offer_id` + `option_number` → 400; unknown request
+  → 400; out-of-range → 400; expired offer → 400 (n8n sends the recovery/NEW path); valid →
+  200 with a 15-minute HELD appointment (request converts only at confirm-time — existing
+  lifecycle). **ALREADY_CONFIRMED (closes the tracked spec gap):** any second selection for a
+  request that already has an active hold/confirmed appointment (or a selected offer/converted
+  status) returns **200** `{"error": "ALREADY_CONFIRMED", "already_confirmed": true,
+  "appointment_code": "AP-XXXX"}` — n8n sends the friendly "already confirmed" message instead
+  of a scary 409. Expired holds do NOT match (patient gets a fresh chance). This check also
+  closes a latent double-booking hole: previously a patient replying twice with DIFFERENT offer
+  ids at different times could create two appointments (no time conflict to stop it).
+  Tests: `SlotOptionNumberHoldTests` (8 tests, incl. the renumbering-trap proof).
+
 - **Code review fixes (2026-11-12):** external review of Phases 1–2 found 1 critical + 5 medium
   issues; all fixed and tested. Critical: non-ASCII `X-Webhook-Secret` header caused TypeError →
   500 on every guarded endpoint (bytes-mode compare now → clean 401). Mediums: interaction upsert

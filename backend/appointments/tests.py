@@ -3868,6 +3868,148 @@ class AsyncDispatchWebhookTests(APITestCase):
         self.assertLess(elapsed, 1.5, f"Dispatch response blocked for {elapsed:.2f}s")
 
 
+class SlotOptionNumberHoldTests(APITestCase):
+    """
+    n8n patient replies resolved BY THE BACKEND (Phase 4 prep / build-sheet contract):
+    POST /api/v1/slots/hold/ accepts `option_number` + `request_id` instead of a
+    slot_offer_id, so Workflow C never depends on Workflow D's memory. The number
+    maps to the request's slot offers in ORIGINAL dispatch order and is never
+    renumbered by prior selections. Also introduces the friendly ALREADY_CONFIRMED
+    200 response for cross-channel double replies.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+
+        self.doctor = Doctor.objects.create(
+            name='Dr. Test Doctor',
+            specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0),
+            shift_end=datetime.time(17, 0),
+        )
+        self.service = Service.objects.create(
+            name='Dental Consultation',
+            duration_minutes=30,
+            buffer_minutes=5,
+            price=10000,
+        )
+        self.booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0099',
+            patient_name='Amina Reply',
+            patient_phone='+2348030001122',
+            service=self.service,
+            status='slots_offered',
+        )
+        # Three offers. Deliberately OUT of start-time order: offer 2 starts EARLIEST.
+        # This proves resolution follows original dispatch order (offered_at),
+        # never re-sorted by time and never renumbered by prior selections.
+        base = timezone.make_aware(datetime.datetime(2026, 12, 1, 10, 0, 0))
+        self.offer1 = SlotOffer.objects.create(
+            request=self.booking, doctor=self.doctor,
+            start_datetime=base, end_datetime=base + datetime.timedelta(minutes=30),
+            expires_at=timezone.now() + datetime.timedelta(minutes=60),
+        )
+        self.offer2 = SlotOffer.objects.create(
+            request=self.booking, doctor=self.doctor,
+            start_datetime=base - datetime.timedelta(hours=1),
+            end_datetime=base - datetime.timedelta(hours=1) + datetime.timedelta(minutes=30),
+            expires_at=timezone.now() + datetime.timedelta(minutes=60),
+        )
+        self.offer3 = SlotOffer.objects.create(
+            request=self.booking, doctor=self.doctor,
+            start_datetime=base + datetime.timedelta(hours=2),
+            end_datetime=base + datetime.timedelta(hours=2) + datetime.timedelta(minutes=30),
+            expires_at=timezone.now() + datetime.timedelta(minutes=60),
+        )
+        # Force strictly distinct offered_at timestamps (auto_now_add ties are
+        # possible at microsecond speed) so dispatch order is deterministic.
+        t0 = timezone.now()
+        SlotOffer.objects.filter(id=self.offer1.id).update(offered_at=t0 - datetime.timedelta(minutes=2))
+        SlotOffer.objects.filter(id=self.offer2.id).update(offered_at=t0 - datetime.timedelta(minutes=1))
+        SlotOffer.objects.filter(id=self.offer3.id).update(offered_at=t0)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _hold(self, payload):
+        return self.client.post(
+            '/api/v1/slots/hold/', payload, format='json',
+            HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026'
+        )
+
+    def test_reply_by_option_number_creates_appointment(self):
+        """Patient replies '2' via n8n → backend resolves the 2nd dispatch offer."""
+        res = self._hold({'request_id': 'REQ-2026-0099', 'option_number': 2})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 'held')
+        self.assertIsNotNone(res.data['appointment_code'])
+        # Resolved to offer2 (the 2nd CREATED offer), NOT the earliest start time
+        self.assertEqual(
+            res.data['appointment']['start_datetime'],
+            self.offer2.start_datetime.isoformat(),
+        )
+        self.booking.refresh_from_db()
+        # Patient replies create a 15-min HOLD; the request converts only when the
+        # hold is confirmed (existing lifecycle: hold → confirm → converted).
+        self.assertEqual(self.booking.status, 'slots_offered')
+        self.offer2.refresh_from_db()
+        self.assertTrue(self.offer2.is_selected)
+
+    def test_option_number_accepts_request_uuid_or_code(self):
+        res = self._hold({'request_id': str(self.booking.id), 'option_number': 1})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_double_reply_is_already_confirmed_not_slot_conflict(self):
+        """Cross-channel defense: second reply gets friendly ALREADY_CONFIRMED, no new row."""
+        first = self._hold({'request_id': 'REQ-2026-0099', 'option_number': 1})
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        code = first.data['appointment_code']
+
+        second = self._hold({'request_id': 'REQ-2026-0099', 'option_number': 2})
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.data['error'], 'ALREADY_CONFIRMED')
+        self.assertTrue(second.data['already_confirmed'])
+        self.assertEqual(second.data['appointment_code'], code)
+        # Exactly ONE appointment was ever created for this request
+        self.assertEqual(Appointment.objects.filter(booking_request=self.booking).count(), 1)
+
+    def test_expired_option_rejected(self):
+        SlotOffer.objects.filter(id=self.offer3.id).update(
+            expires_at=timezone.now() - datetime.timedelta(minutes=1)
+        )
+        res = self._hold({'request_id': 'REQ-2026-0099', 'option_number': 3})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('expired', str(res.data))
+
+    def test_option_number_out_of_range(self):
+        res = self._hold({'request_id': 'REQ-2026-0099', 'option_number': 4})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('option_number', res.data)
+
+    def test_both_slot_offer_id_and_option_number_rejected(self):
+        res = self._hold({
+            'request_id': 'REQ-2026-0099',
+            'option_number': 1,
+            'slot_offer_id': str(self.offer1.id),
+        })
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('option_number', res.data)
+
+    def test_option_number_requires_request_id(self):
+        res = self._hold({'option_number': 1})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('option_number', res.data)
+
+    def test_unknown_request_code_rejected(self):
+        res = self._hold({'request_id': 'REQ-2099-0000', 'option_number': 1})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('request_id', res.data)
+
+
 
 
 

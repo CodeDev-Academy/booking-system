@@ -1,6 +1,7 @@
 import csv
 import uuid
 import datetime
+from django.db.models import Q
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
@@ -65,6 +66,29 @@ class SlotHoldView(APIView):
 
         is_walk_in = validated.get('is_walk_in', False)
         is_instant = validated.get('is_instant_confirm', False)
+
+        # Cross-channel neutralization: if the patient's request already has an active
+        # hold or confirmation (e.g. they replied on WhatsApp after answering SMS),
+        # answer with a friendly, idempotent 200 instead of a scary 409 — n8n sends the
+        # "already confirmed" message with the existing reference. No state changes here.
+        # Note: patient replies create 15-minute HOLDS (the request only becomes
+        # 'converted' at confirmation), so the active-hold check is the real signal.
+        # Expired holds do NOT match — the patient legitimately gets a fresh chance.
+        offer = validated.get('slot_offer_obj')
+        if offer:
+            now = timezone.now()
+            existing = Appointment.objects.filter(
+                booking_request=offer.request,
+            ).filter(
+                Q(status='confirmed') | Q(status='held', hold_expires_at__gt=now)
+            ).first()
+            if existing or offer.is_selected or offer.request.status == 'converted':
+                return Response({
+                    "error": "ALREADY_CONFIRMED",
+                    "already_confirmed": True,
+                    "detail": "This request was already selected. No action needed.",
+                    "appointment_code": existing.appointment_code if existing else None,
+                }, status=status.HTTP_200_OK)
 
         try:
             appointment = HoldService.acquire_slot(

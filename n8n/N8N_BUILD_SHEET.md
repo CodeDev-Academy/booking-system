@@ -125,19 +125,18 @@ Full read API (for debugging what you logged): `GET /api/v1/interactions/?patien
 | 1 | Normalize | Extract `patient_phone`, `message text/button payload`, `provider message id` → E.164 the phone. |
 | 2 | Log inbound | InteractionLog: `direction:"inbound"`, `provider:"meta_whatsapp"|"voicebip"`, raw text in `summary`. |
 | 3 | Router (Switch) | a) `1`/`2`/`3` or button tap → **slot selection** · b) `NEW` / "See New Times" button → **re-request** · c) anything else → ignore (or future features). |
-| 4a | Slot lookup | Map the chosen option number → `slot_offer_id`. **You need the dispatch context**: Workflow D should save `{request_code: {option_n: slot_offer_id, patient_name, phone, service_name}}` into n8n static data (or a lightweight n8n data table) when dispatching. Lookup here. If missing → reply "options expired, reply NEW". |
-| 5a | Hold call | `POST {base}/api/v1/slots/hold/` with `X-Webhook-Secret`: `{"slot_offer_id":"<uuid>","request_id":"REQ-2026-0042","action":"select_slot","response_channel":"sms"}` (serializer also accepts `patient_name`/`patient_phone` extras). |
-| 6a | Branch on response | **200/201 with `appointment_code`** → send confirmation on the SAME channel: *"Confirmed! Ref: {{appointment_code}} with {{doctor_name}} on {{start_datetime}}. See you then!"* · **409 `SLOT_CONFLICT`** → *"Sorry, that time was just taken. Reply NEW for fresh times."* · offer expired → same recovery offer. |
+| 4a | ~~Slot lookup~~ **NOT NEEDED** | **No static-data map, no Workflow-D dependency.** The backend resolves the patient's number itself — C sends `option_number` + `request_id` in ONE call (below). Workflow D and Workflow C are fully independent; you can rebuild/restart either without breaking the other. |
+| 5a | Hold call | `POST {base}/api/v1/slots/hold/` with `X-Webhook-Secret`: `{"request_id":"REQ-2026-0042","option_number":2,"response_channel":"sms"}` — **ONE call, zero extra latency.** The backend maps reply `2` to the 2nd offer in ORIGINAL dispatch order (never renumbered by prior selections), validates expiry/selection inside its locked transaction, and creates the 15-min hold. |
+| 6a | Branch on response | **200 with `appointment_code` + `status:"held"`** → send confirmation on the SAME channel: *"Confirmed! Ref: {{appointment_code}} with {{doctor_name}} on {{start_datetime}}. See you then!"* (note: the slot is a 15-min hold until the front desk confirms — treat the code as the patient's reference immediately) · **200 with `error:"ALREADY_CONFIRMED"`** → the patient already picked (other channel) — send *"You're already confirmed! Ref: {{appointment_code}}"*, log `answered`, done · **400 containing "expired"** → *"Sorry, those times expired. Reply NEW for fresh times."* · **409 `SLOT_CONFLICT`** → *"Sorry, that time was just taken. Reply NEW for fresh times."* |
 | 4b | Re-request | `POST {base}/api/v1/booking-requests/REQ-2026-0042/re-request/` with `X-Webhook-Secret`, body `{"re_requested_by":"patient_whatsapp_button"}` → then instantly ack the patient: *"Thank you {{name}}! Our front desk is reviewing fresh times for you right now."* |
 | 7 | Log | InteractionLog for the outcome (`answered` for selection, `failed`+`error_detail` for conflicts). |
 
-**Cross-channel neutralization (double-reply defense):** the backend locks the booking row and
-transitions `slots_offered → converted` on the FIRST selection. ⚠ **Gap vs spec:** the spec
-promises a friendly `already_confirmed` response on a second channel, but the current backend
-returns `409 SLOT_CONFLICT` in that case. Until the backend adds the explicit
-`already_confirmed` response, treat **409 after a successful confirm as "no action needed"** —
-check your static-data guard for that `request_code` and, if it was just confirmed, send the
-"already confirmed (Ref: AP-XXXX)" message instead of "slot taken". A backend fix is tracked.
+**Cross-channel neutralization (double-reply defense):** SOLVED in the backend (2026-11-13).
+Any second selection for a request that already has an active hold or confirmation returns
+**200 `ALREADY_CONFIRMED`** with the existing `appointment_code` — n8n sends the friendly
+"already confirmed (Ref: AP-XXXX)" message. The number→offer mapping lives in Django, so a
+stale or lost n8n static-data map can never make a live patient reply fail. Old workaround
+(treat 409-after-confirm as "no action") is obsolete — keep it only as a fallback branch.
 
 ---
 

@@ -511,3 +511,24 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
   partner handover → Leads page last (user designs first).
 - Recorded in `MASTER_CONTEXT.md` (decisions #8, #9) and the roadmap Phase 4 header. No code
   written this session — planning and docs only.
+
+## 2026-11-13 — Option-number hold contract + ALREADY_CONFIRMED (first approved build)
+
+- First build under the approved architecture. Goal: make n8n Workflow C fully independent of
+  Workflow D AND keep patient-response latency at exactly one call (user's fast-response priority).
+- `SlotHoldRequestSerializer` now accepts `option_number` (1–20) + `request_id` (UUID or REQ code)
+  as an alternative to `slot_offer_id`. Resolution inside validate(): request's slot offers in
+  ORIGINAL dispatch order (`offered_at`, id tiebreaker); out-of-range/unknown-request/both-fields
+  → 400; expired → 400 (n8n recovery path). Renumbering trap covered by tests (offers deliberately
+  created out of start-time order; reply "2" must resolve to the 2nd CREATED offer).
+- `SlotHoldView` short-circuits with friendly **200 ALREADY_CONFIRMED** (`appointment_code`
+  included) when the request already has an active hold/confirmed appointment, a selected offer,
+  or converted status — replaces the scary 409 for cross-channel double replies, per the spec's
+  promised behavior. Expired holds deliberately do NOT match (fresh chance).
+- **Real latent bug found & fixed by the new check:** a patient replying twice with DIFFERENT
+  offer ids at different times previously created TWO appointments (no time conflict would stop
+  it) because a held appointment does not yet convert the request. Active-hold check closes it.
+- Build sheet §4 rewritten: no static-data map, no Workflow-D dependency; response-branch table
+  documents 200-held / 200-ALREADY_CONFIRMED / 400-expired / 409-conflict.
+- Tests: `SlotOptionNumberHoldTests` — 8 tests. Suite: **134 total, 133 pass** (sole failure =
+  pre-existing Telegram bug). Committed to `partner-readiness/phase-1-2`.

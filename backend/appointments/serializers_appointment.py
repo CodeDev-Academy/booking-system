@@ -12,6 +12,12 @@ class SlotHoldRequestSerializer(serializers.Serializer):
     or front-desk direct calendar selection.
     """
     slot_offer_id = serializers.UUIDField(required=False, allow_null=True)
+    # n8n patient replies ("Reply 1, 2, or 3") — resolved by the BACKEND against the
+    # request's slot offers in ORIGINAL dispatch order, so n8n never needs to remember
+    # which offer was which (no workflow-to-workflow coupling).
+    option_number = serializers.IntegerField(
+        required=False, allow_null=True, min_value=1, max_value=20
+    )
     request_id = serializers.CharField(required=False, allow_blank=True)
     doctor_id = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     service_id = serializers.CharField(required=False, allow_null=True, allow_blank=True)
@@ -28,13 +34,43 @@ class SlotHoldRequestSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         slot_offer_id = attrs.get('slot_offer_id')
+        option_number = attrs.get('option_number')
         now = timezone.now()
 
-        if slot_offer_id:
-            try:
-                offer = SlotOffer.objects.select_related('request', 'doctor', 'request__service').get(id=slot_offer_id)
-            except SlotOffer.DoesNotExist:
-                raise serializers.ValidationError({'slot_offer_id': 'Selected slot offer does not exist.'})
+        if slot_offer_id and option_number is not None:
+            raise serializers.ValidationError(
+                {'option_number': 'Provide either slot_offer_id or option_number, not both.'}
+            )
+
+        if slot_offer_id or option_number is not None:
+            if slot_offer_id:
+                try:
+                    offer = SlotOffer.objects.select_related('request', 'doctor', 'request__service').get(id=slot_offer_id)
+                except SlotOffer.DoesNotExist:
+                    raise serializers.ValidationError({'slot_offer_id': 'Selected slot offer does not exist.'})
+            else:
+                # Option-number resolution (n8n patient replies): "Reply 2" resolves to the
+                # 2nd offer of this request in ORIGINAL dispatch order. NEVER renumbered by
+                # prior selections — the number the patient saw must keep its meaning.
+                req_id = attrs.get('request_id')
+                if not req_id:
+                    raise serializers.ValidationError(
+                        {'option_number': 'request_id is required when selecting by option_number.'}
+                    )
+                try:
+                    val = uuid.UUID(str(req_id))
+                    booking_req = BookingRequest.objects.filter(id=val).first()
+                except (ValueError, AttributeError):
+                    booking_req = BookingRequest.objects.filter(request_code=req_id).first()
+                if not booking_req:
+                    raise serializers.ValidationError({'request_id': 'Booking request does not exist.'})
+
+                offers = list(booking_req.slot_offers.order_by('offered_at', 'id'))
+                if option_number > len(offers):
+                    raise serializers.ValidationError(
+                        {'option_number': f'Only {len(offers)} slot option(s) were offered for this request.'}
+                    )
+                offer = offers[option_number - 1]
 
             if offer.expires_at and offer.expires_at < now:
                 raise serializers.ValidationError({'slot_offer_id': 'This slot offer has expired.'})
