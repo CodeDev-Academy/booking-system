@@ -95,6 +95,20 @@ Receptionist approves selected slots and initiates the 60-minute (1-hour) offer 
 - `delivery_warning` is `null` when every selected channel is reachable.
 - `PATIENT_ALREADY_BOOKED` still returns `409` **before** availability is computed, and that response has no `delivery` key.
 
+**Option B, Layer 4 — enforcement (default OFF).** With `DISPATCH_REQUIRE_REACHABLE_CHANNEL=true`, the same request is refused **before any offer is deleted or created** and before any provider call:
+
+```json
+{
+  "error": "NO_REACHABLE_CHANNEL",
+  "detail": "None of the selected channels can reach this patient — nothing would be delivered. Call the patient directly, or configure a provider, then try again.",
+  "delivery": { "requested": [...], "reachable": [], "unreachable": [...], "warning": "..." }
+}
+```
+
+- Status `409`. The booking request stays in its previous status and existing `SlotOffer` rows are untouched.
+- `PATIENT_ALREADY_BOOKED` still wins when both conditions are true.
+- Flag OFF (default) = exactly the Layer 2 advisory behaviour.
+
 ---
 
 ### `GET /api/v1/booking-requests/{request_id}/channel-availability/`

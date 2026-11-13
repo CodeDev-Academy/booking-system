@@ -325,7 +325,7 @@ Availability is reported by the backend (config-driven), never hardcoded in Reac
 | 1 | Read-only resolver `appointments/services/channel_availability.py` + `GET /api/v1/booking-requests/{id}/channel-availability/` | **DONE** (8 tests, behaviour-neutral) |
 | 2 | Advisory `delivery` / `delivery_warning` fields on `dispatch-offers` (status stays 200) | **DONE** (5 tests, nothing blocked) |
 | 3 | Dashboard availability hints in the ReviewModal + `409 NO_REACHABLE_CHANNEL` rollback | **DONE** (display only, no blocking) |
-| 4 | Enforcement behind `DISPATCH_REQUIRE_REACHABLE_CHANNEL` (default **off**) | planned |
+| 4 | Enforcement behind `DISPATCH_REQUIRE_REACHABLE_CHANNEL` (default **off**) | **DONE** (default off; opt-in 409) |
 
 Layer 1 contract (also documented in `API_REFERENCE.md`):
 
@@ -370,6 +370,19 @@ Layer 3 contract — dashboard hints (display only, never blocks):
   warning — reception is told the truth even though the offers were created.
 - `409 NO_REACHABLE_CHANNEL` (Layer 4) already has its rollback path in the queue store,
   mirroring `PATIENT_ALREADY_BOOKED`; it is dormant until the flag is enabled.
+
+Layer 4 contract — enforcement (opt-in, default OFF):
+
+- `DISPATCH_REQUIRE_REACHABLE_CHANNEL` is read from the environment into
+  `settings.DISPATCH_REQUIRE_REACHABLE_CHANNEL` (default `False`); `enforcement_enabled()`
+  in the resolver is the single read point.
+- When ON and the selected channels reach nobody, `dispatch-offers` returns
+  **409 `NO_REACHABLE_CHANNEL`** *before* deleting previous offers, creating new ones,
+  writing the audit log, broadcasting SSE, or calling Telegram/n8n.
+- `PATIENT_ALREADY_BOOKED` still takes precedence when both apply.
+- Rollback is a **config change** (env var), not a deploy of new code — instant on/off.
+- The dashboard already rolls the optimistic update back on this 409, so flipping the flag
+  needs no frontend change.
 
 ### 5.7 Build sequence (mock-first, so "connect the API" is the only step left)
 

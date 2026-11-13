@@ -212,6 +212,16 @@ TELEGRAM_BOT_TOKEN = (
 TELEGRAM_BOT_USERNAME = os.environ.get('TELEGRAM_BOT_USERNAME', 'babawo_bot')
 TELEGRAM_WEBHOOK_SECRET = os.environ.get('TELEGRAM_WEBHOOK_SECRET', '')
 
+# Option B (Layer 4) — dispatch enforcement switch. DEFAULT OFF.
+# OFF: a dispatch with no reachable channel still succeeds and is only reported
+#      through the advisory `delivery` / `delivery_warning` fields.
+# ON:  the same dispatch is refused with 409 NO_REACHABLE_CHANNEL before any
+#      offer is created or any provider is called.
+DISPATCH_REQUIRE_REACHABLE_CHANNEL = (
+    os.environ.get('DISPATCH_REQUIRE_REACHABLE_CHANNEL', '').strip().lower()
+    in ('1', 'true', 'yes', 'on')
+)
+
 # n8n Dispatcher shared webhook secret (Phase 1 / Task 1.1).
 # Sent by n8n as the `X-Webhook-Secret` header on every Django write call.
 # Resolution order (services/webhook_security.py): ClinicSetting.webhook_secret ->

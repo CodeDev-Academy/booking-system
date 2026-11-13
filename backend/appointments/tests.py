@@ -4852,6 +4852,169 @@ class DispatchDeliveryAdvisoryTests(APITestCase):
         self.assertNotIn('delivery', res.data)
 
 
+class DispatchEnforcementTests(APITestCase):
+    """
+    Option B, Layer 4 — `DISPATCH_REQUIRE_REACHABLE_CHANNEL` (DEFAULT OFF).
+
+    Off: behaviour is exactly today's (200 + advisory warning).
+    On:  a selection that reaches nobody is refused with 409 NO_REACHABLE_CHANNEL
+         BEFORE any offer is deleted/created and before any provider is called.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Enforcement',
+            email='sarah.enforcement@clinic.com',
+            role='receptionist',
+            is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+        self.client.force_authenticate(user=self.receptionist)
+
+        self.service = Service.objects.create(
+            name='Dental Consultation', duration_minutes=30, buffer_minutes=5, price=10000,
+        )
+        self.doctor = Doctor.objects.create(name='Dr. Enforcement Test')
+        self.booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0600',
+            patient_name='Grace Enforcement',
+            patient_phone='+2348011110001',
+            service=self.service,
+            status='awaiting_review',
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def _flags(self, **overrides):
+        import os
+        from unittest.mock import patch
+        values = {
+            'WHATSAPP_ENABLED': '',
+            'SMS_ENABLED': '',
+            'VOICE_ENABLED': '',
+            'N8N_DISPATCH_WEBHOOK_URL': '',
+        }
+        values.update(overrides)
+        return patch.dict(os.environ, values)
+
+    def _slot_payload(self):
+        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        return {'slots': [{
+            'doctor_id': str(self.doctor.id),
+            'start_datetime': slot_start.isoformat(),
+            'end_datetime': (slot_start + datetime.timedelta(minutes=30)).isoformat(),
+            'is_alternative_date': False,
+        }]}
+
+    def _dispatch(self, extra=None):
+        payload = self._slot_payload()
+        if extra:
+            payload.update(extra)
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.client.post(
+                f'/api/v1/booking-requests/{self.booking.request_code}/dispatch-offers/',
+                payload, format='json',
+            )
+
+    def test_flag_is_off_by_default(self):
+        from django.conf import settings
+        self.assertFalse(settings.DISPATCH_REQUIRE_REACHABLE_CHANNEL)
+
+    def test_off_still_dispatches_with_no_reachable_channel(self):
+        with self._flags(), override_settings(
+            TELEGRAM_BOT_TOKEN='', DISPATCH_REQUIRE_REACHABLE_CHANNEL=False
+        ):
+            res = self._dispatch()
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['delivery']['reachable'], [])
+        self.assertTrue(res.data['delivery_warning'])
+
+    def test_on_refuses_with_no_reachable_channel(self):
+        old_offer = SlotOffer.objects.create(
+            request=self.booking,
+            doctor=self.doctor,
+            start_datetime=timezone.now() + datetime.timedelta(days=2),
+            end_datetime=timezone.now() + datetime.timedelta(days=2, minutes=30),
+            expires_at=timezone.now() + datetime.timedelta(days=2, minutes=90),
+        )
+
+        with self._flags(), override_settings(
+            TELEGRAM_BOT_TOKEN='', DISPATCH_REQUIRE_REACHABLE_CHANNEL=True
+        ):
+            res = self._dispatch()
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['error'], 'NO_REACHABLE_CHANNEL')
+        self.assertIn('reach this patient', res.data['detail'])
+        self.assertEqual(res.data['delivery']['reachable'], [])
+        self.assertEqual(res.data['delivery']['unreachable'], ['whatsapp', 'sms', 'voice'])
+
+        # No side effects: nothing deleted, nothing created, request untouched.
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.status, 'awaiting_review')
+        self.assertIsNone(self.booking.offer_expires_at)
+        self.assertEqual(SlotOffer.objects.filter(request=self.booking).count(), 1)
+        self.assertTrue(SlotOffer.objects.filter(id=old_offer.id).exists())
+
+    def test_on_allows_dispatch_when_telegram_can_reach_patient(self):
+        self.booking.patient_notes = 'telegram_chat_id: 55882'
+        self.booking.save(update_fields=['patient_notes'])
+
+        from unittest.mock import patch
+        with self._flags(), override_settings(
+            TELEGRAM_BOT_TOKEN='test-bot-token', DISPATCH_REQUIRE_REACHABLE_CHANNEL=True
+        ), patch('appointments.views_booking.TelegramService') as mock_tg:
+            mock_tg.format_slot_offers.return_value = ('Offer text', 'Markup')
+            mock_tg.send_message.return_value = {'ok': True, 'result': {'message_id': 88}}
+            res = self._dispatch()
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['delivery']['reachable'], ['whatsapp'])
+
+    def test_on_allows_partial_selection_when_one_channel_reaches(self):
+        self.booking.patient_notes = 'telegram_chat_id: 55882'
+        self.booking.save(update_fields=['patient_notes'])
+
+        from unittest.mock import patch
+        with self._flags(), override_settings(
+            TELEGRAM_BOT_TOKEN='test-bot-token', DISPATCH_REQUIRE_REACHABLE_CHANNEL=True
+        ), patch('appointments.views_booking.TelegramService') as mock_tg:
+            mock_tg.format_slot_offers.return_value = ('Offer text', 'Markup')
+            mock_tg.send_message.return_value = {'ok': True, 'result': {'message_id': 89}}
+            res = self._dispatch({'dispatch_channels': ['whatsapp', 'sms']})
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['delivery']['reachable'], ['whatsapp'])
+        self.assertEqual(res.data['delivery']['unreachable'], ['sms'])
+
+    def test_on_keeps_patient_already_booked_precedence(self):
+        Appointment.objects.create(
+            appointment_code='AP-6001',
+            patient_name=self.booking.patient_name,
+            patient_phone=self.booking.patient_phone,
+            doctor=self.doctor,
+            service=self.service,
+            booking_request=self.booking,
+            start_datetime=timezone.now() + datetime.timedelta(days=1),
+            end_datetime=timezone.now() + datetime.timedelta(days=1, minutes=30),
+            status='held',
+            hold_expires_at=timezone.now() + datetime.timedelta(minutes=10),
+        )
+
+        with self._flags(), override_settings(
+            TELEGRAM_BOT_TOKEN='', DISPATCH_REQUIRE_REACHABLE_CHANNEL=True
+        ):
+            res = self._dispatch()
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['error'], 'PATIENT_ALREADY_BOOKED')
+
+
 
 
 

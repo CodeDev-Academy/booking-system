@@ -744,3 +744,27 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
   (T-601..T-604 passed, T-605 pending for the flag).
 - Next: Layer 4 - `DISPATCH_REQUIRE_REACHABLE_CHANNEL` enforcement (default off) with
   `override_settings` tests for both flag states.
+
+
+## 2026-11-13 - Option B Layer 4: flag-gated dispatch enforcement (default OFF)
+
+- `settings.DISPATCH_REQUIRE_REACHABLE_CHANNEL` (env-driven, default **False**) and
+  `enforcement_enabled()` in the resolver are the single read point.
+- When ON and the receptionist's selected channels reach nobody, `dispatch-offers`
+  returns **409 `NO_REACHABLE_CHANNEL`** with a clear `detail` plus the `delivery`
+  payload. The check runs *before* previous offers are deleted, before new offers are
+  created, and before audit log / SSE / Telegram / n8n.
+- `PATIENT_ALREADY_BOOKED` still wins when both conditions are true.
+- Flag OFF (default) is exactly the Layer 2 advisory behaviour - zero change for the
+  current deployment. Turning enforcement on is an env change, not a deploy of new code,
+  and the dashboard already rolls the optimistic update back on that 409.
+- Tests: `DispatchEnforcementTests` (6) - flag off by default, off still dispatches with
+  a warning, on refuses with no side effects (existing offer survives, request stays
+  `awaiting_review`, `offer_expires_at` null), on still dispatches via Telegram, partial
+  selection allowed, `PATIENT_ALREADY_BOOKED` precedence preserved.
+- Suite: **173 total, 172 pass** (sole failure = pre-existing Telegram bug).
+- Docs: `API_REFERENCE.md` (409 contract), `n8n.md` section 5.6 (Layer 4 contract, table
+  1-4 DONE), `TEST.md` Suite G (T-605 passed), `backend/.env.example` (provider flags +
+  enforcement switch).
+- Option B is now complete end to end: resolver -> endpoint -> advisory dispatch ->
+  dashboard hints -> opt-in enforcement.

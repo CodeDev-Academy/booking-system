@@ -24,6 +24,7 @@ from .serializers_booking import (
 from .services.availability import AvailabilityEngine
 from .services.channel_availability import (
     build_delivery_plan,
+    enforcement_enabled,
     resolve_channel_availability,
 )
 from .services.dispatch_service import fire_and_forget_webhook
@@ -355,6 +356,21 @@ class DispatchOffersView(APIView):
         # a separate flag-gated layer.
         availability = resolve_channel_availability(booking, request_data=request.data)
         delivery = build_delivery_plan(availability, dispatch_channels)
+
+        # Option B, Layer 4 (flag-gated, DEFAULT OFF): when enabled, refuse a
+        # dispatch whose selected channels cannot reach the patient — before any
+        # offer is touched and before any provider is called. OFF by default, so
+        # this branch never runs unless DISPATCH_REQUIRE_REACHABLE_CHANNEL=true.
+        if enforcement_enabled() and not delivery['reachable']:
+            return Response({
+                'error': 'NO_REACHABLE_CHANNEL',
+                'detail': (
+                    'None of the selected channels can reach this patient — nothing '
+                    'would be delivered. Call the patient directly, or configure a '
+                    'provider, then try again.'
+                ),
+                'delivery': delivery,
+            }, status=status.HTTP_409_CONFLICT)
 
         offers_data = request.data.get('slots') or request.data.get('offers') or []
         created_offers = []

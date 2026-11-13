@@ -58,6 +58,17 @@ def _telegram_configured():
     return bool((getattr(settings, 'TELEGRAM_BOT_TOKEN', '') or '').strip())
 
 
+def enforcement_enabled():
+    """
+    Layer 4 switch — when True, a dispatch whose selected channels can reach
+    nobody is refused with 409 NO_REACHABLE_CHANNEL.
+
+    Read through ``django.conf.settings`` (not os.environ) so tests can flip it
+    with ``override_settings`` and so the default stays OFF.
+    """
+    return bool(getattr(settings, 'DISPATCH_REQUIRE_REACHABLE_CHANNEL', False))
+
+
 def resolve_telegram_chat_id(booking, request_data=None):
     """
     Resolve the patient's Telegram chat id exactly the way DispatchOffersView
