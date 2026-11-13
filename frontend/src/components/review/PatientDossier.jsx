@@ -53,23 +53,37 @@ export const PatientDossier = ({ dossier, interactions, onRefresh }) => {
 
   return (
     <div className="dossier">
-      <div className="dossier-head">
-        <span className="dossier-title">
-          <History size={14} /> Patient reliability
-        </span>
-        <span className={`dossier-score tone-${dossier.reliabilityTone} tabular-nums`}>
-          {dossier.reliabilityPct}% reliable
-        </span>
-      </div>
-      <div className="dossier-sub tabular-nums">{dossier.attendedLabel}</div>
-      <ul className="dossier-visits">
-        {dossier.lastVisits.map((v) => (
-          <li key={`${v.date}-${v.procedure}`}>
-            <span className="tabular-nums">{v.date}</span>
-            <span>{v.procedure}</span>
-          </li>
-        ))}
-      </ul>
+      {dossier ? (
+        <>
+          <div className="dossier-head">
+            <span className="dossier-title">
+              <History size={14} /> Patient reliability
+            </span>
+            <span className={`dossier-score tone-${dossier.reliabilityTone} tabular-nums`}>
+              {dossier.reliabilityPct}% reliable
+            </span>
+          </div>
+          <div className="dossier-sub tabular-nums">{dossier.attendedLabel}</div>
+          <ul className="dossier-visits">
+            {(dossier.lastVisits || []).map((v) => (
+              <li key={`${v.date}-${v.procedure}`}>
+                <span className="tabular-nums">{v.date}</span>
+                <span>{v.procedure}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        // First-time patient: no attendance history yet, but interactions may
+        // already exist (a message/call was logged) — show the timeline without
+        // pretending there is a reliability score to read.
+        <div className="dossier-head">
+          <span className="dossier-title">
+            <History size={14} /> Patient reliability
+          </span>
+          <span className="dossier-sub">No prior visits on record</span>
+        </div>
+      )}
 
       {/* Task 3.2: live communication timeline */}
       <div className="dossier-timeline-head">
