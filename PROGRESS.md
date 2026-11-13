@@ -645,3 +645,21 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
   pre-existing Telegram bug). Build sheet §5 rewritten (payload, probe step, Telegram
   ownership, numbering rule). Committed to `partner-readiness/phase-1-2`.
 - Next: user builds Workflow D (D1 skeleton → D2 live legs), then C, then B.
+
+## 2026-11-13 — Workflow D graph rebuilt (live n8n) + MCP access for the agent
+
+- Connected the n8n-mcp server to OpenCode (global config, outside the repo). Fixes needed:
+  V2 shape is `mcp.servers.<name>` with an object `timeout`; the legacy `mcp.<name>` path
+  requires an integer timeout. Local n8n also needs `WEBHOOK_SECURITY_MODE=moderate` because
+  n8n-mcp blocks localhost in its default strict SSRF mode. The API key must be an
+  **n8n API** key (`aud: public-api`), not the Instance-level MCP token.
+- Live workflow `GtpeOwfnG8yYyAxq` rebuilt via the API: webhook responds immediately, the old
+  `Is Channel Telegram?` IF / Telegram node / Respond node removed, three parallel IFs on
+  `want_whatsapp` (+`chat_id` empty) / `want_sms` / `want_voice`, provider placeholders
+  (WhatsApp, SMS, voice) wired and **disabled** until partner creds arrive; workflow timezone
+  `Africa/Lagos`; workflow now **active**.
+- Verified: validation clean (3 expected warnings for connections to disabled nodes), sample
+  payload execution **success** (execution 7, 0.6s) with all three IFs true and every disabled
+  leg skipped as pass-through. Build sheet §5.1/§5.2 records the built graph and remaining steps.
+- Next: direct InteractionLog test (sent + failed) to confirm the dashboard timeline and Needs
+  Attention tab against real rows, then wire the log nodes into the D graph.

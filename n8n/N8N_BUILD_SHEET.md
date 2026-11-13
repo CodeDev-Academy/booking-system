@@ -187,10 +187,11 @@ ReviewModal — any non-empty combination of `whatsapp` / `sms` / `voice`; defau
 - Backend guard: if the patient already has an active hold/confirmed booking, Django returns
   **409 `PATIENT_ALREADY_BOOKED`** and fires NOTHING — no workflow run, no wasted messages.
 
-⚠ **Spec gap:** the spec's richer payload (`dispatch_channel`, `voice_nudge_enabled`,
-`expiry.window_minutes`, pre-formatted `date_label`/`time_label`, shortlinks) is NOT sent yet.
-Either format labels in n8n (`{{$json.candidate_slots}}` → n8n Code node can build
-`"Tue, 10 Nov at 10:00 AM"` with Luxon) or ask us to enrich the backend payload (small task).
+✅ **Spec gap resolved (Task 3.5, 2026-11-13):** the payload now carries `date_label` /
+`time_label` (Africa/Lagos, identical to the dashboard), `clinic_name`, `expiry_minutes` and
+`offer_expires_at`. n8n does **no date math and no `toLocaleDateString`** — it prints the
+labels verbatim. Remaining spec extras (`voice_nudge_enabled`, shortlinks) are not needed for
+the current flow; the voice leg is gated by the `voice` checkbox plus the status probe below.
 
 ⚠ **Telegram is sent by Django, not by D.** When `telegram_chat_id` is present and the
 `whatsapp` checkbox is on, the backend already delivered the interactive Telegram card
@@ -214,18 +215,45 @@ If `should_skip_voice_call` is `true` (patient already picked an option — hold
 booking), **skip the call entirely** and log nothing extra. Works with the webhook secret;
 no staff session needed.
 
+### 5.1 Current build state (2026-11-13, built via n8n API)
+
+Workflow ID `GtpeOwfnG8yYyAxq` (`05_Slot_Offer_Dispatcher_Bridge`) — **active**, execution 7
+verified `success` with the sample payload. Graph:
+
+```
+Dispatch Offers Webhook from Django   (responseMode: onReceived — answers instantly)
+   └─ Format Offers & Telegram Buttons   (Task 3.5 code: labels, options, sms_body, want_*)
+        ├─ IF Want WhatsApp   want_whatsapp = true AND chat_id empty
+        │     └─ Send WhatsApp Interactive Message   [DISABLED — awaits Meta creds]
+        ├─ IF Want SMS        want_sms = true
+        │     └─ Send SMS (VoiceBip)                 [DISABLED — awaits VoiceBip creds]
+        └─ IF Want Voice      want_voice = true
+              └─ Send Voice Call (VoiceBip)          [DISABLED — awaits VoiceBip creds]
+```
+
+- The old `Is Channel Telegram?` IF, `Send Telegram Interactive Offer Card` and
+  `Respond Dispatch Success` nodes are **removed** — branching is on `dispatch_channels`
+  (via `want_*`), never on `channel`; Django owns + logs the Telegram card.
+- Workflow settings timezone: `Africa/Lagos`.
+- Disabled nodes are pass-through in n8n, so the workflow completes cleanly with every leg off.
+- When creds arrive: enable the node, set `VOICEBIP_API_KEY` / `VOICEBIP_SMS_URL` /
+  `VOICEBIP_VOICE_URL` (and WhatsApp env vars), restart n8n with
+  `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`, then re-run the sample.
+
+### 5.2 Remaining D steps (after partner creds)
+
 | Step | Node | Detail |
 |---|---|---|
-| 1 | Code | Format option labels from `date_label` / `time_label` / `doctor_name`: `1️⃣ Tue, 10 Nov 2026 at 10:00 AM (Dr. Bello Ibrahim)`; expose `want_whatsapp`/`want_sms`/`want_voice` from `dispatch_channels`. (Static option maps are NOT needed — Workflow C resolves numbers via the backend.) |
-| 2 | IF instant-message leg | `whatsapp` checked AND no `telegram_chat_id` → WhatsApp send. With `telegram_chat_id` → already done by Django, skip. |
-| 3 | WhatsApp send | Meta Cloud API — **approved template with 3 quick-reply buttons** (one per option). Template name from partner; params: patient name, service, option labels, `expiry_minutes`. |
-| 4 | SMS send | VoiceBip SMS: *"{clinic_name}: Your {service} slots are ready. 1) {date_label} {time_label} ({doctor_name}) … Reply 1, 2, or 3 to lock in your time. Held for {expiry_minutes} minutes."* Sender ID `Cedarcare`. |
-| 5 | Log ×2 | InteractionLog for WhatsApp + SMS (`sent`/`failed` + provider message IDs). |
-| 6 | Wait | 30 seconds (spec: call is an auxiliary nudge, never the primary channel). |
-| 7 | Status probe | `GET dispatch-status/` (above) → IF `should_skip_voice_call` = false, continue to the call; true → stop the voice branch. |
-| 8 | VoiceBip call | `POST https://api.voicebip.com/v1/campaigns`, `Authorization: Bearer {{$env.VOICEBIP_API_KEY}}`: `{"channel":"voice","config":{"from_number":"{{$env.VOICEBIP_FROM_NUMBER}}","call_window":{"start":"08:00","end":"19:00","timezone":"Africa/Lagos"}},"retry_policy":{"max_attempts":2,"backoff_seconds":300},"targets":[{"to_address":"{{$json.patient_phone}}","params":{"name":"{{$json.patient_name}}"}}]}` — universal audio prompt announces options and says to check WhatsApp/SMS. |
-| 9 | Log | InteractionLog: `provider:"voicebip"`, `channel:"voice"`, status per call result (`answered`/`no_answer`/`failed`), `external_ref` = VoiceBip call ID, `call_duration_seconds` if reported. |
-| 10 | Respond to webhook | Return `{"status":"accepted"}` immediately (Django is NOT waiting, but keep the node tidy). |
+| 1 | Code | ✅ Done — `Format Offers & Telegram Buttons` builds labels, `options[]`, `options_text`, `sms_body`, `whatsapp_params`, `want_*`. |
+| 2 | IF branches | ✅ Done — three parallel IFs on `want_whatsapp`/`want_sms`/`want_voice` (+ `chat_id` empty for WhatsApp). |
+| 3 | WhatsApp send | ⏳ Disabled — Meta Cloud API approved template with 3 quick-reply buttons; params: patient name, service, option labels, `expiry_minutes`. |
+| 4 | SMS send | ⏳ Disabled — VoiceBip SMS, body already composed as `sms_body`; sender ID `Cedarcare`. |
+| 5 | Log ×2 | ⏳ `POST {{$env.DJANGO_API_BASE_URL}}/api/v1/interactions/`, header `X-Webhook-Secret: {{$env.DJANGO_WEBHOOK_SECRET}}`, `external_ref` = provider message id. |
+| 6 | Wait | ⏳ 30 seconds on the voice branch (auxiliary nudge only). |
+| 7 | Status probe | ⏳ `GET dispatch-status/` → stop the branch when `should_skip_voice_call` is true. |
+| 8 | VoiceBip call | ⏳ `POST https://api.voicebip.com/v1/campaigns`, `Authorization: Bearer {{$env.VOICEBIP_API_KEY}}`; universal audio prompt points to the WhatsApp/SMS options. |
+| 9 | Log voice | ⏳ `provider:"voicebip"`, `channel:"voice"`, status `answered`/`no_answer`/`failed`, `external_call_id`. |
+| 10 | Respond | ✅ Not needed — webhook responds immediately. |
 
 ---
 
@@ -237,7 +265,7 @@ no staff session needed.
 | `02_hold_and_offer_expiry_cron.json` | Sweeper skeleton | Per §3 — add nudge branch + recovery sends + logging |
 | `03_reminder_flows.json` | Reminder skeleton | Per §2 — add SMS leg + logging + dedupe |
 | `04_patient_response_handler.json` | Response skeleton | Per §4 — add SMS "1/2/3" replies, re-request, channel neutralization, logging |
-| `05_slot_offer_dispatcher.json` | Has Telegram path | Per §5 — add WhatsApp + SMS + 30s wait + VoiceBip call + static-data map + logging |
+| `05_slot_offer_dispatcher.json` | ⚠ Skeleton in repo is stale vs live | The **live** workflow (`GtpeOwfnG8yYyAxq`) is already rebuilt per §5.1. Re-export it from n8n to refresh this file, or edit the live one via n8n-mcp. |
 
 ## 7. Build & test order (recommended)
 
