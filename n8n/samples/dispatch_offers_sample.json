@@ -1,0 +1,53 @@
+{
+  "request_id": "REQ-2026-0042",
+  "patient_name": "Amina Garba",
+  "patient_phone": "+2348031234567",
+  "service_name": "Dental Consultation",
+  "clinic_name": "Cedarcare Specialist Clinic",
+  "telegram_chat_id": null,
+  "channel": "web",
+  "dispatch_channels": ["whatsapp", "sms", "voice"],
+  "expiry_minutes": 60,
+  "offer_expires_at": "2026-11-13T11:02:00+01:00",
+  "candidate_slots": [
+    {
+      "id": "8f14e45f-ceea-467f-a8d1-2b3c4d5e6f70",
+      "doctor_name": "Dr. Bello Ibrahim",
+      "doctor_specialty": "Dental Surgery",
+      "start_datetime": "2026-11-10T10:00:00+01:00",
+      "end_datetime": "2026-11-10T10:30:00+01:00",
+      "date_label": "Tue, 10 Nov 2026",
+      "time_label": "10:00 AM",
+      "is_alternative_date": false,
+      "offered_at": "2026-11-13T10:02:00+01:00",
+      "expires_at": "2026-11-13T11:02:00+01:00",
+      "is_selected": false
+    },
+    {
+      "id": "c9f0f895-fb98-4c2b-9d27-6b3c4d5e6f71",
+      "doctor_name": "Dr. Bello Ibrahim",
+      "doctor_specialty": "Dental Surgery",
+      "start_datetime": "2026-11-10T11:30:00+01:00",
+      "end_datetime": "2026-11-10T12:00:00+01:00",
+      "date_label": "Tue, 10 Nov 2026",
+      "time_label": "11:30 AM",
+      "is_alternative_date": false,
+      "offered_at": "2026-11-13T10:02:00+01:00",
+      "expires_at": "2026-11-13T11:02:00+01:00",
+      "is_selected": false
+    },
+    {
+      "id": "45c48cce-2e2d-4fbd-8b1a-7b3c4d5e6f72",
+      "doctor_name": "Dr. Aminu Bello",
+      "doctor_specialty": "General Dentistry",
+      "start_datetime": "2026-11-11T09:30:00+01:00",
+      "end_datetime": "2026-11-11T10:00:00+01:00",
+      "date_label": "Wed, 11 Nov 2026",
+      "time_label": "9:30 AM",
+      "is_alternative_date": false,
+      "offered_at": "2026-11-13T10:02:00+01:00",
+      "expires_at": "2026-11-13T11:02:00+01:00",
+      "is_selected": false
+    }
+  ]
+}
