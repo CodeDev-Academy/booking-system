@@ -233,9 +233,15 @@ export const apiService = {
     });
   },
 
-  async checkSlots(requestId) {
+  async checkSlots(requestId, excludeStartDatetimes = null) {
+    // Task 3.3: "Re-calculate Times" passes the starts already on screen so the
+    // engine returns the NEXT best options instead of the identical top-3 again.
+    const body = Array.isArray(excludeStartDatetimes) && excludeStartDatetimes.length > 0
+      ? { exclude_start_datetimes: excludeStartDatetimes }
+      : {};
     return request(`/booking-requests/${requestId}/check-slots/`, {
       method: 'POST',
+      body: JSON.stringify(body),
     });
   },
 

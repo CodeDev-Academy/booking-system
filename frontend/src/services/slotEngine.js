@@ -161,7 +161,7 @@ export const makeSlot = ({ doctorId, start, service, custom = false }) => {
 };
 
 /** Pick up to `count` conflict-free candidate slots in the patient's window. */
-export const generateCandidateSlots = (request, busyBlocks, count = 3) => {
+export const generateCandidateSlots = (request, busyBlocks, count = 3, excludedStarts = []) => {
   const service = request.customService || getService(request.serviceId);
   if (!service) return [];
   const window = TIME_WINDOWS[request.timeWindow] || TIME_WINDOWS.morning;
@@ -174,6 +174,10 @@ export const generateCandidateSlots = (request, busyBlocks, count = 3) => {
   const picked = [];
   const now = Date.now();
   const bufferMin = service.bufferMin !== undefined ? service.bufferMin : 10;
+  // Task 3.3: skip times already shown so "Re-calculate" yields fresh options
+  // (excludedStarts = epoch-ms timestamps; ±1 min tolerance for rounding drift).
+  const isExcluded = (start) =>
+    (excludedStarts || []).some((ex) => Math.abs(start - ex) < 60 * 1000);
 
   const dateRange = request?.dateRange || {
     fromOffset: BASE_OFFSET,
@@ -201,6 +205,7 @@ export const generateCandidateSlots = (request, busyBlocks, count = 3) => {
           (p) => p.doctorId === candidate.doctorId && Math.abs(p.start - candidate.start) < 90 * MIN
         );
         if (nearPick) continue;
+        if (isExcluded(candidate.start)) continue;
         if (validateSlot(candidate, busyBlocks).ok) picked.push(candidate);
       }
     }

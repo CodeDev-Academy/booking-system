@@ -4218,6 +4218,86 @@ class DispatchChannelSelectionTests(APITestCase):
         mock_tg.format_slot_offers.assert_not_called()
 
 
+class RecalculateExcludesShownSlotsTests(APITestCase):
+    """
+    Task 3.3 fix: "Re-calculate Times" must return FRESH options. The availability
+    engine is deterministic, so check-slots now accepts `exclude_start_datetimes`
+    (the starts already on screen) and skips them (±1 min tolerance).
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.doctor = Doctor.objects.create(
+            name='Dr. Recalc Test',
+            specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5, 6, 7],
+            shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(17, 0),
+        )
+        self.service = Service.objects.create(
+            name='Dental Consultation',
+            duration_minutes=30,
+            buffer_minutes=5,
+            price=10000,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.service)
+        # Engine respects the clinic's working days — open every weekday (1=Mon..7=Sun)
+        self.clinic.working_days = [1, 2, 3, 4, 5, 6, 7]
+        self.clinic.save()
+        self.booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0123',
+            patient_name='Recalc Test',
+            patient_phone='+2348099990000',
+            service=self.service,
+            preferred_doctor=self.doctor,
+            status='awaiting_review',
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def _check(self, exclude=None):
+        payload = {}
+        if exclude:
+            payload['exclude_start_datetimes'] = exclude
+        return self.client.post(
+            f'/api/v1/booking-requests/{self.booking.request_code}/check-slots/',
+            payload, format='json'
+        )
+
+    def test_first_call_returns_slots(self):
+        staff = StaffUser.objects.create(
+            full_name='Sarah Recalc', email='sarah.recalc@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        staff.set_password('SarahPass123!')
+        staff.save()
+        self.client.force_authenticate(user=staff)
+        res = self._check()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(len(res.data['candidate_slots']), 1)
+        return res.data['candidate_slots']
+
+    def test_excluding_shown_starts_returns_fresh_slots(self):
+        staff = StaffUser.objects.create(
+            full_name='Sarah Recalc', email='sarah.recalc2@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        staff.set_password('SarahPass123!')
+        staff.save()
+        self.client.force_authenticate(user=staff)
+
+        first = self._check().data['candidate_slots']
+        self.assertGreaterEqual(len(first), 1)
+        first_starts = [s['start_datetime'] for s in first]
+
+        second = self._check(exclude=first_starts).data['candidate_slots']
+        # Every fresh slot must start at a DIFFERENT time than the shown batch
+        second_starts = [s['start_datetime'] for s in second]
+        self.assertEqual(len(set(first_starts) & set(second_starts)), 0)
+
+
 
 
 

@@ -578,3 +578,29 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
 - No backend changes this task (the interactions API was built in Phase 2). Frontend build
   passes. With this, the system side of the patient-booking feature is 100% complete;
   remaining work on the feature = the user's n8n builds (D → C → B) per the build sheet.
+
+## 2026-11-13 — Task 3.3: UX bug fixes + real dossier data (approved build)
+
+- Three fixes found by live use of the dashboard:
+  ① **Ask-for-info panel never opened** — `ReviewModal` called `toggleInfoPanel(true)`, the
+  hook dropped the argument, and the store set `infoPanelOpen: undefined`. Fixed in the hook
+  (arg pass-through) and store (no-arg = flip; true/false = set explicitly). Backend
+  `ask-info` endpoint was always fine — pure wiring bug.
+  ② **"Re-calculate Times" gave the same 3 slots** — deterministic engine. Backend:
+  `POST check-slots/` now accepts `exclude_start_datetimes`;
+  `find_candidate_slots_for_request(booking, max_slots, exclude_start_datetimes=)` skips
+  candidates matching already-shown starts (±1 min tolerance; slot `start_datetime` is an ISO
+  string so the filter parses before comparing; applies to both the in-range scan and the
+  nearest-alternative scan). Frontend: `apiService.checkSlots(key, excludeStarts)` sends the
+  body; `useQueueStore.checkSlots` passes the currently shown starts (ISO to backend, epoch-ms
+  to the local `generateCandidateSlots` fallback — new optional 4th param `excludedStarts`).
+  First click (no slots on screen) behaves exactly as before.
+  ③ **Dossier reliability now REAL in live mode** — was computed from the hard-coded demo
+  PATIENT_REGISTRY even in live mode. `syncFromBackend` now maps `patient_dossier` per queue
+  item; the review view model prefers backend fields (`is_returning`,
+  `reliability_percentage`, `completed_visits`/`no_show_count` → "X/Y attended"); the registry
+  lookup runs only in demo mode. Backend formula unchanged: completed ÷ (completed + no_shows).
+- Tests: `RecalculateExcludesShownSlotsTests` (2 tests). Suite: **145 total, 144 pass**
+  (sole failure = pre-existing Telegram bug, unchanged). Frontend build passes.
+- Committed to `partner-readiness/phase-1-2`. Next: **Task 3.4 — Needs Attention tab**
+  (delivery-failure visibility queue, user-approved design).

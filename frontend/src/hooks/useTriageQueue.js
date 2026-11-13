@@ -242,7 +242,15 @@ export const useTriageQueue = () => {
     if (!selectedRequest) return null;
     const r = selectedRequest;
     const phone = normalizeE164(r.phone, CLINIC_RULES.defaultCountryCode);
-    const registry = lookupPatient(phone.value || r.phone, r.patientName);
+    // Task 3.3: in LIVE mode the dossier comes from the REAL backend
+    // (`patient_dossier` — computed attendance history from Appointments).
+    // The demo PATIENT_REGISTRY is now a demo-mode fallback only, so live
+    // dashboards never show seed data as if it were this patient's history.
+    const isDemo = useAppModeStore.getState().isDemoMode;
+    const backendDossier = (!isDemo && r.patientDossier?.is_returning) ? r.patientDossier : null;
+    const registry = (!isDemo && !backendDossier)
+      ? null
+      : lookupPatient(phone.value || r.phone, r.patientName);
     
     // Dynamic doctors from Staff Directory (fallback to DOCTORS)
     const activeStaffDoctors = (staffList || [])
@@ -286,7 +294,15 @@ export const useTriageQueue = () => {
     });
 
     const collisions = slots.filter((s) => !s.ok).length;
-    const dossier = registry
+    const dossier = backendDossier
+      ? {
+          name: r.patientName,
+          reliabilityPct: Math.round(backendDossier.reliability_percentage || 0),
+          reliabilityTone: reliabilityTone(Math.round(backendDossier.reliability_percentage || 0)),
+          attendedLabel: `${backendDossier.completed_visits || 0}/${(backendDossier.completed_visits || 0) + (backendDossier.no_show_count || 0)} attended`,
+          lastVisits: registry?.lastVisits || [],
+        }
+      : registry
       ? {
           name: registry.name,
           reliabilityPct: Math.round((registry.attended / registry.totalVisits) * 100),
@@ -368,7 +384,7 @@ export const useTriageQueue = () => {
     removeSlot: (slotId) => selectedRequest && useQueueStore.getState().removeSlot(selectedRequest.id, slotId),
     addCustomSlot: (doctorId, datetimeValue) =>
       selectedRequest && useQueueStore.getState().addCustomSlot(selectedRequest.id, doctorId, fromDatetimeLocal(datetimeValue)),
-    toggleInfoPanel: () => useQueueStore.getState().toggleInfoPanel(),
+    toggleInfoPanel: (open) => useQueueStore.getState().toggleInfoPanel(open),
     sendInfoRequest: (message) => selectedRequest && useQueueStore.getState().sendInfoRequest(selectedRequest.id, message),
     dispatchOffers: (selectedSlotIds = null, dispatchChannels = ['whatsapp', 'sms', 'voice']) =>
       selectedRequest && review && review.canDispatch &&

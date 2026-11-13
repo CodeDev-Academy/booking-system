@@ -75,11 +75,17 @@ export const useQueueStore = create(
     })),
 
   // 1-Click [Check Live Slots]
+  // Task 3.3: when slots are already on screen (re-calculate), their starts are
+  // sent as exclusions so BOTH the instant local fill and the backend engine
+  // return FRESH times instead of the identical top-3 again.
   checkSlots: (id) => {
-    const { requests, busyBlocks } = get();
+    const { requests, busyBlocks, slotsByRequest } = get();
     const request = requests.find((r) => r.id === id);
     if (!request) return;
-    const localSlots = generateCandidateSlots(request, busyBlocks);
+    const shownStarts = (slotsByRequest[id] || [])
+      .filter((s) => s && typeof s.start === 'number')
+      .map((s) => s.start);
+    const localSlots = generateCandidateSlots(request, busyBlocks, 3, shownStarts);
     set((state) => ({
       slotsByRequest: { ...state.slotsByRequest, [id]: localSlots },
     }));
@@ -92,7 +98,9 @@ export const useQueueStore = create(
       if (!isLocalMock) {
         const lookupKey = request.backendUuid || request.code || request.id;
         apiService
-          .checkSlots(lookupKey)
+          .checkSlots(lookupKey, shownStarts.length > 0
+            ? shownStarts.map((ts) => new Date(ts).toISOString())
+            : null)
           .then((res) => {
             const remoteSlots = res?.candidate_slots || res?.slots || [];
             if (Array.isArray(remoteSlots) && remoteSlots.length > 0) {
@@ -160,6 +168,9 @@ export const useQueueStore = create(
           gender: item.gender || '',
           dateOfBirth: item.date_of_birth || null,
           symptoms: item.patient_notes || '',
+          // Task 3.3: real attendance history from the backend (computed by
+          // get_patient_dossier) — replaces the demo registry for live mode.
+          patientDossier: item.patient_dossier || null,
         };
       });
 
@@ -214,7 +225,10 @@ export const useQueueStore = create(
     }));
   },
 
-  toggleInfoPanel: (open) => set({ infoPanelOpen: open }),
+  // Task 3.3 fix: called with no argument (e.g. from a plain toggle button) it flips;
+  // called with true/false it sets explicitly. Previously the hook dropped the arg
+  // and the panel state became `undefined` — the Ask-for-info panel could never open.
+  toggleInfoPanel: (open) => set((state) => ({ infoPanelOpen: open === undefined ? !state.infoPanelOpen : Boolean(open) })),
 
   sendInfoRequest: (requestId, message) => {
     set({

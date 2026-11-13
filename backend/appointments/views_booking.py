@@ -275,7 +275,13 @@ class CheckSlotsView(APIView):
     def post(self, request, id):
         booking = get_booking_or_404(id)
         engine = AvailabilityEngine()
-        candidate_slots = engine.find_candidate_slots_for_request(booking, max_slots=3)
+        # Task 3.3: "Re-calculate Times" sends the starts already on screen so the
+        # engine returns the NEXT best options instead of the identical top-3 again.
+        exclude_raw = request.data.get('exclude_start_datetimes')
+        exclude_starts = exclude_raw if isinstance(exclude_raw, list) else None
+        candidate_slots = engine.find_candidate_slots_for_request(
+            booking, max_slots=3, exclude_start_datetimes=exclude_starts
+        )
 
         return Response({
             "request_id": booking.request_code,

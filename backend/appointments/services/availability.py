@@ -250,16 +250,48 @@ class AvailabilityEngine:
 
         return score
 
-    def find_candidate_slots_for_request(self, booking_request, max_slots=3):
+    def find_candidate_slots_for_request(self, booking_request, max_slots=3, exclude_start_datetimes=None):
         """
         Scans dates within the patient's preferred 2-week range.
         If 0 slots are found in range, automatically scans forward to find the 3 nearest
         alternative slots (Option A - Nearest-Alternative Auto-Offer) flagged with is_alternative_date=True.
+
+        Task 3.3: `exclude_start_datetimes` (ISO datetimes) lets the dashboard re-calculate
+        FRESH options — the engine skips any candidate starting at an already-shown time
+        (±1 minute tolerance for ISO formatting drift), so reception always sees new times.
         """
         service = booking_request.service
         preferred_doctor = booking_request.preferred_doctor
         preferred_time_window = booking_request.preferred_time_window
         date_range = booking_request.preferred_date_range or {}
+
+        excluded_starts = []
+        for raw in exclude_start_datetimes or []:
+            try:
+                dt = datetime.datetime.fromisoformat(str(raw))
+                if timezone.is_naive(dt):
+                    dt = timezone.make_aware(dt)
+                excluded_starts.append(dt)
+            except (ValueError, TypeError):
+                continue
+
+        def _not_excluded(slot_list):
+            if not excluded_starts:
+                return slot_list
+            kept = []
+            for s in slot_list:
+                start_val = s['start_datetime']
+                if isinstance(start_val, str):
+                    try:
+                        start_val = datetime.datetime.fromisoformat(start_val)
+                    except (ValueError, TypeError):
+                        kept.append(s)
+                        continue
+                if timezone.is_naive(start_val):
+                    start_val = timezone.make_aware(start_val)
+                if not any(abs(start_val - ex) < datetime.timedelta(minutes=1) for ex in excluded_starts):
+                    kept.append(s)
+            return kept
 
         today = timezone.now().date()
         try:
@@ -287,7 +319,7 @@ class AvailabilityEngine:
                 preferred_time_window=preferred_time_window,
                 max_slots=max_slots
             )
-            collected_slots.extend(day_slots)
+            collected_slots.extend(_not_excluded(day_slots))
             curr_date += datetime.timedelta(days=1)
 
         # Phase 2: If 0 slots found, execute Nearest-Alternative Fallback (up to 14 days beyond window)
@@ -303,7 +335,7 @@ class AvailabilityEngine:
                     preferred_time_window=preferred_time_window,
                     max_slots=max_slots
                 )
-                for slot in day_slots:
+                for slot in _not_excluded(day_slots):
                     slot['is_alternative_date'] = True
                     collected_slots.append(slot)
                 alt_date += datetime.timedelta(days=1)

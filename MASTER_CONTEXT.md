@@ -5,7 +5,7 @@
 > **Standing rule:** after every completed task, decision, or architecture change — update this file
 > (and `ROADMAP_PARTNER_READINESS.md`) immediately. Any AI inheriting this project must continue this
 > practice so the next one can resume exactly where we stopped.
-> Last updated: 2026-11-12 (OpenCode session — Phase 1 complete + Phase 2 FULLY COMPLETED (2.1 InteractionLog, 2.2 async dispatch); next: Phase 3 frontend tasks).
+> Last updated: 2026-11-13 (OpenCode session - Phase 1 complete + Phase 2 FULLY COMPLETED; Phase 3 tasks 3.1/3.2/3.3 committed; next: Task 3.4 Needs Attention tab + user n8n builds D→C→B).
 
 ---
 
@@ -207,6 +207,31 @@ external providers (VoiceBip voice, WhatsApp, SMS, Meta, etc.).
   is wired (separate future task; polling covers the interim). This is what makes n8n
   provider failures VISIBLE to reception instead of silent. Frontend build passes; no backend
   changes in this task.
+
+- **Task 3.3 UX bug fixes + real dossier data (2026-11-13):** three fixes found by live use.
+  ① **Ask-for-info panel could never open** — the modal called
+  `toggleInfoPanel(true)`, the hook dropped the argument and the store set
+  `infoPanelOpen: undefined`. Fixed: hook passes the arg through; store flips when called
+  with no arg, sets explicitly with true/false. The backend `ask-info` endpoint was always
+  fine — purely wiring.
+  ② **"Re-calculate Times" returned the identical 3 slots** — the availability engine is
+  deterministic, so same request → same top-3. Fix: `check-slots` accepts
+  `exclude_start_datetimes`; `find_candidate_slots_for_request(..., exclude_start_datetimes=)`
+  skips candidates starting at already-shown times (±1 min tolerance; slot `start_datetime`
+  is an ISO string so the filter parses before comparing — in-range scan AND the
+  nearest-alternative scan both honor exclusions). Frontend: `apiService.checkSlots(key,
+  excludeStarts)` sends the body; `useQueueStore.checkSlots` passes the starts currently on
+  screen (ISO) to the backend and epoch-ms to the local `generateCandidateSlots` fallback
+  (new 4th param `excludedStarts`). First click = no exclusions = same behavior as before.
+  ③ **Dossier reliability now REAL in live mode** — the dashboard previously computed
+  "100% reliable" from the hard-coded demo PATIENT_REGISTRY even in live mode. Now
+  `syncFromBackend` maps `patient_dossier` from each queue item, and the review view model
+  prefers backend fields (`is_returning`, `reliability_percentage`, `completed_visits`/
+  `no_show_count` → "X/Y attended"); registry lookup only runs in demo mode (or when the
+  backend dossier is missing). Backend formula unchanged: completed ÷ (completed + no_shows).
+  Tests: `RecalculateExcludesShownSlotsTests` (2: first call returns slots; excluding shown
+  starts returns only fresh slots). Suite: **145 tests / 144 pass** (sole failure = the
+  pre-existing Telegram bug). Frontend build passes.
 
 - **Code review fixes (2026-11-12):** external review of Phases 1–2 found 1 critical + 5 medium
   issues; all fixed and tested. Critical: non-ASCII `X-Webhook-Secret` header caused TypeError →
