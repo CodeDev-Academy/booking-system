@@ -663,3 +663,7 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
   leg skipped as pass-through. Build sheet §5.1/§5.2 records the built graph and remaining steps.
 - Next: direct InteractionLog test (sent + failed) to confirm the dashboard timeline and Needs
   Attention tab against real rows, then wire the log nodes into the D graph.
+- **Bug found by that test + fixed:** `PatientDossier` treated "has interactions" as "has visit
+  history" and read `dossier.reliabilityTone`/`lastVisits` unconditionally → React crash (blank
+  screen) when opening a first-time patient whose messages were logged. Reliability card is now
+  conditional; timeline renders alone for new patients (`36b0df0`).
