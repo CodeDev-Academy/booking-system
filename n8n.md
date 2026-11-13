@@ -250,16 +250,19 @@ POST /call {assistantId, to, params}     {event: ended, status, transcript…}
 - It does **not** let us start a call — that needs the provider's **API key + outbound endpoint**.
 - Both halves are required for the dispatch nudge: n8n starts the call, then logs the outcome.
 
-### 5.2 Actual provider split (decided)
+### 5.2 Actual provider split (decided — updated 2026-11-13)
 
 | Capability | Provider | Why |
 |---|---|---|
-| Voice call (nudge) | **Vapi** (partner's agents) | Agent + script already configured on their side |
-| SMS | **VoiceBip** account | Partner supplies sender ID + SMS endpoint |
+| Voice call (nudge) | **VoiceBip** (same partner account) | One account for voice + SMS; the Vapi video was only the connection pattern |
+| SMS | **VoiceBip** | Partner supplies sender ID + SMS endpoint |
 | WhatsApp / Telegram | Telegram (current stand-in) → WhatsApp Cloud API later | Unchanged |
 
-The adapter is **provider-agnostic**: voice and SMS are separate config blocks, so if VoiceBip
-also exposes voice later, only the config changes.
+**Correction recorded:** the voice leg is **VoiceBip, not Vapi**. Vapi stays in this document
+only as the worked example of the two-direction pattern, and as a future alternative.
+
+The adapter is **provider-agnostic**: voice and SMS are separate config blocks, so switching
+voice provider again later (e.g. to Vapi) is a config edit, not a graph rebuild.
 
 ### 5.3 Voice is a NUDGE ONLY (no DTMF — decided)
 
@@ -272,7 +275,8 @@ also exposes voice later, only the config changes.
 
 ### 5.4 Script ownership (decided: partner now, platform later)
 
-- **Now:** the prompt/script lives on the Vapi agent. n8n sends only dynamic variables
+- **Now:** the call script lives on the provider's voice agent (configured on the VoiceBip
+  side). n8n sends only dynamic variables
   (`patient_name`, `clinic_name`, `service_name`, `options_count`, `expiry_minutes`).
 - **Future:** script moves to our platform. Reserved config switch:
   `VOICE_SCRIPT_SOURCE=partner | platform`, plus a reserved payload field
@@ -283,18 +287,19 @@ also exposes voice later, only the config changes.
 ### 5.5 Config contract (the only thing that changes when credentials land)
 
 ```
-# Voice (Vapi)
+# VoiceBip — one account covers BOTH voice and SMS
+VOICEBIP_API_URL=
+VOICEBIP_API_KEY=
+VOICEBIP_VOICE_AGENT_ID=     # outbound "assistant" to run (assistant IDs)
+VOICEBIP_CALLER_ID=          # phone number ID / DID shown as caller
+VOICE_SCRIPT_SOURCE=partner
+VOICEBIP_SMS_SENDER_ID=Cedarcare
+
+# Alternative voice provider (kept for reference; swapping = edit this block)
 VAPI_API_URL=https://api.vapi.ai
 VAPI_API_KEY=
 VAPI_ASSISTANT_DISPATCH=
-VAPI_ASSISTANT_REMINDER=
 VAPI_PHONE_NUMBER_ID=
-VOICE_SCRIPT_SOURCE=partner
-
-# SMS (VoiceBip)
-VOICEBIP_API_URL=
-VOICEBIP_API_KEY=
-VOICEBIP_SMS_SENDER_ID=Cedarcare
 
 # Test switch — mock adapter returns realistic responses + simulated callbacks
 PROVIDER_MOCK=true
