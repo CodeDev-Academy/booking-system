@@ -4400,6 +4400,171 @@ class NeedsAttentionFieldsTests(APITestCase):
         self.assertIsNone(item['last_failure'])
 
 
+class DispatchContractEnrichmentTests(APITestCase):
+    """
+    Task 3.5 — Workflow D contract enrichment:
+    - the n8n dispatch payload now carries clinic_name, expiry_minutes,
+      offer_expires_at and pre-formatted date_label/time_label per slot
+      (so n8n does no timezone math),
+    - Django's own Telegram send is logged to the InteractionLog (sent/failed),
+    - GET dispatch-status/ lets n8n skip the 30s voice nudge when the patient
+      already replied (readable with X-Webhook-Secret).
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.clinic_name = 'Cedarcare Specialist Clinic'
+        self.clinic.offer_expiry_minutes = 60
+        self.clinic.save()
+
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Contract', email='sarah.contract@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+
+        self.service = Service.objects.create(
+            name='Dental Consultation', duration_minutes=30, buffer_minutes=5, price=10000,
+        )
+        self.doctor = Doctor.objects.create(name='Dr. Contract Test')
+        self.booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0300',
+            patient_name='Grace Contract',
+            patient_phone='+2348077770001',
+            service=self.service,
+            status='awaiting_review',
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def _slot_payload(self):
+        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        return {'slots': [{
+            'doctor_id': str(self.doctor.id),
+            'start_datetime': slot_start.isoformat(),
+            'end_datetime': (slot_start + datetime.timedelta(minutes=30)).isoformat(),
+            'is_alternative_date': False,
+        }]}
+
+    def _dispatch(self, extra=None):
+        payload = self._slot_payload()
+        if extra:
+            payload.update(extra)
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.client.post(
+                f'/api/v1/booking-requests/{self.booking.request_code}/dispatch-offers/',
+                payload, format='json'
+            )
+
+    def test_payload_is_enriched_for_n8n(self):
+        import os
+        from unittest.mock import patch
+        self.client.force_authenticate(user=self.receptionist)
+        with patch.dict(os.environ, {'N8N_DISPATCH_WEBHOOK_URL': 'https://n8n.example.com/dispatch'}), \
+                patch('appointments.views_booking.fire_and_forget_webhook') as mock_fire:
+            res = self._dispatch()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        payload = mock_fire.call_args[0][1]
+
+        self.assertEqual(payload['clinic_name'], 'Cedarcare Specialist Clinic')
+        self.assertEqual(payload['expiry_minutes'], 60)
+        self.assertIn('offer_expires_at', payload)
+        slot = payload['candidate_slots'][0]
+        self.assertTrue(slot['date_label'])
+        self.assertTrue(slot['time_label'])
+        # e.g. "Tue, 10 Nov 2026" / "1:05 PM" — no ISO string needed by n8n
+        self.assertIn(',', slot['date_label'])
+        self.assertTrue(slot['time_label'].endswith('AM') or slot['time_label'].endswith('PM'))
+
+    def test_telegram_send_is_logged_as_sent(self):
+        from unittest.mock import patch
+        self.client.force_authenticate(user=self.receptionist)
+        self.booking.patient_notes = 'telegram_chat_id: 55881'
+        self.booking.save(update_fields=['patient_notes'])
+
+        with patch('appointments.views_booking.TelegramService') as mock_tg, \
+                patch('appointments.views_booking.fire_and_forget_webhook'):
+            mock_tg.format_slot_offers.return_value = ('Offer text', 'Markup')
+            mock_tg.send_message.return_value = {'ok': True, 'result': {'message_id': 9001}}
+            res = self._dispatch()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        log = InteractionLog.objects.get(external_ref='telegram-msg-9001')
+        self.assertEqual(log.provider, 'telegram')
+        self.assertEqual(log.channel, 'telegram')
+        self.assertEqual(log.status, 'sent')
+        self.assertEqual(log.booking_request_id, self.booking.id)
+
+    def test_telegram_failure_is_logged_and_surfaces_as_needs_attention(self):
+        from unittest.mock import patch
+        self.client.force_authenticate(user=self.receptionist)
+        self.booking.patient_notes = 'telegram_chat_id: 55882'
+        self.booking.save(update_fields=['patient_notes'])
+
+        with patch('appointments.views_booking.TelegramService') as mock_tg, \
+                patch('appointments.views_booking.fire_and_forget_webhook'):
+            mock_tg.format_slot_offers.return_value = ('Offer text', 'Markup')
+            mock_tg.send_message.side_effect = Exception('telegram network down')
+            res = self._dispatch()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        log = InteractionLog.objects.get(booking_request=self.booking, status='failed')
+        self.assertIn('telegram network down', log.error_detail)
+
+        res = self.client.get('/api/v1/booking-requests/?status=slots_offered')
+        item = next(i for i in res.data if i['request_code'] == 'REQ-2026-0300')
+        self.assertEqual(item['delivery_failures'], 1)
+        self.assertEqual(item['last_failure']['channel'], 'telegram')
+
+    def test_dispatch_status_requires_secret_or_staff(self):
+        res = self.client.get(f'/api/v1/booking-requests/{self.booking.request_code}/dispatch-status/')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_dispatch_status_reports_proceed_then_skip(self):
+        # 1. Nobody has replied yet → n8n should place the call
+        res = self.client.get(
+            f'/api/v1/booking-requests/{self.booking.request_code}/dispatch-status/',
+            HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(res.data['should_skip_voice_call'])
+        self.assertFalse(res.data['has_active_hold'])
+
+        # 2. Patient selected an option (active 15-min hold) → skip the call
+        Appointment.objects.create(
+            appointment_code='AP-3001',
+            patient_name=self.booking.patient_name,
+            patient_phone=self.booking.patient_phone,
+            doctor=self.doctor,
+            service=self.service,
+            booking_request=self.booking,
+            start_datetime=timezone.now() + datetime.timedelta(days=1),
+            end_datetime=timezone.now() + datetime.timedelta(days=1, minutes=30),
+            status='held',
+            hold_expires_at=timezone.now() + datetime.timedelta(minutes=15),
+        )
+        res = self.client.get(
+            f'/api/v1/booking-requests/{self.booking.request_code}/dispatch-status/',
+            HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026',
+        )
+        self.assertTrue(res.data['should_skip_voice_call'])
+        self.assertTrue(res.data['has_active_hold'])
+        self.assertEqual(res.data['appointment_code'], 'AP-3001')
+
+        # 3. Confirmed booking also skips
+        Appointment.objects.filter(appointment_code='AP-3001').update(status='confirmed')
+        res = self.client.get(
+            f'/api/v1/booking-requests/{self.booking.request_code}/dispatch-status/',
+            HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026',
+        )
+        self.assertTrue(res.data['should_skip_voice_call'])
+        self.assertTrue(res.data['has_confirmed_booking'])
+
+
 
 
 

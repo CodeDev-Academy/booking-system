@@ -253,6 +253,30 @@ external providers (VoiceBip voice, WhatsApp, SMS, Meta, etc.).
   Suite: **149 tests / 148 pass** (sole failure = pre-existing Telegram bug). Frontend build
   passes.
 
+- **Task 3.5 — Workflow D contract enrichment (2026-11-13):** three backend improvements so the
+  user's n8n Workflow D build is simpler and the dashboard is truthful.
+  ① **Enriched dispatch payload** (`fire_and_forget_webhook`): now includes `clinic_name`,
+  `expiry_minutes`, `offer_expires_at`, and per-slot `date_label` / `time_label`
+  pre-formatted in Africa/Lagos via `timezone.localtime` — n8n does zero timezone math and
+  message labels match the dashboard exactly. `candidate_slots` array order is the option
+  numbering contract (Workflow C resolves replies against it) — documented in the build sheet.
+  ② **Django's own Telegram send is now logged** to the InteractionLog (`provider: telegram`,
+  `channel: telegram`, `status: sent|failed`, `external_ref: telegram-msg-<message_id>` via
+  `update_or_create` for idempotency; safe summary only, privacy rule respected). Previously
+  only `logger.info` — the dossier timeline and Needs Attention tab would have been blind to
+  the Telegram leg. Workflow D must NOT resend Telegram for telegram-intake patients (build
+  sheet updated).
+  ③ **New `GET /api/v1/booking-requests/{id}/dispatch-status/`** — readable with
+  `X-Webhook-Secret` (staff JWT also works): returns `{status, has_active_hold,
+  has_confirmed_booking, appointment_code, should_skip_voice_call}`. Purpose: Workflow D's
+  fast-replier guard — if the patient already picked an option (active 15-min hold or
+  confirmed booking), skip the 30-second voice-call nudge entirely.
+  Tests: `DispatchContractEnrichmentTests` (5: enriched payload, Telegram sent logged,
+  Telegram failure logged + surfaces as `delivery_failures`, probe 401 without secret, probe
+  proceed→skip-hold→skip-confirmed). Suite: **154 tests / 153 pass** (sole failure =
+  pre-existing Telegram bug). `n8n/N8N_BUILD_SHEET.md` §5 updated (payload, Telegram ownership,
+  probe step, numbering contract).
+
 - **Code review fixes (2026-11-12):** external review of Phases 1–2 found 1 critical + 5 medium
   issues; all fixed and tested. Critical: non-ASCII `X-Webhook-Secret` header caused TypeError →
   500 on every guarded endpoint (bytes-mode compare now → clean 401). Mediums: interaction upsert

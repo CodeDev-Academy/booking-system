@@ -13,7 +13,7 @@ from rest_framework.permissions import AllowAny
 
 from django.db import transaction
 from django.db.models import Q
-from .models import BookingRequest, SlotOffer, Doctor, ClinicSetting, AuditLog, Appointment
+from .models import BookingRequest, SlotOffer, Doctor, ClinicSetting, AuditLog, Appointment, InteractionLog
 from .permissions import IsStaffAuthenticated
 from .serializers_booking import (
     BookingRequestCreateSerializer,
@@ -486,20 +486,73 @@ class DispatchOffersView(APIView):
                         "Telegram slot offer dispatched to chat_id %s: ok=%s message_id=%s",
                         chat_id, tg_ok, tg_msg_id
                     )
+                    # Task 3.5: log this Telegram send to the interaction logbook so the
+                    # dashboard timeline + Needs Attention tab are complete even though
+                    # Django (not n8n) performs this leg. Safe summary only (no raw text).
+                    log_defaults = {
+                        'provider': 'telegram',
+                        'channel': 'telegram',
+                        'direction': 'outbound',
+                        'status': 'sent' if tg_ok else 'failed',
+                        'patient_name': booking.patient_name,
+                        'patient_phone': booking.patient_phone,
+                        'booking_request': booking,
+                        'summary': f"Slot options ({len(created_offers)} options) sent to Telegram.",
+                        'error_detail': '' if tg_ok else 'Telegram API reported failure',
+                    }
+                    if tg_msg_id:
+                        InteractionLog.objects.update_or_create(
+                            external_ref=f"telegram-msg-{tg_msg_id}",
+                            defaults=log_defaults,
+                        )
+                    else:
+                        InteractionLog.objects.create(**log_defaults)
                 except Exception as tg_err:
                     logger.error("Failed to send slot offers to Telegram chat %s: %s", chat_id, tg_err, exc_info=True)
+                    # Task 3.5: a failed Telegram leg must be visible to reception.
+                    try:
+                        InteractionLog.objects.create(
+                            provider='telegram',
+                            channel='telegram',
+                            direction='outbound',
+                            status='failed',
+                            patient_name=booking.patient_name,
+                            patient_phone=booking.patient_phone,
+                            booking_request=booking,
+                            summary=f"Slot options ({len(created_offers)} options) failed to send on Telegram.",
+                            error_detail=str(tg_err)[:500],
+                        )
+                    except Exception:
+                        logger.error("Failed to log Telegram interaction", exc_info=True)
 
             n8n_dispatch_url = os.environ.get('N8N_DISPATCH_WEBHOOK_URL') or custom_cfg.get('n8n_dispatch_url')
             if n8n_dispatch_url:
+                # Task 3.5: pre-format everything n8n needs so Workflow D never does
+                # timezone math — labels match exactly what reception saw on screen.
+                slot_data = SlotOfferSerializer(created_offers, many=True).data
+                for slot in slot_data:
+                    try:
+                        start_dt = timezone.localtime(
+                            datetime.datetime.fromisoformat(slot['start_datetime'])
+                        )
+                        slot['date_label'] = start_dt.strftime('%a, %d %b %Y')
+                        slot['time_label'] = start_dt.strftime('%I:%M %p').lstrip('0')
+                    except (ValueError, TypeError, KeyError):
+                        slot['date_label'] = ''
+                        slot['time_label'] = ''
+
                 n8n_payload = {
                     'request_id': booking.request_code,
                     'patient_name': booking.patient_name,
                     'patient_phone': booking.patient_phone,
                     'service_name': booking.service.name if booking.service else 'Consultation',
+                    'clinic_name': clinic.clinic_name,
                     'telegram_chat_id': chat_id,
                     'channel': booking.channel,
                     'dispatch_channels': dispatch_channels,
-                    'candidate_slots': SlotOfferSerializer(created_offers, many=True).data,
+                    'expiry_minutes': clinic.offer_expiry_minutes,
+                    'offer_expires_at': expires_at.isoformat(),
+                    'candidate_slots': slot_data,
                 }
                 fire_and_forget_webhook(n8n_dispatch_url, n8n_payload)
 
@@ -512,6 +565,52 @@ class DispatchOffersView(APIView):
             "offer_expires_at": expires_at.isoformat(),
             "offers": SlotOfferSerializer(created_offers, many=True).data,
             "telegram_payload": telegram_payload,
+        }, status=status.HTTP_200_OK)
+
+
+class DispatchStatusView(APIView):
+    """
+    GET /api/v1/booking-requests/{id}/dispatch-status/
+
+    Task 3.5 — n8n Workflow D's fast-replier guard: after dispatching options,
+    D waits 30s before placing the voice-call nudge. If the patient already
+    replied (active hold or confirmed booking), the call must be skipped.
+    Readable with staff JWT OR X-Webhook-Secret (n8n has no staff session).
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, id):
+        if not has_staff_or_webhook_access(request):
+            return Response(
+                {'error': 'UNAUTHORIZED', 'detail': 'Valid staff credentials or X-Webhook-Secret required.'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        booking = get_booking_or_404(id)
+        now = timezone.now()
+
+        active_hold = (
+            booking.appointments
+            .filter(status='held')
+            .filter(Q(hold_expires_at__gt=now) | Q(hold_expires_at__isnull=True))
+            .order_by('-created_at')
+            .first()
+        )
+        confirmed = (
+            booking.appointments
+            .filter(status__in=['confirmed', 'arrived', 'in_consultation', 'completed'])
+            .order_by('-created_at')
+            .first()
+        )
+        booked = confirmed or active_hold
+
+        return Response({
+            'request_id': booking.request_code,
+            'status': booking.status,
+            'has_active_hold': bool(active_hold),
+            'has_confirmed_booking': bool(confirmed),
+            'appointment_code': booked.appointment_code if booked else None,
+            # n8n-friendly single flag: true → skip the 30s voice-call nudge
+            'should_skip_voice_call': bool(booked),
         }, status=status.HTTP_200_OK)
 
 

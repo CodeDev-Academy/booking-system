@@ -153,17 +153,29 @@ fire-and-forget with this payload (verified against `DispatchOffersView`):
   "patient_name": "Amina Garba",
   "patient_phone": "+2348031234567",
   "service_name": "Dental Consultation",
+  "clinic_name": "Cedarcare Specialist Clinic",
   "telegram_chat_id": "<or null>",
   "channel": "web" | "telegram" | "whatsapp_flow",
   "dispatch_channels": ["whatsapp", "sms", "voice"],
+  "expiry_minutes": 60,
+  "offer_expires_at": "2026-11-13T11:02:00+01:00",
   "candidate_slots": [
     { "id": "<slot_offer uuid>", "doctor_name": "Dr. Bello Ibrahim",
       "start_datetime": "2026-11-10T10:00:00+01:00", "end_datetime": "...",
-      "is_alternative_date": false, "expires_at": "..." },
+      "date_label": "Tue, 10 Nov 2026", "time_label": "10:00 AM",
+      "is_alternative_date": false, "offered_at": "...", "expires_at": "..." },
     ...one per offered option...
   ]
 }
 ```
+
+**Task 3.5 enrichments (2026-11-13):** `clinic_name`, `expiry_minutes`, `offer_expires_at`
+and pre-formatted `date_label` / `time_label` (Africa/Lagos, matches the dashboard exactly).
+n8n does ZERO timezone math — just compose `1️⃣ {{date_label}} at {{time_label}} ({{doctor_name}})`.
+
+⚠ **Option numbering is a contract:** Workflow C resolves the patient's reply ("2") against
+the offers in ORIGINAL dispatch order. Display options in `candidate_slots` array order,
+1→n. Never reorder, filter, or renumber them — even when some channels are skipped.
 
 **`dispatch_channels` (Task 3.1, 2026-11-13):** the receptionist's checkbox selection in the
 ReviewModal — any non-empty combination of `whatsapp` / `sms` / `voice`; default is all three.
@@ -180,17 +192,40 @@ ReviewModal — any non-empty combination of `whatsapp` / `sms` / `voice`; defau
 Either format labels in n8n (`{{$json.candidate_slots}}` → n8n Code node can build
 `"Tue, 10 Nov at 10:00 AM"` with Luxon) or ask us to enrich the backend payload (small task).
 
+⚠ **Telegram is sent by Django, not by D.** When `telegram_chat_id` is present and the
+`whatsapp` checkbox is on, the backend already delivered the interactive Telegram card
+**and logged it** to the InteractionLog (`provider: telegram`, `external_ref:
+telegram-msg-<message_id>`). D must NOT resend it — for Telegram patients D only handles
+`sms` and `voice`. When Meta WhatsApp credentials land, the same checkbox routes the
+instant-message leg to Workflow D for non-Telegram patients.
+
+🛡 **Fast-replier guard (Task 3.5):** before placing the 30s voice nudge, call
+
+```
+GET {DJANGO_API_BASE_URL}/api/v1/booking-requests/{request_id}/dispatch-status/
+X-Webhook-Secret: {{$env.DJANGO_WEBHOOK_SECRET}}
+
+→ { "status": "slots_offered", "has_active_hold": false,
+    "has_confirmed_booking": false, "appointment_code": null,
+    "should_skip_voice_call": false }
+```
+
+If `should_skip_voice_call` is `true` (patient already picked an option — hold or confirmed
+booking), **skip the call entirely** and log nothing extra. Works with the webhook secret;
+no staff session needed.
+
 | Step | Node | Detail |
 |---|---|---|
-| 1 | Code | Format option labels: `1️⃣ Tue, 10 Nov at 10:00 AM (Dr. Bello)` etc.; build option→slot_offer_id map; save to static data keyed by `request_id` (Workflow C reads it). |
-| 2 | IF telegram | `telegram_chat_id` present → existing Telegram interactive card node (keep it). |
-| 3 | WhatsApp send | Meta Cloud API — **approved template with 3 quick-reply buttons** (one per option). Template name from partner; payload params: patient name, service, option labels, expiry minutes. |
-| 4 | SMS send | VoiceBip SMS: *"Cedarcare Clinic: Your consultation slots are ready. 1) … 2) … 3) … Reply 1, 2, or 3 to lock in your time. Held for 1 hr."* Sender ID `Cedarcare`. |
+| 1 | Code | Format option labels from `date_label` / `time_label` / `doctor_name`: `1️⃣ Tue, 10 Nov 2026 at 10:00 AM (Dr. Bello Ibrahim)`; expose `want_whatsapp`/`want_sms`/`want_voice` from `dispatch_channels`. (Static option maps are NOT needed — Workflow C resolves numbers via the backend.) |
+| 2 | IF instant-message leg | `whatsapp` checked AND no `telegram_chat_id` → WhatsApp send. With `telegram_chat_id` → already done by Django, skip. |
+| 3 | WhatsApp send | Meta Cloud API — **approved template with 3 quick-reply buttons** (one per option). Template name from partner; params: patient name, service, option labels, `expiry_minutes`. |
+| 4 | SMS send | VoiceBip SMS: *"{clinic_name}: Your {service} slots are ready. 1) {date_label} {time_label} ({doctor_name}) … Reply 1, 2, or 3 to lock in your time. Held for {expiry_minutes} minutes."* Sender ID `Cedarcare`. |
 | 5 | Log ×2 | InteractionLog for WhatsApp + SMS (`sent`/`failed` + provider message IDs). |
 | 6 | Wait | 30 seconds (spec: call is an auxiliary nudge, never the primary channel). |
-| 7 | VoiceBip call | `POST https://api.voicebip.com/v1/campaigns`, `Authorization: Bearer {{$env.VOICEBIP_API_KEY}}`: `{"channel":"voice","config":{"from_number":"{{$env.VOICEBIP_FROM_NUMBER}}","call_window":{"start":"08:00","end":"19:00","timezone":"Africa/Lagos"}},"retry_policy":{"max_attempts":2,"backoff_seconds":300},"targets":[{"to_address":"{{$json.patient_phone}}","params":{"name":"{{$json.patient_name}}"}}]}` — universal audio prompt announces options and says to check WhatsApp/SMS. |
-| 8 | Log | InteractionLog: `provider:"voicebip"`, `channel:"voice"`, status per call result (`answered`/`no_answer`/`failed`), `external_ref` = VoiceBip call ID, `call_duration_seconds` if reported. |
-| 9 | Respond to webhook | Return `{"status":"accepted"}` immediately (Django is NOT waiting, but keep the node tidy). |
+| 7 | Status probe | `GET dispatch-status/` (above) → IF `should_skip_voice_call` = false, continue to the call; true → stop the voice branch. |
+| 8 | VoiceBip call | `POST https://api.voicebip.com/v1/campaigns`, `Authorization: Bearer {{$env.VOICEBIP_API_KEY}}`: `{"channel":"voice","config":{"from_number":"{{$env.VOICEBIP_FROM_NUMBER}}","call_window":{"start":"08:00","end":"19:00","timezone":"Africa/Lagos"}},"retry_policy":{"max_attempts":2,"backoff_seconds":300},"targets":[{"to_address":"{{$json.patient_phone}}","params":{"name":"{{$json.patient_name}}"}}]}` — universal audio prompt announces options and says to check WhatsApp/SMS. |
+| 9 | Log | InteractionLog: `provider:"voicebip"`, `channel:"voice"`, status per call result (`answered`/`no_answer`/`failed`), `external_ref` = VoiceBip call ID, `call_duration_seconds` if reported. |
+| 10 | Respond to webhook | Return `{"status":"accepted"}` immediately (Django is NOT waiting, but keep the node tidy). |
 
 ---
 

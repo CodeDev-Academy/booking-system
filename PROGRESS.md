@@ -629,3 +629,19 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
   pre-existing Telegram bug). Frontend build passes.
 - Committed to `partner-readiness/phase-1-2`. **All three Phase 3 dashboard tasks complete.**
   Next: user builds n8n Workflow D → C → B (build sheet), then Phase 5 partner handover.
+
+## 2026-11-13 — Task 3.5: Workflow D contract enrichment (prerequisite for the user's n8n build)
+
+- ① Dispatch payload enriched: `clinic_name`, `expiry_minutes`, `offer_expires_at`, and
+  per-slot `date_label`/`time_label` (Africa/Lagos, matches the dashboard). n8n does no
+  timezone formatting; `candidate_slots` order = the option-numbering contract.
+- ② Django's direct Telegram send now writes an InteractionLog (`sent`/`failed`,
+  `external_ref: telegram-msg-<id>`, idempotent `update_or_create`, safe summary only) — the
+  dossier timeline + Needs Attention tab now see the Telegram leg. Workflow D must not resend.
+- ③ New `GET /booking-requests/{id}/dispatch-status/` (webhook-secret or staff auth) →
+  `should_skip_voice_call` for Workflow D's fast-replier guard (hold/confirmed → skip the 30s
+  call nudge).
+- Tests: `DispatchContractEnrichmentTests` (5). Suite: **154 total, 153 pass** (sole failure =
+  pre-existing Telegram bug). Build sheet §5 rewritten (payload, probe step, Telegram
+  ownership, numbering rule). Committed to `partner-readiness/phase-1-2`.
+- Next: user builds Workflow D (D1 skeleton → D2 live legs), then C, then B.
