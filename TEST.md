@@ -18,6 +18,7 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 | **Phase 4: Frontend Receptionist Hub** | UI Components, State Hooks, Modals | Headless Hooks & Bento UI | 8 | ✅ Passed | 100% (8/8) |
 | **Phase 4.5: Playwright E2E Suite** | Full End-to-End User Journeys (Queue, Calendar, Simulator, Live Visits, Staff, Settings, Auth) in 100% Live Production Mode (`isDemoMode: false`) | Playwright (Google Chrome Engine) | 8 | ✅ Passed | 100% (8/8 in 34.1s) |
 | **Phase 5: Messaging & n8n** | Standing 60s Expiry Cron Sweeper (`POST /api/v1/webhooks/expiry-sweep/`), Intake Normalizer | n8n Webhook Engine & Django Sweeper | 5 | ✅ Verified | 100% (5/5) |
+| **Phase 5: Workflow D — Dispatch Reliability** | Provider adapter, voice guard, live sends, InteractionLog, provider callbacks | n8n live executions + Django `InteractionLogAPITests` | 19 | ✅ Verified | 100% (19/19) |
 | **Phase 6: White-Label & Production** | Agency Configs, Live Neon PostgreSQL, Migration Checks | Live Health Checks & E2E Runs | 4 | ✅ Verified | 100% (4/4) |
 
 ---
@@ -82,6 +83,14 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 - [x] `T-604`: **Dashboard Hints**: ReviewModal marks unreachable channels with a ⚠ (reason on hover) and shows the advisory sentence; checkboxes stay enabled, dispatch is never blocked; a post-dispatch `delivery_warning` replaces the success toast with an amber warning. Demo mode and loading/error states show no hints. Verified via `npm run build` + `npm run lint` (no new warnings).
 - [x] `T-605`: **Enforcement Flag (Layer 4)**: with `DISPATCH_REQUIRE_REACHABLE_CHANNEL=true`, a selection with no reachable channel returns `409 NO_REACHABLE_CHANNEL` (no offers touched, request status unchanged) and the dashboard rolls the optimistic update back; `PATIENT_ALREADY_BOOKED` still wins. Default remains **off**. Verified in `DispatchEnforcementTests` (6 tests).
 
+### Suite H: Workflow D — Slot Offer Dispatch Reliability (Phase 5)
+- [x] `T-701`: **Provider Adapter Routing**: one item per active channel; Telegram patient suppresses the WhatsApp leg; `duplicate_dispatch` and `outside_call_window` skip reasons. Verified live (executions 15–18).
+- [x] `T-702`: **Voice Fast-Replier Guard**: 30s wait → `GET dispatch-status/` → skip when the patient already holds/booked; probe error fails closed (no call). Verified live (executions 20–22).
+- [x] `T-703`: **Live Sends + InteractionLog**: all three provider nodes POST and log `sent` with the provider `external_ref`; `PROVIDER_MOCK_FAIL=true` produces `failed` rows with a plain-language `error_detail`, surfacing as `delivery_failures` / `last_failure` in the Needs Attention tab. Verified live (executions 27, 32, 36, 39).
+- [x] `T-704`: **Callback Auth (fail closed)**: `07_Provider_Callback_Receiver` rejects a missing token, a wrong query token and a wrong header token with `401`; an unset `PROVIDER_CALLBACK_TOKEN` rejects everything. Verified live.
+- [x] `T-705`: **Callback Normalization & Idempotency**: provider vocabulary maps to clinic statuses; `call.completed` → `answered` with duration + recording; late `delivered` cannot downgrade `answered`; `sms.delivered` advances `sent` → `delivered`; unknown status / missing `external_ref` → `200 ignored`. Verified live + `InteractionLogAPITests`.
+- [x] `T-706`: **Callback Failure Semantics**: Django `400` → `200 {rejected:true, retry:false}` (no retry storm); Django unreachable → `500 {retry:true}`. Phone may be omitted when `external_ref` matches an existing row; a new row without a phone is `400`. Verified live + `InteractionLogAPITests` (19/19).
+
 ---
 
 ## 3. Test Execution Log
@@ -102,6 +111,9 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 | 2026-11-13 | Brain Agent | `Suite G / T-601, T-602, T-603` | **PASSED** | Option B Layers 1-2. `ChannelAvailabilityTests` (8) + `DispatchDeliveryAdvisoryTests` (5) pass. Full suite 167 tests / 166 pass; sole failure is the known pre-existing `Phase5TelegramTests.test_telegram_interactive_service_booking_and_dispatch` (`prompted_date_range` vs `booking_request_created`). Dispatch behaviour unchanged: status 200, offers created, `PATIENT_ALREADY_BOOKED` still first. |
 | 2026-11-13 | Brain Agent | `Suite G / T-604` | **PASSED** | Option B Layer 3 (dashboard hints). `npm run build` clean; `npm run lint` reports no new warnings. Availability fetch is demo-safe and fails silent (no hints) so no false alarms; post-dispatch `delivery_warning` swaps the success toast for an amber warning; `409 NO_REACHABLE_CHANNEL` rollback path is in place for the flag-gated Layer 4. |
 | 2026-11-13 | Brain Agent | `Suite G / T-605` | **PASSED** | Option B Layer 4 (enforcement, default OFF). `DispatchEnforcementTests` (6): flag off still returns 200 + advisory; flag on refuses with `409 NO_REACHABLE_CHANNEL` before any offer is deleted/created (existing offer survives, request stays `awaiting_review`, `offer_expires_at` null); flag on still dispatches when Telegram reaches the patient; partial selection allowed; `PATIENT_ALREADY_BOOKED` precedence preserved. |
+| 2026-11-14 | Brain Agent | `Suite H / T-701, T-702` | **PASSED** | Workflow D stages D-1/D-2. Adapter emits one item per active channel (three `IF Want *` nodes removed after a live run routed all items as `sms`); voice leg waits 30s then probes `dispatch-status/`, skipping when the patient already engaged and failing closed on probe error (executions 20–22). |
+| 2026-11-14 | Brain Agent | `Suite H / T-703` | **PASSED** | Stage D-3. All three send nodes enabled; `PROVIDER_MOCK=true` now routes to `06_Provider_Simulator` instead of bypassing the sends, so the real HTTP bodies and error path are exercised. Executions 27 (3 sent + logged), 32/36 (`PROVIDER_MOCK_FAIL=true` → failed rows, `delivery_failures: 2`), 39 (normal mode restored). |
+| 2026-11-14 | Brain Agent | `Suite H / T-704, T-705, T-706` | **PASSED** | Stage D-4. `InteractionLogAPITests` 19/19 (6 rank-guard + 2 phone-reuse tests). Live callback checks: 401 on no/bad token (query and header), 200 ignored on unknown status, `call.completed` → `answered` (+duration/recording), late `delivered` cannot downgrade, `sms.delivered` → `delivered`, Django 400 → 200 rejected, dead port → 500 retry. Full suite 179 tests / 178 pass; only the known pre-existing Telegram test fails. |
 
 ---
 

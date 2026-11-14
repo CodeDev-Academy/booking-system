@@ -72,7 +72,7 @@ class InteractionWriteSerializer(serializers.Serializer):
         choices=[c[0] for c in InteractionLog.STATUS_CHOICES],
         default='sent'
     )
-    patient_phone = serializers.CharField(max_length=32)
+    patient_phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default='')
     patient_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
     request_code = serializers.CharField(max_length=32, required=False, allow_blank=True, default='')
     appointment_code = serializers.CharField(max_length=32, required=False, allow_blank=True, default='')
@@ -84,10 +84,9 @@ class InteractionWriteSerializer(serializers.Serializer):
     error_detail = serializers.CharField(required=False, allow_blank=True, default='')
 
     def validate_patient_phone(self, value):
-        normalized = normalize_phone_e164(value)
-        if not normalized:
-            raise serializers.ValidationError('patient_phone is required.')
-        return normalized
+        # Requiredness is enforced in the view: a provider callback that updates an
+        # existing row (matched by external_ref) may omit the number entirely.
+        return normalize_phone_e164(value) if value else ''
 
     def resolve_links(self, validated):
         """Resolve request_code / appointment_code to FK instances; '' → None."""

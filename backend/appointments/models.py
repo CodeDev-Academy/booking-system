@@ -558,6 +558,27 @@ class InteractionLog(models.Model):
         ('expired', 'Expired'),
     )
 
+    # Monotonic ordering for provider callbacks (Stage D-4).
+    #
+    # Delivery reports and call outcomes arrive out of order: a "delivered"
+    # webhook can land after an "answered" one, or a retry can re-send an older
+    # "sent" event. A late event must never walk a row backwards, so the write
+    # path only accepts a status whose rank is >= the stored one. Terminal
+    # outcomes (answered / no_answer / failed / expired) deliberately share the
+    # top rank: they are peers, and the most recent terminal event wins.
+    STATUS_RANK = {
+        'queued': 0,
+        'sent': 1,
+        'delivered': 2,
+        'answered': 3,
+        'no_answer': 3,
+        'failed': 3,
+        'expired': 3,
+    }
+
+    def status_rank(self):
+        return self.STATUS_RANK.get(self.status, 0)
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     provider = models.CharField(max_length=32, choices=PROVIDER_CHOICES, db_index=True)
     channel = models.CharField(max_length=16, choices=CHANNEL_CHOICES, db_index=True)

@@ -879,3 +879,54 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
   (`n8n/05_slot_offer_dispatcher.json` 14 nodes, `n8n/06_provider_simulator.json` 9 nodes).
 - Next: **D-4** - provider callback receiver (`07_provider_callback.json`) for delivery
   reports / call outcomes, idempotent on `external_ref`, never downgrading a status.
+
+
+## 2026-11-14 - Workflow D Stage D-4: provider callback receiver + status-rank guard
+
+**D-4a - backend (Django is the source of truth, so the guard lives here).**
+
+- `InteractionLog.STATUS_RANK` + `status_rank()`: `queued 0 < sent 1 < delivered 2 <
+  answered|no_answer|failed|expired 3`. Terminal outcomes share rank 3 on purpose - they
+  are peers, so the most recent terminal event wins (a corrected `answered -> no_answer`
+  is accepted).
+- `POST /api/v1/interactions/` now refuses to walk a row backwards: when the incoming rank
+  is lower than the stored rank it keeps the stored status and only fills blank fields
+  (`recording_url`, `transcript`, `summary`, `error_detail`, ...). It also never clears a
+  failure reason. Enforced in Django, not n8n, so it holds for replayed events too.
+- `patient_phone` is now optional on write. A provider callback normally identifies the
+  call by `external_ref` only; if the row exists Django reuses its stored number. A new row
+  without a phone is still rejected `400`.
+- Tests: `InteractionLogAPITests` 19/19 pass (6 new rank tests + 2 phone-reuse tests).
+  Full suite 179 tests / 178 pass - the only failure is the known pre-existing
+  `Phase5TelegramTests.test_telegram_interactive_service_booking_and_dispatch`.
+
+**D-4b - `07_Provider_Callback_Receiver`** (`rmqf5Z5K3EfapVGo`, 10 nodes, `valid: true`).
+
+- Graph: Webhook -> `Verify & Normalize Provider Event` -> `IF Authorized` ->
+  `IF Should Forward` -> `Post Interaction Update` -> `Respond Accepted`; error output ->
+  `Classify Update Failure` -> `Respond Retry`; plus `Respond Ignored` and
+  `Respond Unauthorized`.
+- Auth: shared `PROVIDER_CALLBACK_TOKEN` via `?token=` / `?access_token=` or
+  `X-Provider-Token` / `X-Callback-Token` / `X-Webhook-Token`. **Fail closed** - an unset
+  env var rejects every callback with `401 receiver_not_configured`.
+- Vocabulary: `STATUS_ALIASES` / `CHANNEL_ALIASES` in the Code node are the only two tables
+  to edit when VoiceBip's real payload format lands. Unknown status or missing
+  `external_ref` -> `200 {ignored:true, reason}` (retrying cannot fix it).
+- Failure split: Django `4xx` (unknown `request_code`, bad recording URL) -> `200
+  {rejected:true, retry:false}` so the provider stops retrying; connection refused /
+  timeout / `5xx` -> `500 {retry:true}` so it does retry.
+- Verified live:
+  - no token / bad query token / bad header token -> `401` (all three);
+  - unknown event -> `200 ignored:unknown_status`;
+  - `call.completed` for `mock-voice-REQ-2026-0038` -> `200`, row `answered`, duration 62,
+    recording URL stored, request linked;
+  - late `delivered` on the same row -> `200` but the row **stays `answered`**;
+  - `sms.delivered` for `mock-sms-REQ-2026-0038` -> row `sent` -> `delivered`;
+  - unknown `request_code` -> Django 400 -> `200 rejected`, no retry storm;
+  - Django unreachable (POST temporarily pointed at a dead port) -> `500 retry:true`, then
+    restored and re-verified `200`.
+- Env change: n8n restarted with `PROVIDER_CALLBACK_TOKEN=clinic_dev_callback_2026`.
+  Exported to `n8n/07_provider_callback.json` (10 nodes).
+- Next: **D-5** - freeze the exports and write the flip-live runbook (fill §5.5, set
+  `PROVIDER_MOCK=false`, retire the simulator), then C (response handler), B (sweeper) and
+  the Phase 5 handover.

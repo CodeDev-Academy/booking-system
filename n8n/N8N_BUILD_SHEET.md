@@ -333,8 +333,84 @@ Guards:
 | 6 | Voice guard | ✅ Done (D-2) — `Wait 30s` → `GET dispatch-status/` → `Merge Voice Guard` → `IF Voice Still Needed`; skip + fail-closed on probe error. |
 | 7 | VoiceBip call | ✅ Done (D-3) — enabled, `POST {VOICEBIP_API_URL}/voice/calls`, `Authorization: Bearer {{$env.VOICEBIP_API_KEY}}`, `agent_id`, `caller_id`; nudge only, no DTMF. |
 | 8 | Log voice | ✅ Done (D-3) — `provider:"voicebip"`, `channel:"voice"`, `status: sent|failed`; `answered`/`no_answer` arrive with the D-4 callback. |
-| 9 | Callback receiver | ⏳ D-4 — `07_provider_callback.json` receives VoiceBip delivery-report / call-outcome webhooks and POSTs them to `interactions/`. |
+| 9 | Callback receiver | ✅ Done (D-4) — `07_Provider_Callback_Receiver` (`rmqf5Z5K3EfapVGo`, 10 nodes) receives VoiceBip delivery-report / call-outcome webhooks and POSTs them to `interactions/`. See §5.3. |
 | 10 | Respond | ✅ Not needed — webhook responds immediately. |
+
+### 5.3 Provider callback receiver (Stage D-4)
+
+Workflow `07_Provider_Callback_Receiver` (`rmqf5Z5K3EfapVGo`) — **active**, 10 nodes,
+`valid: true` (0 errors, 0 warnings). Webhook: `POST /webhook/provider-callback`,
+`responseMode: responseNode` (the caller gets a real status code, unlike the dispatcher).
+
+```
+Provider Callback Webhook
+   └─ Verify & Normalize Provider Event     (Code: auth + vocabulary + payload)
+        └─ IF Authorized
+             ├─ true  → IF Should Forward
+             │            ├─ true  → Post Interaction Update  (POST {DJANGO_API_BASE_URL}/interactions/)
+             │            │            ├─ success → Respond Accepted           200
+             │            │            └─ error   → Classify Update Failure
+             │            │                         ├─ 4xx → Respond Retry 200 (rejected: true)
+             │            │                         └─ else → Respond Retry 500 (retry: true)
+             │            └─ false → Respond Ignored                            200
+             └─ false → Respond Unauthorized                                    401
+```
+
+**Auth — fail closed.** A shared token (`PROVIDER_CALLBACK_TOKEN`) must appear as
+`?token=` / `?access_token=` or in `X-Provider-Token` / `X-Callback-Token` /
+`X-Webhook-Token`. If the env var is **unset**, every callback is rejected 401
+(`receiver_not_configured`) — an unconfigured receiver never accepts traffic.
+
+**Status mapping.** Only two tables change when the partner contract lands:
+`STATUS_ALIASES` and `CHANNEL_ALIASES` in `Verify & Normalize Provider Event`.
+
+| Provider says | Stored |
+|---|---|
+| `queued`, `pending`, `scheduled`, `initiated`, `created` | `queued` |
+| `sent`, `submitted`, `accepted`, `ringing`, `in_progress` | `sent` |
+| `delivered`, `read`, `delivery_success` | `delivered` |
+| `answered`, `completed`, `call_answered`, `human_answered` | `answered` |
+| `no_answer`, `unanswered`, `busy`, `line_busy`, `voicemail`, `machine_detected` | `no_answer` |
+| `failed`, `error`, `rejected`, `undelivered`, `cancelled` | `failed` |
+| `expired`, `timeout`, `timed_out` | `expired` |
+| anything else | **ignored, HTTP 200** (`unknown_status`) |
+
+Channel is taken from `channel` / `medium`, else inferred from the `external_ref`
+(`mock-voice-…`), the event name (`sms.delivered`), or the status (`answered` →
+voice). Provider: `voicebip` for voice/SMS, `meta_whatsapp` for WhatsApp,
+`telegram` for Telegram.
+
+**Ignore, don't fail.** An event with an unknown status or no `external_ref` is
+answered `200 {ok:true, ignored:true, reason}`. Retrying cannot fix it, and a 5xx
+would make the provider hammer the endpoint.
+
+**Why the 4xx/5xx split.** Django `400` means the event will *never* be accepted
+(unknown `request_code`, invalid recording URL). Answering 500 would loop forever, so
+it answers **200** with `rejected: true`. Anything else (connection refused, timeout,
+5xx) is transient and answers **500** so the provider retries.
+
+**Status rank lives in Django, not here.** `InteractionLog.STATUS_RANK`
+(`queued 0 < sent 1 < delivered 2 < terminal 3`) is enforced in
+`POST /api/v1/interactions/`: an event whose rank is lower than the stored row's
+never overwrites it and only fills blank fields. Terminal outcomes share rank 3, so
+the most recent terminal event wins (a corrected `answered → no_answer` is accepted).
+That keeps the guarantee even if a callback is replayed from outside n8n.
+
+**Phone may be omitted.** A provider callback normally identifies the message/call by
+`external_ref` only. When the row exists, Django reuses its stored number; a brand-new
+row without a phone is still rejected `400`.
+
+**Verified live (2026-11-14):**
+
+| Case | Result |
+|---|---|
+| no token / bad query token / bad header token | `401 unauthorized` (all three) |
+| unknown event (`teleported`) | `200 {ignored:true, reason:"unknown_status"}` |
+| `call.completed` for `mock-voice-REQ-2026-0038` | `200`, row → `answered`, duration 62, recording URL stored, request linked |
+| late `delivered` on that same row | `200`, row **stays `answered`** (rank guard) |
+| `sms.delivered` for `mock-sms-REQ-2026-0038` | `200`, row `sent` → `delivered` |
+| unknown `request_code` → Django 400 | `200 {rejected:true, retry:false}` (no retry storm) |
+| Django unreachable (POST pointed at a dead port) | `500 {retry:true, reason:"django_unavailable"}` |
 
 ---
 
@@ -348,6 +424,7 @@ Guards:
 | `04_patient_response_handler.json` | Response skeleton | Per §4 — add SMS "1/2/3" replies, re-request, channel neutralization, logging |
 | `05_slot_offer_dispatcher.json` | ✅ Fresh export of the live workflow | Re-export after any live edit (see §5.1). Graph = 14 nodes: adapter → switch → 3 live send nodes → 3 log nodes, plus the D-2 voice guard. |
 | `06_provider_simulator.json` | ✅ Fresh export (dev only) | Stands in for VoiceBip/Meta while `PROVIDER_MOCK=true`. Deactivate + delete once real credentials are in. |
+| `07_provider_callback.json` | ✅ Fresh export of the live workflow | `POST /webhook/provider-callback` — authenticated, idempotent provider events (see §5.3). Point VoiceBip's delivery-report / call-outcome webhook here. |
 
 ## 7. Build & test order (recommended)
 

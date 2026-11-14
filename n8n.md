@@ -305,6 +305,9 @@ VAPI_PHONE_NUMBER_ID=
 PROVIDER_MOCK=true
 PROVIDER_MOCK_FAIL=false      # true → the simulator rejects every send (tests Needs Attention)
 PROVIDER_SIMULATOR_URL=http://127.0.0.1:5678/webhook/provider-sim
+
+# Inbound provider callbacks (07_Provider_Callback_Receiver)
+PROVIDER_CALLBACK_TOKEN=      # shared secret; unset = every callback rejected 401
 ```
 
 Rules: no node hardcodes a URL or key; one adapter Code node builds every provider request;
@@ -417,8 +420,9 @@ Layer 4 contract — enforcement (opt-in, default OFF):
    against mock responses. ✅ Done (Stage D-3; one Code log node per branch, posts to
    `POST /api/v1/interactions/`).
 5. **Callback receiver** — one authenticated webhook for provider events; idempotent upsert by
-   `external_ref`; status rank so late events never downgrade a row. ⏳ Stage D-4
-   (`07_provider_callback.json`).
+   `external_ref`; status rank so late events never downgrade a row. ✅ Done (Stage D-4,
+   `07_Provider_Callback_Receiver` / `n8n/07_provider_callback.json`; rank guard lives in
+   Django so it holds even for replayed events).
 6. **Flip to live** — fill §5.5, set `PROVIDER_MOCK=false`, enable the provider nodes, re-run
    the sample payload, then one real call to a test number. ⏳ Stage D-5.
 
@@ -440,7 +444,7 @@ Layer 4 contract — enforcement (opt-in, default OFF):
 
 | # | Item | Needed for |
 |---|---|---|
-| 1 | Vapi **private API key** + confirmation of outbound endpoint (`POST /call`, assistantId + customer number) | Starting the call |
+| 1 | **VoiceBip private API key** + confirmation of the outbound call endpoint (agent/caller id + customer number) | Starting the call |
 | 2 | **Assistant IDs** for dispatch nudge / reminder / follow-up | Selecting the right agent |
 | 3 | **Server URL** slot in each assistant (paste our n8n webhook) + which **server messages** are enabled | Callback events |
 | 4 | Callback **signature/secret** scheme (if any) | Authenticating inbound events |
@@ -450,6 +454,55 @@ Layer 4 contract — enforcement (opt-in, default OFF):
 | 8 | **Sandbox/test** numbers and keys | End-to-end test without real patients |
 | 9 | Rate limits, concurrent-call limit, retry/backoff expectations | Burst control |
 | 10 | Call outcome vocabulary (answered/no_answer/failed/voicemail) + error codes | Status mapping |
+
+### 5.10 Provider callback contract (Stage D-4)
+
+`07_Provider_Callback_Receiver` (`rmqf5Z5K3EfapVGo`, `n8n/07_provider_callback.json`) owns
+`POST /webhook/provider-callback`. Point the partner's delivery-report / call-outcome webhook
+at it and give them the shared token.
+
+**Auth.** `PROVIDER_CALLBACK_TOKEN` must be supplied as `?token=`, `?access_token=`, or an
+`X-Provider-Token` / `X-Callback-Token` / `X-Webhook-Token` header. Unset env var → every
+request is `401` (fail closed).
+
+**Request body** (any subset; the receiver infers the rest):
+
+```json
+{
+  "event": "call.completed",
+  "call_id": "mock-voice-REQ-2026-0038",
+  "status": "answered",
+  "duration": 62,
+  "recording_url": "https://recordings.example.com/vb-0038.mp3",
+  "request_code": "REQ-2026-0038",
+  "to": "+2348030001122"
+}
+```
+
+**Responses.**
+
+| Situation | Status | Body |
+|---|---|---|
+| Accepted / updated | `200` | `{ok:true, accepted:true, interaction_id, status, channel, external_ref, request_code}` |
+| Unparseable but authentic (unknown status, no `external_ref`) | `200` | `{ok:true, ignored:true, reason}` |
+| Django rejects the event (`4xx`, e.g. unknown `request_code`) | `200` | `{ok:false, rejected:true, retry:false, reason}` |
+| Django unreachable / `5xx` / timeout | `500` | `{ok:false, retry:true, reason:"django_unavailable"}` |
+| Missing or wrong token | `401` | `{ok:false, error:"unauthorized", reason}` |
+
+The 4xx/5xx split is deliberate: a retry cannot fix a rejected event, so it answers 200;
+only transient failures ask the provider to try again.
+
+**Status rank is enforced in Django**, not n8n: `queued 0 < sent 1 < delivered 2 <
+answered|no_answer|failed|expired 3`. A lower-ranked event never overwrites a higher-ranked
+row and only fills blank fields; same-rank terminal events overwrite (last one wins). This
+holds even if a callback is replayed outside n8n.
+
+**Phone is optional** when `external_ref` matches an existing row (Django reuses the stored
+number). A brand-new row without a phone is still rejected `400`.
+
+**Vocabulary tables** live in the `Verify & Normalize Provider Event` Code node
+(`STATUS_ALIASES`, `CHANNEL_ALIASES`). Only those two tables need editing when the partner's
+real payload format arrives.
 
 ---
 
@@ -463,3 +516,4 @@ Layer 4 contract — enforcement (opt-in, default OFF):
 | **Patient Response Handler** | `n8n/04_patient_response_handler.json` | Webhook (`/webhook/messaging/inbound`) | Route inline buttons (Hold, Confirm, Cancel, Re-Request) |
 | **Slot Offer Dispatcher** | `n8n/05_slot_offer_dispatcher.json` | Webhook (`/webhook/dispatch-offers`) | Format & send approved 1h slot buttons to patient |
 | **Provider Simulator** (dev only) | `n8n/06_provider_simulator.json` | Webhook (`/webhook/provider-sim/{channel}`) | Stand-in for VoiceBip/Meta: realistic success payload or HTTP 500 when `PROVIDER_MOCK_FAIL=true` |
+| **Provider Callback Receiver** | `n8n/07_provider_callback.json` | Webhook (`/webhook/provider-callback`) | Authenticate + normalize provider delivery reports / call outcomes, upsert `InteractionLog` |

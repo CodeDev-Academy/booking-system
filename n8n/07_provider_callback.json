@@ -1,0 +1,318 @@
+{
+  "id": "rmqf5Z5K3EfapVGo",
+  "name": "07_Provider_Callback_Receiver",
+  "active": true,
+  "settings": {
+    "timezone": "Africa/Lagos",
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "id": "d4-wh-0001",
+      "name": "Provider Callback Webhook",
+      "webhookId": "provider-callback",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "provider-callback",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "d4-norm-0002",
+      "name": "Verify & Normalize Provider Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Workflow D · Stage D-4 — provider callback receiver (VoiceBip voice/SMS, Meta WhatsApp).\n// One authenticated webhook for every asynchronous provider event: delivery reports,\n// call outcomes and recordings. Django remains the source of truth: this node only\n// normalizes the provider's vocabulary, then POSTs to /interactions/ where the\n// status-rank guard decides whether the stored row may advance.\nconst src = $input.first().json || {};\nconst body = src.body || {};\nconst query = src.query || {};\nconst headers = src.headers || {};\n\nconst env = function (name, fallback) {\n  try {\n    var v = $env[name];\n    return (v === undefined || v === null) ? (fallback || '') : String(v);\n  } catch (e) { return fallback || ''; }\n};\nconst first = function () {\n  for (var i = 0; i < arguments.length; i++) {\n    var v = arguments[i];\n    if (v !== undefined && v !== null && String(v).trim() !== '') return v;\n  }\n  return '';\n};\nconst norm = function (v) {\n  return String(v || '').trim().toLowerCase().replace(new RegExp('[^a-z0-9]+', 'g'), '_');\n};\n\n// ---------- 1. Authentication (fail closed) ----------\nconst expected = env('PROVIDER_CALLBACK_TOKEN');\nconst provided = String(first(\n  query.token,\n  query.access_token,\n  headers['x-provider-token'],\n  headers['x-callback-token'],\n  headers['x-webhook-token'],\n  body.token\n)).trim();\nconst authorized = Boolean(expected) && provided === expected;\n\nif (!authorized) {\n  return [{ json: {\n    authorized: false,\n    skip: true,\n    reason: expected ? 'bad_token' : 'callback_token_not_configured',\n    http_code: 401,\n    response: {\n      ok: false,\n      error: 'unauthorized',\n      reason: expected ? 'invalid_callback_token' : 'receiver_not_configured',\n    },\n  } }];\n}\n\n// ---------- 2. Provider vocabulary -> clinic vocabulary ----------\n// Adjust these two tables (only these) when VoiceBip's real payload spec lands.\nconst STATUS_ALIASES = {\n  queued: 'queued', pending: 'queued', scheduled: 'queued', initiated: 'queued', created: 'queued',\n  sent: 'sent', submitted: 'sent', accepted: 'sent', ringing: 'sent', in_progress: 'sent', calling: 'sent',\n  delivered: 'delivered', delivery: 'delivered', read: 'delivered', delivery_success: 'delivered', message_delivered: 'delivered',\n  answered: 'answered', completed: 'answered', call_answered: 'answered', call_completed: 'answered', human_answered: 'answered',\n  no_answer: 'no_answer', noanswer: 'no_answer', unanswered: 'no_answer', busy: 'no_answer',\n  line_busy: 'no_answer', voicemail: 'no_answer', machine_detected: 'no_answer', no_response: 'no_answer',\n  failed: 'failed', failure: 'failed', error: 'failed', rejected: 'failed', undelivered: 'failed',\n  delivery_failed: 'failed', cancelled: 'failed', canceled: 'failed', call_failed: 'failed',\n  expired: 'expired', timeout: 'expired', timed_out: 'expired', offer_expired: 'expired',\n};\nconst CHANNEL_ALIASES = {\n  voice: 'voice', call: 'voice', voice_call: 'voice', voicecall: 'voice', phone: 'voice', ivr: 'voice',\n  sms: 'sms', text: 'sms', message: 'sms', messaging: 'sms', text_message: 'sms',\n  whatsapp: 'whatsapp', wa: 'whatsapp', whatsapp_cloud: 'whatsapp', whatsapp_message: 'whatsapp',\n  telegram: 'telegram', tg: 'telegram',\n};\n\nconst rawEvent = String(first(body.event, body.type, body.status, body.call_status, body.delivery_status, body.state));\nconst eventTail = norm(rawEvent).split('_').pop() || '';\nconst rawStatus = norm(first(body.status, body.call_status, body.delivery_status, body.state, rawEvent));\nconst status = STATUS_ALIASES[rawStatus] || STATUS_ALIASES[eventTail] || STATUS_ALIASES[norm(rawEvent)] || '';\n\nconst externalRef = String(first(\n  body.external_ref, body.externalRef, body.message_id, body.messageId,\n  body.call_id, body.callId, body.reference, body.sid, body.provider_ref, body.id\n));\n\nlet requestCode = String(first(\n  body.request_code,\n  body.client_reference,\n  body.metadata && body.metadata.request_code,\n  body.custom_data && body.custom_data.request_code\n));\nif (!requestCode) {\n  const hit = externalRef.match(new RegExp('REQ-[0-9]{4}-[0-9]+', 'i'));\n  if (hit) requestCode = hit[0].toUpperCase();\n}\n\nlet channel = CHANNEL_ALIASES[norm(first(body.channel, body.medium, body.channel_type))] || '';\nif (!channel) {\n  const ref = externalRef.toLowerCase();\n  if (ref.indexOf('voice') !== -1 || ref.indexOf('call') !== -1) channel = 'voice';\n  else if (ref.indexOf('sms') !== -1) channel = 'sms';\n  else if (ref.indexOf('whatsapp') !== -1 || ref.indexOf('wa-') !== -1) channel = 'whatsapp';\n}\nif (!channel && (status === 'answered' || status === 'no_answer')) channel = 'voice';\nif (!channel && rawEvent) {\n  const ev = norm(rawEvent);\n  if (ev.indexOf('sms') === 0) channel = 'sms';\n  else if (ev.indexOf('whatsapp') === 0 || ev.indexOf('wa_') === 0) channel = 'whatsapp';\n  else if (ev.indexOf('call') === 0 || ev.indexOf('voice') === 0) channel = 'voice';\n}\n// Last resort: VoiceBip's remaining product is SMS. Confirm with the partner contract.\nif (!channel) channel = 'sms';\n\nconst explicitProvider = norm(first(body.provider, body.provider_name, body.vendor));\nlet provider = '';\nif (explicitProvider.indexOf('voicebip') !== -1 || explicitProvider.indexOf('bip') !== -1) provider = 'voicebip';\nelse if (explicitProvider.indexOf('meta') !== -1 || explicitProvider.indexOf('whatsapp') !== -1) provider = 'meta_whatsapp';\nelse if (explicitProvider.indexOf('telegram') !== -1) provider = 'telegram';\nif (!provider) provider = channel === 'whatsapp' ? 'meta_whatsapp' : (channel === 'telegram' ? 'telegram' : 'voicebip');\n\nconst phone = String(first(\n  body.patient_phone, body.to, body.phone, body.destination, body.recipient, body.customer_number,\n  body.metadata && body.metadata.patient_phone,\n  body.metadata && body.metadata.to\n));\n\nconst rawDuration = first(body.call_duration_seconds, body.duration_seconds, body.duration, body.call_duration, body.billable_duration);\nconst duration = (rawDuration === '' || isNaN(Number(rawDuration))) ? null : Math.max(0, Math.round(Number(rawDuration)));\nconst recording = String(first(body.recording_url, body.recordingUrl, body.recording && body.recording.url, body.call_recording_url));\nconst transcript = String(first(body.transcript, body.transcription, body.call_transcript));\nconst rawError = first(body.error_detail, body.error, body.reason, body.failure_reason, body.error_message);\nconst errorDetail = (rawError && typeof rawError === 'object') ? JSON.stringify(rawError) : String(rawError || '');\n\nconst STATUS_LABEL = {\n  queued: 'queued', sent: 'sent', delivered: 'delivered',\n  answered: 'answered', no_answer: 'did not answer', failed: 'failed', expired: 'expired',\n};\nconst summary = String(first(body.summary, body.note, 'Provider callback: ' + channel + ' ' + (STATUS_LABEL[status] || status)));\n\n// ---------- 3. Ignore anything we cannot place (still a 200, so the provider stops retrying) ----------\nconst ignore = function (reason) {\n  return [{ json: {\n    authorized: true, skip: true, reason: reason, http_code: 200,\n    response: { ok: true, ignored: true, reason: reason, external_ref: externalRef || null },\n  } }];\n};\nif (!status) return ignore('unknown_status');\nif (!externalRef) return ignore('missing_external_ref');\n\n// ---------- 4. Ready to hand to Django ----------\nconst payload = {\n  provider: provider,\n  channel: channel,\n  direction: 'outbound',\n  status: status,\n  patient_name: String(first(body.patient_name, body.customer_name, body.metadata && body.metadata.patient_name)),\n  patient_phone: phone,\n  request_code: requestCode,\n  external_ref: externalRef,\n  summary: summary,\n  error_detail: errorDetail,\n};\nif (duration !== null) payload.call_duration_seconds = duration;\nif (recording) payload.recording_url = recording;\nif (transcript) payload.transcript = transcript;\n\nreturn [{ json: {\n  authorized: true,\n  skip: false,\n  reason: null,\n  http_code: 200,\n  payload: payload,\n  response: { ok: true, accepted: true, external_ref: externalRef, status: status },\n} }];"
+      }
+    },
+    {
+      "id": "d4-if-0003",
+      "name": "IF Authorized",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-d4-auth",
+              "leftValue": "={{ $json.authorized }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d4-if-0004",
+      "name": "IF Should Forward",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        700,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-d4-skip",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d4-post-0005",
+      "name": "Post Interaction Update",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueErrorOutput",
+      "position": [
+        920,
+        -120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DJANGO_API_BASE_URL + '/interactions/' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.DJANGO_WEBHOOK_SECRET || '' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d4-classify-0006",
+      "name": "Classify Update Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        -20
+      ],
+      "parameters": {
+        "jsCode": "// Workflow D · Stage D-4 — classify a failed /interactions/ write.\n// A 4xx means Django will never accept this event (bad vocabulary, unknown request_code,\n// invalid recording URL): retrying cannot fix it, so answer 200 and let the workflow log\n// stand. A 5xx / timeout / connection refusal is transient: answer 500 so the provider\n// retries the delivery report.\nconst incoming = $input.first().json || {};\nconst raw = String((incoming.error && incoming.error.message) || incoming.error || '');\nconst hit = raw.match(new RegExp('(^|[^0-9])([45][0-9][0-9])([^0-9]|$)'));\nconst code = hit ? Number(hit[2]) : 0;\nconst clientError = code >= 400 && code < 500;\n\nreturn [{ json: {\n  http_code: clientError ? 200 : 500,\n  accepted: false,\n  rejected: clientError,\n  retry: !clientError,\n  reason: clientError ? 'django_rejected_event' : 'django_unavailable',\n  detail: raw.slice(0, 300),\n} }];"
+      }
+    },
+    {
+      "id": "d4-resp-ok-0007",
+      "name": "Respond Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1140,
+        -120
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, accepted: true, interaction_id: $json.id, status: $json.status, channel: $json.channel, external_ref: $json.external_ref, request_code: $json.request_code } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "d4-resp-ign-0008",
+      "name": "Respond Ignored",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        920,
+        120
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $('Verify & Normalize Provider Event').first().json.response }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "d4-resp-401-0009",
+      "name": "Respond Unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        700,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $('Verify & Normalize Provider Event').first().json.response }}",
+        "options": {
+          "responseCode": 401
+        }
+      }
+    },
+    {
+      "id": "d4-resp-500-0010",
+      "name": "Respond Retry",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1360,
+        -20
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: false, accepted: $json.accepted, rejected: $json.rejected, retry: $json.retry, reason: $json.reason, detail: $json.detail } }}",
+        "options": {
+          "responseCode": "={{ $json.http_code }}"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Provider Callback Webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify & Normalize Provider Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify & Normalize Provider Event": {
+      "main": [
+        [
+          {
+            "node": "IF Authorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Authorized": {
+      "main": [
+        [
+          {
+            "node": "IF Should Forward",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Unauthorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Should Forward": {
+      "main": [
+        [
+          {
+            "node": "Post Interaction Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Ignored",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Interaction Update": {
+      "main": [
+        [
+          {
+            "node": "Respond Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify Update Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Update Failure": {
+      "main": [
+        [
+          {
+            "node": "Respond Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

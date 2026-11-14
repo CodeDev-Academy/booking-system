@@ -3693,6 +3693,97 @@ class InteractionLogAPITests(APITestCase):
         self.assertIn('request_code', res.data)
         self.assertEqual(InteractionLog.objects.count(), 0)
 
+    # ---------- Stage D-4: out-of-order provider callbacks ----------
+
+    def _post_status(self, new_status, **overrides):
+        payload = dict(self.valid_payload)
+        payload['status'] = new_status
+        payload.update(overrides)
+        return self._post_with_secret(payload)
+
+    def test_late_delivery_report_does_not_downgrade_answered(self):
+        self._post_status('answered')
+        res = self._post_status('delivered')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        log = InteractionLog.objects.get(external_ref='VB-CALL-7788')
+        self.assertEqual(log.status, 'answered')
+
+    def test_late_sent_event_does_not_downgrade_delivered(self):
+        self._post_status('delivered')
+        res = self._post_status('sent')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(InteractionLog.objects.get().status, 'delivered')
+
+    def test_newer_status_still_advances_the_row(self):
+        self._post_status('sent')
+        res = self._post_status('delivered')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(InteractionLog.objects.get().status, 'delivered')
+
+    def test_terminal_outcome_overrides_earlier_terminal(self):
+        # answered -> no_answer is a same-rank terminal correction: last one wins.
+        self._post_status('answered')
+        self._post_status('no_answer')
+
+        self.assertEqual(InteractionLog.objects.get().status, 'no_answer')
+
+    def test_stale_event_fills_blanks_without_overwriting(self):
+        self._post_status('answered', recording_url='', summary='Patient accepted 10:00 slot.')
+        res = self._post_status(
+            'sent',
+            recording_url='https://recordings.example.com/vb-7788.mp3',
+            summary='Late generic delivery report',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        log = InteractionLog.objects.get()
+        self.assertEqual(log.status, 'answered')
+        self.assertEqual(log.recording_url, 'https://recordings.example.com/vb-7788.mp3')
+        self.assertEqual(log.summary, 'Patient accepted 10:00 slot.')
+
+    def test_stale_event_never_clears_a_failure_reason(self):
+        self._post_status('failed', error_detail='Line busy.')
+        self._post_status('sent', error_detail='')
+
+        log = InteractionLog.objects.get()
+        self.assertEqual(log.status, 'failed')
+        self.assertEqual(log.error_detail, 'Line busy.')
+
+    def test_callback_without_phone_reuses_stored_number(self):
+        self._post_status('sent')
+
+        # VoiceBip-style call outcome: provider id only, no destination number.
+        payload = {
+            'provider': 'voicebip',
+            'channel': 'voice',
+            'status': 'answered',
+            'external_ref': 'VB-CALL-7788',
+            'call_duration_seconds': 62,
+        }
+        res = self._post_with_secret(payload)
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        log = InteractionLog.objects.get()
+        self.assertEqual(log.status, 'answered')
+        self.assertEqual(log.call_duration_seconds, 62)
+        self.assertEqual(log.patient_phone, '+2348030001122')
+
+    def test_post_without_phone_and_unknown_ref_rejected(self):
+        payload = {
+            'provider': 'voicebip',
+            'channel': 'voice',
+            'status': 'answered',
+            'external_ref': 'VB-UNKNOWN-1',
+        }
+        res = self._post_with_secret(payload)
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('patient_phone', res.data)
+        self.assertEqual(InteractionLog.objects.count(), 0)
+
     def test_post_invalid_channel_rejected(self):
         bad = dict(self.valid_payload)
         bad['channel'] = 'carrier_pigeon'

@@ -63,16 +63,49 @@ class InteractionListCreateView(APIView):
         external_ref = (validated.get('external_ref') or '').strip()
         # Empty-string external_ref must map to NULL — '' would collide on the unique index.
         validated['external_ref'] = external_ref or None
+
+        existing = (
+            InteractionLog.objects.filter(external_ref=external_ref).first()
+            if external_ref else None
+        )
+
+        # Provider callbacks (Stage D-4) usually identify the message/call by provider id
+        # only. When the row already exists, reuse its stored number instead of rejecting
+        # the event; a brand-new row still has to carry a phone number.
+        if not (validated.get('patient_phone') or ''):
+            if existing is None:
+                return Response(
+                    {'patient_phone': ['patient_phone is required.']},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            validated['patient_phone'] = existing.patient_phone
+
         created = False
         if external_ref:
-            # Atomic upsert (Review Fix #2): a check-then-create race would let two
-            # concurrent n8n re-deliveries both pass the .first() check and the second
-            # create() crash with IntegrityError. update_or_create handles both outcomes.
-            defaults = {k: v for k, v in validated.items() if k != 'external_ref'}
-            instance, created = InteractionLog.objects.update_or_create(
-                external_ref=external_ref,
-                defaults=defaults,
-            )
+            incoming_rank = InteractionLog.STATUS_RANK.get(validated.get('status') or 'sent', 0)
+            if existing is not None and incoming_rank < existing.status_rank():
+                # Out-of-order provider event (Stage D-4): a late "delivered" must never
+                # overwrite an "answered", and a retried "sent" must not erase a failure.
+                # Keep the newer status and only fill blanks the row is still missing.
+                filled = []
+                for field, value in validated.items():
+                    if field in ('external_ref', 'status') or value in ('', None):
+                        continue
+                    if getattr(existing, field) in (None, '', []):
+                        setattr(existing, field, value)
+                        filled.append(field)
+                if filled:
+                    existing.save(update_fields=filled + ['updated_at'])
+                instance = existing
+            else:
+                # Atomic upsert (Review Fix #2): a check-then-create race would let two
+                # concurrent n8n re-deliveries both pass the .first() check and the second
+                # create() crash with IntegrityError. update_or_create handles both outcomes.
+                defaults = {k: v for k, v in validated.items() if k != 'external_ref'}
+                instance, created = InteractionLog.objects.update_or_create(
+                    external_ref=external_ref,
+                    defaults=defaults,
+                )
         else:
             instance = InteractionLog.objects.create(**validated)
             created = True
