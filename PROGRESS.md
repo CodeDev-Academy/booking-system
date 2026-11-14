@@ -768,3 +768,44 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
   enforcement switch).
 - Option B is now complete end to end: resolver -> endpoint -> advisory dispatch ->
   dashboard hints -> opt-in enforcement.
+
+
+## 2026-11-14 - Workflow D Stage D-1: provider adapter + channel routing (live n8n)
+
+- Goal: build Workflow D in-house against a **mock provider** so flipping to live
+  VoiceBip credentials later is a config change, not a rebuild. Voice **and** SMS both
+  go through VoiceBip (Vapi stays only as a future alternative pattern).
+- Live graph is now **7 nodes**:
+  `Webhook → Format Offers & Telegram Buttons → Provider Config & Adapter (Code,
+  runOnceForAllItems) → Route Provider Request (Switch: whatsapp|sms|voice|skip)` plus
+  the three still-**disabled** send nodes (WhatsApp / VoiceBip SMS / VoiceBip voice).
+- Design correction found by a live run: the three `IF Want *` nodes were **removed**.
+  All three IFs passed identical items (every item carried every `want_*` flag), so a
+  downstream node could not tell which branch it came from - a run routed all three items
+  as `sms`. The adapter now emits exactly **one item per active channel**:
+  `whatsapp` only when `want_whatsapp && !chat_id` (Telegram patients already got
+  Django's card), `sms` when `want_sms`, `voice` when `want_voice` + quiet hours
+  (08:00-19:00 `Africa/Lagos`).
+- Adapter is the single source of provider config: every URL/key/sender id comes from
+  `$env` (`VOICEBIP_API_URL`, `VOICEBIP_API_KEY`, `VOICEBIP_VOICE_AGENT_ID`,
+  `VOICEBIP_CALLER_ID`, `VOICEBIP_SMS_SENDER_ID`, `WHATSAPP_*`) - no node hardcodes one.
+  It exposes `provider_request.{route,skip_reason,method,url,headers,body}` and
+  `adapter_meta` (`provider_mock`, `configured`, `voice_in_window`, `duplicate`,
+  `missing_env[]`) for the log nodes that arrive in D-3.
+- Guards: mock mode (`PROVIDER_MOCK` unset **or** true -> no HTTP, realistic fake
+  `external_ref: mock-<channel>-<request_id>`; `PROVIDER_MOCK_FAIL=true` simulates a
+  provider failure), best-effort 10-minute dedupe on n8n static data
+  (Django `PATIENT_ALREADY_BOOKED` + offer state stay authoritative), and a
+  `provider_not_configured` skip when mock is off and a channel is missing env vars.
+- Stage 0 finding: a probe workflow proved `$env` is **not** blocked on this instance,
+  so no restart was needed for the mock stage; the n8n process was later restarted with
+  the mock env vars loaded and the adapter now reports the real `missing_env` list.
+- Verified live (executions 15-19): per-channel routing `[wa,sms,voice,skip]=[1,1,1,0]`,
+  Telegram patient suppressing the WhatsApp leg, `duplicate_dispatch`,
+  `outside_call_window`, and mock `external_ref`/`status`. `valid: true`, 0 errors, only
+  the three expected "connection to disabled node" warnings.
+- Repo copy exported to `n8n/05_slot_offer_dispatcher.json` (7 nodes, UTF-8, settings
+  timezone `Africa/Lagos`); build sheet section 5.1/5.2 rewritten for the new graph.
+- Next: **D-2** voice guard (`Wait 30s` -> `GET dispatch-status/` -> skip when
+  `should_skip_voice_call`), then D-3 enable sends + `InteractionLog` per branch,
+  D-4 provider callback receiver, D-5 freeze.

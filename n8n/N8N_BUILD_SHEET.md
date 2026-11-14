@@ -215,44 +215,78 @@ If `should_skip_voice_call` is `true` (patient already picked an option — hold
 booking), **skip the call entirely** and log nothing extra. Works with the webhook secret;
 no staff session needed.
 
-### 5.1 Current build state (2026-11-13, built via n8n API)
+### 5.1 Current build state (2026-11-13 → Stage D-1, 2026-11-14)
 
-Workflow ID `GtpeOwfnG8yYyAxq` (`05_Slot_Offer_Dispatcher_Bridge`) — **active**, execution 7
-verified `success` with the sample payload. Graph:
+Workflow ID `GtpeOwfnG8yYyAxq` (`05_Slot_Offer_Dispatcher_Bridge`) — **active**, 7 nodes,
+`valid: true` (0 errors; the only warnings are the three expected "connection to disabled
+node" pass-throughs). Graph:
 
 ```
-Dispatch Offers Webhook from Django   (responseMode: onReceived — answers instantly)
-   └─ Format Offers & Telegram Buttons   (Task 3.5 code: labels, options, sms_body, want_*)
-        ├─ IF Want WhatsApp   want_whatsapp = true AND chat_id empty
-        │     └─ Send WhatsApp Interactive Message   [DISABLED — awaits Meta creds]
-        ├─ IF Want SMS        want_sms = true
-        │     └─ Send SMS (VoiceBip)                 [DISABLED — awaits VoiceBip creds]
-        └─ IF Want Voice      want_voice = true
-              └─ Send Voice Call (VoiceBip)          [DISABLED — awaits VoiceBip creds]
+Dispatch Offers Webhook from Django        (responseMode: onReceived — answers instantly)
+   └─ Format Offers & Telegram Buttons      (Task 3.5 code: labels, options, sms_body, want_*)
+        └─ Provider Config & Adapter        (Code, runOnceForAllItems — ONE item per active channel)
+             └─ Route Provider Request      (Switch: whatsapp | sms | voice | skip)
+                  ├─ whatsapp → Send WhatsApp Interactive Message  [DISABLED — awaits Meta creds]
+                  ├─ sms      → Send SMS (VoiceBip)                [DISABLED — awaits VoiceBip creds]
+                  ├─ voice    → Send Voice Call (VoiceBip)         [DISABLED — awaits VoiceBip creds]
+                  └─ skip     → (empty, intentional no-op)
 ```
 
-- The old `Is Channel Telegram?` IF, `Send Telegram Interactive Offer Card` and
-  `Respond Dispatch Success` nodes are **removed** — branching is on `dispatch_channels`
-  (via `want_*`), never on `channel`; Django owns + logs the Telegram card.
+**Why the three `IF Want *` nodes were removed (Stage D-1 finding):** all three IFs passed
+*identical* items downstream — every item carried every `want_*` flag — so a node after them
+could not tell which branch it came from (a live run routed all three items as `sms`).
+Branching therefore lives inside the adapter, which emits exactly one item per active
+channel. Do not re-introduce per-channel IFs.
+
+**`Provider Config & Adapter` contract** (single source of provider config — no node
+hardcodes a URL, key or sender id; everything comes from `$env`):
+
+| Field | Meaning |
+|---|---|
+| `provider_channel` | `whatsapp` \| `sms` \| `voice` (the item's channel) |
+| `provider_request.route` | same value, or `skip` |
+| `provider_request.skip_reason` | `duplicate_dispatch` \| `outside_call_window` \| `provider_not_configured` \| `no_active_channel` |
+| `provider_request.{method,url,headers,body}` | the exact HTTP call a send node would make (enabled at D-3) |
+| `provider_response` | mock object while `PROVIDER_MOCK` is on, else `null` |
+| `adapter_meta` | `channel, provider_mock, provider_mock_fail, configured, voice_in_window, duplicate, request_id, external_ref_hint, missing_env[]` |
+
+Active-channel rules (in the adapter, in this order):
+- `whatsapp` — `want_whatsapp && !chat_id` (a Telegram patient already got Django's card)
+- `sms` — `want_sms`
+- `voice` — `want_voice`, then gated by quiet hours **08:00–19:00 `Africa/Lagos`**
+
+Guards:
+- **Dedupe** — `$getWorkflowStaticData('global')` keyed `request_id:channel`, 10-minute
+  prune. Best-effort only: static data does not persist across manual test runs, and
+  Django's `PATIENT_ALREADY_BOOKED` 409 + offer state remain authoritative.
+- **Mock** — `PROVIDER_MOCK` unset **or** true → no HTTP, realistic fake
+  `{mock, ok, external_ref: "mock-<channel>-<request_id>", status: "sent"|"failed"}`.
+  `PROVIDER_MOCK_FAIL=true` simulates a provider failure for the Needs-Attention path.
+- **Not configured** — with mock off, a channel missing its env vars routes to `skip`
+  (`provider_not_configured`) instead of firing a broken call.
+
 - Workflow settings timezone: `Africa/Lagos`.
-- Disabled nodes are pass-through in n8n, so the workflow completes cleanly with every leg off.
-- When creds arrive: enable the node, set `VOICEBIP_API_KEY` / `VOICEBIP_SMS_URL` /
-  `VOICEBIP_VOICE_URL` (and WhatsApp env vars), restart n8n with
-  `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`, then re-run the sample.
+- Disabled send nodes are pass-through in n8n, so the workflow completes cleanly with every
+  leg off.
+- Verified live (executions 15–18): per-channel routing, Telegram patient suppressing the
+  WhatsApp leg, `duplicate_dispatch`, `outside_call_window`, and the mock
+  `external_ref`/`status`.
+- Flip-live is **config only**: enable the send nodes, set `PROVIDER_MOCK=false` plus the
+  `VOICEBIP_*` / `WHATSAPP_*` env vars, restart n8n (env vars are read at process start).
 
-### 5.2 Remaining D steps (after partner creds)
+### 5.2 Remaining D steps
 
 | Step | Node | Detail |
 |---|---|---|
 | 1 | Code | ✅ Done — `Format Offers & Telegram Buttons` builds labels, `options[]`, `options_text`, `sms_body`, `whatsapp_params`, `want_*`. |
-| 2 | IF branches | ✅ Done — three parallel IFs on `want_whatsapp`/`want_sms`/`want_voice` (+ `chat_id` empty for WhatsApp). |
-| 3 | WhatsApp send | ⏳ Disabled — Meta Cloud API approved template with 3 quick-reply buttons; params: patient name, service, option labels, `expiry_minutes`. |
-| 4 | SMS send | ⏳ Disabled — VoiceBip SMS, body already composed as `sms_body`; sender ID `Cedarcare`. |
-| 5 | Log ×2 | ⏳ `POST {{$env.DJANGO_API_BASE_URL}}/api/v1/interactions/`, header `X-Webhook-Secret: {{$env.DJANGO_WEBHOOK_SECRET}}`, `external_ref` = provider message id. |
-| 6 | Wait | ⏳ 30 seconds on the voice branch (auxiliary nudge only). |
-| 7 | Status probe | ⏳ `GET dispatch-status/` → stop the branch when `should_skip_voice_call` is true. |
-| 8 | VoiceBip call | ⏳ `POST https://api.voicebip.com/v1/campaigns`, `Authorization: Bearer {{$env.VOICEBIP_API_KEY}}`; universal audio prompt points to the WhatsApp/SMS options. |
-| 9 | Log voice | ⏳ `provider:"voicebip"`, `channel:"voice"`, status `answered`/`no_answer`/`failed`, `external_call_id`. |
+| 2 | Adapter + routing | ✅ Done (D-1) — `Provider Config & Adapter` (one item per active channel, mock, dedupe, quiet hours, `configured` gate) → `Route Provider Request` switch. The three `IF Want *` nodes were removed (see §5.1). |
+| 3 | WhatsApp send | ⏳ D-3 — enable node; Meta Cloud API template with 3 quick-reply buttons; params: patient name, service, option labels, `expiry_minutes`. |
+| 4 | SMS send | ⏳ D-3 — enable node; VoiceBip SMS, body already composed as `sms_body`; sender ID `Cedarcare`. |
+| 5 | Log ×2 | ⏳ D-3 — `POST {{$env.DJANGO_API_BASE_URL}}/api/v1/interactions/`, header `X-Webhook-Secret: {{$env.DJANGO_WEBHOOK_SECRET}}`, `external_ref` = provider message id (`mock-*` while mocking). |
+| 6 | Voice guard | ⏳ D-2 — `Wait 30s` → `GET dispatch-status/` → stop the branch when `should_skip_voice_call` is true. |
+| 7 | VoiceBip call | ⏳ D-3 — `POST {VOICEBIP_API_URL}/voice/calls`, `Authorization: Bearer {{$env.VOICEBIP_API_KEY}}`, `agent_id`, `caller_id`; nudge only, no DTMF. |
+| 8 | Log voice | ⏳ D-3 — `provider:"voicebip"`, `channel:"voice"`, status `answered`/`no_answer`/`failed`, `external_call_id`. |
+| 9 | Callback receiver | ⏳ D-4 — `06_provider_callback.json` receives VoiceBip delivery-report / call-outcome webhooks and POSTs them to `interactions/`. |
 | 10 | Respond | ✅ Not needed — webhook responds immediately. |
 
 ---
