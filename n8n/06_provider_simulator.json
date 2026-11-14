@@ -1,0 +1,220 @@
+{
+  "id": "JrsFTzRpf2yyoZsW",
+  "name": "06_Provider_Simulator",
+  "active": true,
+  "settings": {
+    "timezone": "Africa/Lagos",
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "id": "sim-wh-whatsapp",
+      "name": "Sim Webhook (WhatsApp)",
+      "webhookId": "provider-sim-whatsapp",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        -192
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "provider-sim/whatsapp",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "sim-code-whatsapp",
+      "name": "Build WhatsApp Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        -192
+      ],
+      "parameters": {
+        "jsCode": "// Provider simulator (dev only) — stands in for Meta WhatsApp.\n// Returns a realistic success payload, or an HTTP 500 when PROVIDER_MOCK_FAIL=true\n// so the dispatcher's real error path (onError -> failure log) is exercised.\nconst body = $input.first().json.body || {};\nconst meta = body.metadata || {};\nconst channel = 'whatsapp';\nconst ref = 'mock-' + channel + '-' + (meta.request_code || body.to || 'unknown');\nconst fail = ['1', 'true', 'yes', 'on'].includes(String($env.PROVIDER_MOCK_FAIL || '').toLowerCase());\n\nif (fail) {\n  return [{ json: { http_code: 500, body: {\n    error: 'SIMULATED_PROVIDER_FAILURE',\n    detail: 'PROVIDER_MOCK_FAIL=true — the simulator rejected this request on purpose.',\n    channel,\n  } } }];\n}\n\nreturn [{ json: { http_code: 200, body: {\n  mock: true,\n  ok: true,\n  channel,\n  external_ref: ref,\n  message_id: ref,\n  status: 'sent',\n  note: 'SIMULATED — no real message/call was sent',\n} } }];"
+      }
+    },
+    {
+      "id": "sim-resp-whatsapp",
+      "name": "Respond WhatsApp",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        480,
+        -192
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.http_code }}"
+        }
+      }
+    },
+    {
+      "id": "sim-wh-sms",
+      "name": "Sim Webhook (SMS)",
+      "webhookId": "provider-sim-sms",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        96
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "provider-sim/sms",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "sim-code-sms",
+      "name": "Build SMS Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        96
+      ],
+      "parameters": {
+        "jsCode": "// Provider simulator (dev only) — stands in for VoiceBip SMS.\n// Returns a realistic success payload, or an HTTP 500 when PROVIDER_MOCK_FAIL=true\n// so the dispatcher's real error path (onError -> failure log) is exercised.\nconst body = $input.first().json.body || {};\nconst meta = body.metadata || {};\nconst channel = 'sms';\nconst ref = 'mock-' + channel + '-' + (meta.request_code || body.to || 'unknown');\nconst fail = ['1', 'true', 'yes', 'on'].includes(String($env.PROVIDER_MOCK_FAIL || '').toLowerCase());\n\nif (fail) {\n  return [{ json: { http_code: 500, body: {\n    error: 'SIMULATED_PROVIDER_FAILURE',\n    detail: 'PROVIDER_MOCK_FAIL=true — the simulator rejected this request on purpose.',\n    channel,\n  } } }];\n}\n\nreturn [{ json: { http_code: 200, body: {\n  mock: true,\n  ok: true,\n  channel,\n  external_ref: ref,\n  message_id: ref,\n  status: 'sent',\n  note: 'SIMULATED — no real message/call was sent',\n} } }];"
+      }
+    },
+    {
+      "id": "sim-resp-sms",
+      "name": "Respond SMS",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        480,
+        96
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.http_code }}"
+        }
+      }
+    },
+    {
+      "id": "sim-wh-voice",
+      "name": "Sim Webhook (Voice)",
+      "webhookId": "provider-sim-voice",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        288
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "provider-sim/voice",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "sim-code-voice",
+      "name": "Build Voice Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        288
+      ],
+      "parameters": {
+        "jsCode": "// Provider simulator (dev only) — stands in for VoiceBip voice.\n// Returns a realistic success payload, or an HTTP 500 when PROVIDER_MOCK_FAIL=true\n// so the dispatcher's real error path (onError -> failure log) is exercised.\nconst body = $input.first().json.body || {};\nconst meta = body.metadata || {};\nconst channel = 'voice';\nconst ref = 'mock-' + channel + '-' + (meta.request_code || body.to || 'unknown');\nconst fail = ['1', 'true', 'yes', 'on'].includes(String($env.PROVIDER_MOCK_FAIL || '').toLowerCase());\n\nif (fail) {\n  return [{ json: { http_code: 500, body: {\n    error: 'SIMULATED_PROVIDER_FAILURE',\n    detail: 'PROVIDER_MOCK_FAIL=true — the simulator rejected this request on purpose.',\n    channel,\n  } } }];\n}\n\nreturn [{ json: { http_code: 200, body: {\n  mock: true,\n  ok: true,\n  channel,\n  external_ref: ref,\n  message_id: ref,\n  status: 'sent',\n  note: 'SIMULATED — no real message/call was sent',\n} } }];"
+      }
+    },
+    {
+      "id": "sim-resp-voice",
+      "name": "Respond Voice",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        480,
+        288
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.http_code }}"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Sim Webhook (WhatsApp)": {
+      "main": [
+        [
+          {
+            "node": "Build WhatsApp Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build WhatsApp Response": {
+      "main": [
+        [
+          {
+            "node": "Respond WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sim Webhook (SMS)": {
+      "main": [
+        [
+          {
+            "node": "Build SMS Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build SMS Response": {
+      "main": [
+        [
+          {
+            "node": "Respond SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sim Webhook (Voice)": {
+      "main": [
+        [
+          {
+            "node": "Build Voice Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Voice Response": {
+      "main": [
+        [
+          {
+            "node": "Respond Voice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

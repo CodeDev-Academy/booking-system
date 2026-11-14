@@ -303,10 +303,25 @@ VAPI_PHONE_NUMBER_ID=
 
 # Test switch — mock adapter returns realistic responses + simulated callbacks
 PROVIDER_MOCK=true
+PROVIDER_MOCK_FAIL=false      # true → the simulator rejects every send (tests Needs Attention)
+PROVIDER_SIMULATOR_URL=http://127.0.0.1:5678/webhook/provider-sim
 ```
 
 Rules: no node hardcodes a URL or key; one adapter Code node builds every provider request;
 switching provider = editing this block only.
+
+**How mock mode works (updated at Stage D-3).** `PROVIDER_MOCK=true` does **not** skip the
+send nodes. It points every provider URL at `06_Provider_Simulator` — a small n8n workflow
+that answers `/webhook/provider-sim/{whatsapp|sms|voice}` with a realistic provider payload
+(`external_ref: mock-<channel>-<request_code>`) or an HTTP **500** when
+`PROVIDER_MOCK_FAIL=true`. Consequences:
+
+- The real HTTP nodes, their auth headers and their JSON bodies run exactly as in production,
+  so a green mock run is meaningful.
+- Failures travel the **real** error path (`onError: continueErrorOutput` → failure log →
+  Needs Attention tab), not a simulated branch.
+- Flipping live is still config only: `PROVIDER_MOCK=false` + real `VOICEBIP_*` /
+  `WHATSAPP_*` values. The simulator workflow can then be deactivated and deleted.
 
 ### 5.6 Channel-availability guard (Option B — decided)
 
@@ -399,9 +414,11 @@ Layer 4 contract — enforcement (opt-in, default OFF):
 3. **Voice guard** — Wait 30s → `GET dispatch-status/` → skip when the patient already replied.
    ✅ Done (Stage D-2; probe errors fail closed — no call is placed).
 4. **InteractionLog nodes** — after every provider branch (sent / failed / no_answer), tested
-   against mock responses. ⏳ Next (Stage D-3).
+   against mock responses. ✅ Done (Stage D-3; one Code log node per branch, posts to
+   `POST /api/v1/interactions/`).
 5. **Callback receiver** — one authenticated webhook for provider events; idempotent upsert by
-   `external_ref`; status rank so late events never downgrade a row. ⏳ Stage D-4.
+   `external_ref`; status rank so late events never downgrade a row. ⏳ Stage D-4
+   (`07_provider_callback.json`).
 6. **Flip to live** — fill §5.5, set `PROVIDER_MOCK=false`, enable the provider nodes, re-run
    the sample payload, then one real call to a test number. ⏳ Stage D-5.
 
@@ -445,3 +462,4 @@ Layer 4 contract — enforcement (opt-in, default OFF):
 | **Reminder Flows** | `n8n/03_reminder_flows.json` | Cron (Twice daily) | Dispatch 24h & 2h pre-visit interactive buttons |
 | **Patient Response Handler** | `n8n/04_patient_response_handler.json` | Webhook (`/webhook/messaging/inbound`) | Route inline buttons (Hold, Confirm, Cancel, Re-Request) |
 | **Slot Offer Dispatcher** | `n8n/05_slot_offer_dispatcher.json` | Webhook (`/webhook/dispatch-offers`) | Format & send approved 1h slot buttons to patient |
+| **Provider Simulator** (dev only) | `n8n/06_provider_simulator.json` | Webhook (`/webhook/provider-sim/{channel}`) | Stand-in for VoiceBip/Meta: realistic success payload or HTTP 500 when `PROVIDER_MOCK_FAIL=true` |

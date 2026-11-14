@@ -841,3 +841,41 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
   `valid: true`, exported to `n8n/05_slot_offer_dispatcher.json`.
 - Next: **D-3** - enable the three send nodes, add `InteractionLog` posts per branch
   (sent / failed / no_answer), verify `PROVIDER_MOCK_FAIL=true` lands in Needs Attention.
+
+
+## 2026-11-14 - Workflow D Stage D-3: live sends + InteractionLog + Needs Attention
+
+- All three provider nodes are **enabled** and make a real HTTP POST from
+  `provider_request.{url,headers,body}`. Mock mode no longer bypasses them.
+- Mock redesign: `PROVIDER_MOCK=true` now points every provider URL at a new companion
+  workflow **`06_Provider_Simulator`** (`JrsFTzRpf2yyoZsW`, 9 nodes,
+  `/webhook/provider-sim/{whatsapp|sms|voice}`). It returns a realistic payload
+  (`external_ref: mock-<channel>-<request_code>`) or an **HTTP 500** when
+  `PROVIDER_MOCK_FAIL=true`. Reason: a bypass would leave the send nodes, their auth
+  headers, their JSON bodies and the error path untested until the day credentials land.
+  Flipping live stays config-only (`PROVIDER_MOCK=false` + real keys), then delete the
+  simulator.
+- Logging: one Code node per branch (`Log WhatsApp / SMS / Voice Interaction`) fed by **both**
+  the success and the error output of its send node. It POSTs to
+  `{DJANGO_API_BASE_URL}/interactions/` with `X-Webhook-Secret` via
+  `this.helpers.httpRequest`, so no extra HTTP node per branch. Logging is wrapped in
+  try/catch and never breaks a dispatch.
+- Payload mapping: WhatsApp -> `meta_whatsapp`; SMS/voice -> `voicebip`; success ->
+  `status: sent` + provider `external_ref` (upsert on re-delivery); failure -> `status:
+  failed`, no `external_ref`, and a **plain-language** `error_detail` extracted from the
+  provider's error body (n8n wraps it as `500 - "{\"error\":...}"`, the node unwraps it).
+- Verified live:
+  - **27** all three legs POST to the simulator and log `sent` with
+    `mock-<channel>-REQ-2026-0006`; Django shows 3 interactions linked to the request.
+  - **32 / 36** `PROVIDER_MOCK_FAIL=true` -> all sends 500 -> `status: failed` with
+    `error_detail: "PROVIDER_MOCK_FAIL=true - the simulator rejected this request on
+    purpose."`.
+  - `BookingRequestDetailSerializer` for `REQ-2026-0040` reports `delivery_failures: 2`
+    and a `last_failure` block - exactly what the dashboard Needs Attention tab reads.
+  - **39** back in normal mode: all three `sent` again.
+  - Also confirmed n8n static data (dedupe) **survives a restart**: a repeat dispatch inside
+    10 minutes correctly returned `duplicate_dispatch` for all three channels.
+- Housekeeping: temporary probe workflows deleted; both workflows exported
+  (`n8n/05_slot_offer_dispatcher.json` 14 nodes, `n8n/06_provider_simulator.json` 9 nodes).
+- Next: **D-4** - provider callback receiver (`07_provider_callback.json`) for delivery
+  reports / call outcomes, idempotent on `external_ref`, never downgrading a status.
