@@ -424,7 +424,9 @@ Layer 4 contract — enforcement (opt-in, default OFF):
    `07_Provider_Callback_Receiver` / `n8n/07_provider_callback.json`; rank guard lives in
    Django so it holds even for replayed events).
 6. **Flip to live** — fill §5.5, set `PROVIDER_MOCK=false`, enable the provider nodes, re-run
-   the sample payload, then one real call to a test number. ⏳ Stage D-5.
+   the sample payload, then one real call to a test number. ✅ Done (Stage D-5) — the
+   procedure is `n8n/FLIP_LIVE_RUNBOOK.md`; configuration template is `n8n/.env.example`.
+   The flip is env-only: no node edits and no Django deploy.
 
 ### 5.8 Edge cases owned by this integration
 

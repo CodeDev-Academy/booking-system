@@ -930,3 +930,34 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
 - Next: **D-5** - freeze the exports and write the flip-live runbook (fill §5.5, set
   `PROVIDER_MOCK=false`, retire the simulator), then C (response handler), B (sweeper) and
   the Phase 5 handover.
+
+
+## 2026-11-14 - Workflow D Stage D-5: exports frozen + flip-live runbook (Workflow D complete)
+
+- **Exports frozen.** Re-exported `05`, `06` and `07` from the live instance and diffed
+  against the committed files: byte-identical. The repo copies now match the running graphs
+  1:1 (14 / 9 / 10 nodes). Validation: `05` 0 errors + 1 intentional warning (the voice
+  probe's error output is deliberately unwired so the guard fails closed), `06` and `07`
+  clean.
+- **`n8n/.env.example`** - the complete, annotated environment contract: Django URL +
+  secret, mock block (`PROVIDER_MOCK`, `PROVIDER_MOCK_FAIL`, `PROVIDER_SIMULATOR_URL`),
+  VoiceBip voice + SMS, WhatsApp, `PROVIDER_CALLBACK_TOKEN`, and the required
+  `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`.
+- **`n8n/FLIP_LIVE_RUNBOOK.md`** - the whole switch, config-only:
+  1. preconditions (10 partner items);
+  2. fill env + restart (env is read at process start);
+  3. **restart verification** - an unauthenticated callback answers
+     `401 receiver_not_configured` when the token is empty vs `401 invalid_callback_token`
+     when it is set, so configuration is provable without revealing the secret;
+  4. regression gate in mock mode;
+  5. flip `PROVIDER_MOCK=false`, then SMS -> voice -> callbacks in that order;
+  6. register the partner webhook with the token over HTTPS;
+  7. retire `06_Provider_Simulator` (keep the JSON for cheap re-testing);
+  8. 10-point smoke checklist;
+  9. rollback table (any problem -> `PROVIDER_MOCK=true` + restart; offers/holds never
+     affected);
+  10. security notes (token rotation, no DB credentials in n8n, recording/transcript NDPR).
+- `n8n/README.md` manifest now lists `06`/`07` and links the runbook and env template.
+- **Workflow D is complete (D-1 .. D-5).** Everything left is partner credentials.
+- Next: **C** (patient response handler - testable today over Telegram), then **B**
+  (expiry sweeper), then the Phase 5 handover / Railway deployment.

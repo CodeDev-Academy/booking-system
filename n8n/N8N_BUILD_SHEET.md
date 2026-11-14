@@ -425,6 +425,12 @@ row without a phone is still rejected `400`.
 | `05_slot_offer_dispatcher.json` | ✅ Fresh export of the live workflow | Re-export after any live edit (see §5.1). Graph = 14 nodes: adapter → switch → 3 live send nodes → 3 log nodes, plus the D-2 voice guard. |
 | `06_provider_simulator.json` | ✅ Fresh export (dev only) | Stands in for VoiceBip/Meta while `PROVIDER_MOCK=true`. Deactivate + delete once real credentials are in. |
 | `07_provider_callback.json` | ✅ Fresh export of the live workflow | `POST /webhook/provider-callback` — authenticated, idempotent provider events (see §5.3). Point VoiceBip's delivery-report / call-outcome webhook here. |
+| `FLIP_LIVE_RUNBOOK.md` | ✅ Procedure | Preconditions → env → regression gate → SMS → voice → callbacks → retire simulator → smoke checklist → rollback. |
+| `.env.example` | ✅ Config template | The complete, annotated n8n environment contract (mock block + live block). |
+
+**Exports are frozen (Stage D-5).** The three JSON files above match the live graphs in the
+dev instance 1:1. If a workflow is edited in the n8n UI, re-export before committing or the
+repo and the running system silently diverge.
 
 ## 7. Build & test order (recommended)
 
