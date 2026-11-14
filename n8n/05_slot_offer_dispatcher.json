@@ -9,11 +9,6 @@
   },
   "nodes": [
     {
-      "parameters": {
-        "httpMethod": "POST",
-        "path": "dispatch-offers",
-        "options": {}
-      },
       "id": "0a5877f4-be37-4dd1-aedc-70b0dc54c74c",
       "name": "Dispatch Offers Webhook from Django",
       "webhookId": "medpulse-dispatch-offers",
@@ -22,12 +17,15 @@
       "position": [
         0,
         0
-      ]
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "dispatch-offers",
+        "options": {},
+        "responseMode": "responseNode"
+      }
     },
     {
-      "parameters": {
-        "jsCode": "// Workflow D · Format offers (Task 3.5 contract — no date math, labels come from Django)\nconst body = $input.item.json.body || $input.item.json;\n\nconst patientName  = body.patient_name || 'Patient';\nconst patientPhone = body.patient_phone || '';\nconst serviceName  = body.service_name || 'Consultation';\nconst clinicName   = body.clinic_name || 'Clinic';\nconst requestId    = body.request_id || '';\nconst chatId       = body.telegram_chat_id || null;\nconst expiryMin    = body.expiry_minutes || 60;\nconst channels     = Array.isArray(body.dispatch_channels)\n  ? body.dispatch_channels : ['whatsapp', 'sms', 'voice'];\nconst slots        = body.candidate_slots || [];\n\nconst numberEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];\n\n// Options MUST stay in payload order — Workflow C resolves \"2\" against this order.\nconst options = slots.map((slot, idx) => ({\n  number: idx + 1,\n  emoji: numberEmojis[idx] || `${idx + 1}.`,\n  slot_offer_id: slot.id,\n  doctor_name: slot.doctor_name || 'Doctor',\n  date_label: slot.date_label || '',\n  time_label: slot.time_label || '',\n  label: `${numberEmojis[idx] || (idx + 1) + '.'} ${slot.date_label} at ${slot.time_label} (${slot.doctor_name})`,\n}));\n\nconst optionsText = options.map(o => `\\n${o.emoji} ${o.date_label} at ${o.time_label} (${o.doctor_name})`).join('');\n\nconst smsBody =\n  `${clinicName}: Your ${serviceName} slots are ready.` +\n  options.map(o => ` ${o.number}) ${o.date_label} ${o.time_label} (${o.doctor_name})`).join('') +\n  ` Reply 1, 2, or ${options.length} to lock in your time. Held for ${expiryMin} minutes.`;\n\nconst messageText =\n  `✨ <b>Available Appointment Times</b>\\n\\n` +\n  `Hello <b>${patientName}</b>, our front desk has reviewed your request for <b>${serviceName}</b> and reserved the following options for you:\\n` +\n  `${optionsText}\\n\\n` +\n  `⏳ <i>Please tap your preferred time below to confirm. These options are held for <b>${expiryMin} minutes</b> so that all patients have fair access to the doctor's calendar.</i>`;\n\nconst inlineKeyboard = options.map(o => ([\n  { text: o.label, callback_data: `select_slot_${o.slot_offer_id}` },\n]));\n\nreturn {\n  json: {\n    // Existing fields (Respond node + Telegram node keep working)\n    channel: body.channel || 'web',\n    chat_id: chatId,\n    patient_name: patientName,\n    request_id: requestId,\n    message_text: messageText,\n    inline_keyboard: inlineKeyboard,\n    slots_count: options.length,\n    // Task 3.5 additions for the channel legs\n    clinic_name: clinicName,\n    patient_phone: patientPhone,\n    service_name: serviceName,\n    expiry_minutes: expiryMin,\n    offer_expires_at: body.offer_expires_at || '',\n    options,\n    options_text: optionsText,\n    sms_body: smsBody,\n    whatsapp_params: options.map(o => o.label),\n    want_whatsapp: channels.includes('whatsapp'),\n    want_sms: channels.includes('sms'),\n    want_voice: channels.includes('voice'),\n  },\n};"
-      },
       "id": "a0c2a785-6e28-40ea-8a3a-12d7877b37e2",
       "name": "Format Offers & Telegram Buttons",
       "type": "n8n-nodes-base.code",
@@ -35,43 +33,21 @@
       "position": [
         224,
         0
-      ]
+      ],
+      "parameters": {
+        "jsCode": "// Workflow D · Format offers (Task 3.5 contract — no date math, labels come from Django)\nconst body = $input.item.json.body || $input.item.json;\n\nconst patientName  = body.patient_name || 'Patient';\nconst patientPhone = body.patient_phone || '';\nconst serviceName  = body.service_name || 'Consultation';\nconst clinicName   = body.clinic_name || 'Clinic';\nconst requestId    = body.request_id || '';\nconst chatId       = body.telegram_chat_id || null;\nconst expiryMin    = body.expiry_minutes || 60;\nconst channels     = Array.isArray(body.dispatch_channels)\n  ? body.dispatch_channels : ['whatsapp', 'sms', 'voice'];\nconst slots        = body.candidate_slots || [];\n\nconst numberEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];\n\n// Options MUST stay in payload order — Workflow C resolves \"2\" against this order.\nconst options = slots.map((slot, idx) => ({\n  number: idx + 1,\n  emoji: numberEmojis[idx] || `${idx + 1}.`,\n  slot_offer_id: slot.id,\n  doctor_name: slot.doctor_name || 'Doctor',\n  date_label: slot.date_label || '',\n  time_label: slot.time_label || '',\n  label: `${numberEmojis[idx] || (idx + 1) + '.'} ${slot.date_label} at ${slot.time_label} (${slot.doctor_name})`,\n}));\n\nconst optionsText = options.map(o => `\\n${o.emoji} ${o.date_label} at ${o.time_label} (${o.doctor_name})`).join('');\n\nconst smsBody =\n  `${clinicName}: Your ${serviceName} slots are ready.` +\n  options.map(o => ` ${o.number}) ${o.date_label} ${o.time_label} (${o.doctor_name})`).join('') +\n  ` Reply 1, 2, or ${options.length} to lock in your time. Held for ${expiryMin} minutes.`;\n\nconst messageText =\n  `✨ <b>Available Appointment Times</b>\\n\\n` +\n  `Hello <b>${patientName}</b>, our front desk has reviewed your request for <b>${serviceName}</b> and reserved the following options for you:\\n` +\n  `${optionsText}\\n\\n` +\n  `⏳ <i>Please tap your preferred time below to confirm. These options are held for <b>${expiryMin} minutes</b> so that all patients have fair access to the doctor's calendar.</i>`;\n\nconst inlineKeyboard = options.map(o => ([\n  { text: o.label, callback_data: `select_slot_${o.slot_offer_id}` },\n]));\n\nreturn {\n  json: {\n    // Existing fields (Respond node + Telegram node keep working)\n    channel: body.channel || 'web',\n    chat_id: chatId,\n    patient_name: patientName,\n    request_id: requestId,\n    message_text: messageText,\n    inline_keyboard: inlineKeyboard,\n    slots_count: options.length,\n    // Task 3.5 additions for the channel legs\n    clinic_name: clinicName,\n    patient_phone: patientPhone,\n    service_name: serviceName,\n    expiry_minutes: expiryMin,\n    offer_expires_at: body.offer_expires_at || '',\n    options,\n    options_text: optionsText,\n    sms_body: smsBody,\n    whatsapp_params: options.map(o => o.label),\n    want_whatsapp: channels.includes('whatsapp'),\n    want_sms: channels.includes('sms'),\n    want_voice: channels.includes('voice'),\n  },\n};"
+      }
     },
     {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ $json.provider_request.url }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            },
-            {
-              "name": "Authorization",
-              "value": "={{ $json.provider_request.headers.Authorization }}"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json.provider_request.body) }}",
-        "options": {
-          "timeout": 15000
-        }
-      },
       "id": "17248761-81cb-4979-a1be-d3dcbc162fb1",
       "name": "Send WhatsApp Interactive Message",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
+      "onError": "continueErrorOutput",
       "position": [
         896,
         -192
       ],
-      "onError": "continueErrorOutput"
-    },
-    {
       "parameters": {
         "method": "POST",
         "url": "={{ $json.provider_request.url }}",
@@ -94,18 +70,18 @@
         "options": {
           "timeout": 15000
         }
-      },
+      }
+    },
+    {
       "id": "b1a7c0de-0004-4a04-9c04-000000000004",
       "name": "Send SMS (VoiceBip)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
+      "onError": "continueErrorOutput",
       "position": [
         896,
         0
       ],
-      "onError": "continueErrorOutput"
-    },
-    {
       "parameters": {
         "method": "POST",
         "url": "={{ $json.provider_request.url }}",
@@ -128,21 +104,43 @@
         "options": {
           "timeout": 15000
         }
-      },
+      }
+    },
+    {
       "id": "b1a7c0de-0005-4a05-9c05-000000000005",
       "name": "Send Voice Call (VoiceBip)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
+      "onError": "continueErrorOutput",
       "position": [
         1792,
         192
       ],
-      "onError": "continueErrorOutput"
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.provider_request.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ $json.provider_request.headers.Authorization }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.provider_request.body) }}",
+        "options": {
+          "timeout": 15000
+        }
+      }
     },
     {
-      "parameters": {
-        "jsCode": "// Workflow D · Provider Config & Adapter (single source of provider config)\n// Reads deployment config from $env — no node hardcodes a URL, key or sender id.\n// Emits ONE item per active channel (want_* + the chat_id rule), so no IF nodes are needed.\n//\n// Mock mode (PROVIDER_MOCK unset or true) does NOT skip the send nodes: it points every\n// provider URL at the in-cluster Provider Simulator workflow (06_Provider_Simulator), so\n// the real HTTP nodes, their bodies and the real failure path are exercised today.\n// Flip-live = PROVIDER_MOCK=false + real VOICEBIP_* / WHATSAPP_* values.\nconst src = $input.all()[0].json;\n\nconst env = (name, fallback = '') => {\n  try { const v = $env[name]; return (v === undefined || v === null) ? fallback : String(v); }\n  catch (e) { return fallback; }\n};\nconst truthy = (v) => ['1', 'true', 'yes', 'on'].includes(String(v).trim().toLowerCase());\n\nconst providerMock = env('PROVIDER_MOCK') === '' ? true : truthy(env('PROVIDER_MOCK'));\nconst providerMockFail = truthy(env('PROVIDER_MOCK_FAIL'));\n\nconst cfg = {\n  voicebipApiUrl: env('VOICEBIP_API_URL'),\n  voicebipApiKey: env('VOICEBIP_API_KEY'),\n  voiceAgentId: env('VOICEBIP_VOICE_AGENT_ID'),\n  callerId: env('VOICEBIP_CALLER_ID'),\n  smsSenderId: env('VOICEBIP_SMS_SENDER_ID', 'Cedarcare'),\n  whatsappApiUrl: env('WHATSAPP_API_URL', 'https://graph.facebook.com/v19.0/'),\n  whatsappPhoneId: env('WHATSAPP_PHONE_NUMBER_ID'),\n  whatsappToken: env('WHATSAPP_ACCESS_TOKEN'),\n  simulatorUrl: env('PROVIDER_SIMULATOR_URL', 'http://127.0.0.1:5678/webhook/provider-sim'),\n};\n\nconst requestId = src.request_id || '';\nconst patientPhone = src.patient_phone || '';\nconst optionsCount = src.slots_count || (src.options ? src.options.length : 0);\nconst expiryMinutes = src.expiry_minutes || 60;\n\n// Which channels should fire. The WhatsApp leg is the instant-message checkbox;\n// a patient with a Telegram chat already got the Telegram card from Django itself.\nconst active = [];\nif (src.want_whatsapp && !src.chat_id) active.push('whatsapp');\nif (src.want_sms) active.push('sms');\nif (src.want_voice) active.push('voice');\n\nconst configured = providerMock\n  ? { whatsapp: true, sms: true, voice: true }\n  : {\n      sms: Boolean(cfg.voicebipApiUrl && cfg.voicebipApiKey),\n      voice: Boolean(cfg.voicebipApiUrl && cfg.voicebipApiKey && cfg.voiceAgentId),\n      whatsapp: Boolean(cfg.whatsappPhoneId && cfg.whatsappToken),\n    };\n\n// Voice quiet-hours gate (08:00–19:00 Africa/Lagos) — a gate, not date math for labels.\nlet voiceInWindow = true;\ntry {\n  const lagosHour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Lagos', hour: 'numeric', hour12: false }).format(new Date()));\n  voiceInWindow = lagosHour >= 8 && lagosHour < 19;\n} catch (e) { voiceInWindow = true; }\n\n// Dedupe guard (best-effort; static data is not persisted in manual test runs —\n// Django's PATIENT_ALREADY_BOOKED + offer state remain authoritative).\nconst seen = {};\ntry {\n  const sd = $getWorkflowStaticData('global');\n  sd.seen = sd.seen || {};\n  const now = Date.now();\n  for (const k of Object.keys(sd.seen)) { if (now - sd.seen[k] > 600000) delete sd.seen[k]; }\n  for (const ch of active) {\n    const key = requestId + ':' + ch;\n    if (sd.seen[key]) seen[ch] = true; else sd.seen[key] = now;\n  }\n} catch (e) { /* static data unavailable */ }\n\nconst buildRequest = (channel) => {\n  if (providerMock) {\n    // Same request shape, different destination: the simulator answers in-cluster.\n    const headers = { Authorization: 'Bearer mock' };\n    const body = channel === 'sms'\n      ? { to: patientPhone, message: src.sms_body || '', sender_id: cfg.smsSenderId,\n          metadata: { request_code: requestId, channel } }\n      : channel === 'voice'\n        ? { to: patientPhone, agent_id: 'mock-agent', caller_id: 'mock-caller',\n            metadata: { request_code: requestId, channel },\n            variables: { patient_name: src.patient_name || 'Patient',\n                         clinic_name: src.clinic_name || 'Clinic',\n                         service_name: src.service_name || 'Consultation',\n                         options_count: optionsCount, expiry_minutes: expiryMinutes } }\n        : { messaging_product: 'whatsapp', to: patientPhone, type: 'text',\n            text: { body: src.sms_body || src.message_text || '' },\n            metadata: { request_code: requestId, channel } };\n    return { url: cfg.simulatorUrl + '/' + channel, headers, body };\n  }\n\n  if (channel === 'sms') {\n    return {\n      url: cfg.voicebipApiUrl + '/sms',\n      headers: { Authorization: 'Bearer ' + cfg.voicebipApiKey },\n      body: { to: patientPhone, message: src.sms_body || '', sender_id: cfg.smsSenderId,\n              metadata: { request_code: requestId, channel: 'sms' } },\n    };\n  }\n  if (channel === 'voice') {\n    return {\n      url: cfg.voicebipApiUrl + '/voice/calls',\n      headers: { Authorization: 'Bearer ' + cfg.voicebipApiKey },\n      body: { to: patientPhone, agent_id: cfg.voiceAgentId, caller_id: cfg.callerId,\n              metadata: { request_code: requestId, channel: 'voice' },\n              variables: { patient_name: src.patient_name || 'Patient',\n                           clinic_name: src.clinic_name || 'Clinic',\n                           service_name: src.service_name || 'Consultation',\n                           options_count: optionsCount, expiry_minutes: expiryMinutes } },\n    };\n  }\n  return {\n    url: cfg.whatsappApiUrl + cfg.whatsappPhoneId + '/messages',\n    headers: { Authorization: 'Bearer ' + cfg.whatsappToken },\n    body: { messaging_product: 'whatsapp', to: patientPhone, type: 'text',\n            text: { body: src.sms_body || src.message_text || '' },\n            metadata: { request_code: requestId, channel: 'whatsapp' } },\n  };\n};\n\nconst out = active.map((channel) => {\n  let route = channel;\n  let skipReason = null;\n  if (seen[channel]) { route = 'skip'; skipReason = 'duplicate_dispatch'; }\n  else if (channel === 'voice' && !voiceInWindow) { route = 'skip'; skipReason = 'outside_call_window'; }\n  else if (!configured[channel]) { route = 'skip'; skipReason = 'provider_not_configured'; }\n\n  return { json: {\n    ...src,\n    provider_channel: channel,\n    provider_request: {\n      route,\n      skip_reason: skipReason,\n      method: 'POST',\n      ...buildRequest(channel),\n    },\n    adapter_meta: {\n      channel,\n      provider_mock: providerMock,\n      provider_mock_fail: providerMockFail,\n      configured: configured[channel],\n      voice_in_window: voiceInWindow,\n      duplicate: Boolean(seen[channel]),\n      request_id: requestId,\n      external_ref_hint: 'mock-' + channel + '-' + requestId,\n      missing_env: providerMock ? [] : Object.entries({\n        VOICEBIP_API_URL: cfg.voicebipApiUrl,\n        VOICEBIP_API_KEY: cfg.voicebipApiKey,\n        VOICEBIP_VOICE_AGENT_ID: cfg.voiceAgentId,\n        VOICEBIP_CALLER_ID: cfg.callerId,\n        WHATSAPP_PHONE_NUMBER_ID: cfg.whatsappPhoneId,\n        WHATSAPP_ACCESS_TOKEN: cfg.whatsappToken,\n        DJANGO_WEBHOOK_SECRET: env('DJANGO_WEBHOOK_SECRET'),\n      }).filter(([, v]) => !v).map(([k]) => k),\n    },\n  } };\n});\n\nreturn out.length ? out : [{ json: { ...src, provider_channel: null, provider_request: { route: 'skip', skip_reason: 'no_active_channel', method: 'POST', url: '', headers: {}, body: null }, adapter_meta: { channel: null, provider_mock: providerMock, provider_mock_fail: providerMockFail, configured: false, voice_in_window: voiceInWindow, duplicate: false, request_id: requestId, external_ref_hint: null, missing_env: [] } } }];"
-      },
       "id": "a1d1-adapter-0001",
       "name": "Provider Config & Adapter",
       "type": "n8n-nodes-base.code",
@@ -150,9 +148,20 @@
       "position": [
         448,
         0
-      ]
+      ],
+      "parameters": {
+        "jsCode": "// Workflow D · Provider Config & Adapter (single source of provider config)\n// Reads deployment config from $env — no node hardcodes a URL, key or sender id.\n// Emits ONE item per active channel (want_* + the chat_id rule), so no IF nodes are needed.\n//\n// Mock mode (PROVIDER_MOCK unset or true) does NOT skip the send nodes: it points every\n// provider URL at the in-cluster Provider Simulator workflow (06_Provider_Simulator), so\n// the real HTTP nodes, their bodies and the real failure path are exercised today.\n// Flip-live = PROVIDER_MOCK=false + real VOICEBIP_* / WHATSAPP_* values.\nconst src = $input.all()[0].json;\n\nconst env = (name, fallback = '') => {\n  try { const v = $env[name]; return (v === undefined || v === null) ? fallback : String(v); }\n  catch (e) { return fallback; }\n};\nconst truthy = (v) => ['1', 'true', 'yes', 'on'].includes(String(v).trim().toLowerCase());\n\nconst providerMock = env('PROVIDER_MOCK') === '' ? true : truthy(env('PROVIDER_MOCK'));\nconst providerMockFail = truthy(env('PROVIDER_MOCK_FAIL'));\n\nconst cfg = {\n  voicebipApiUrl: env('VOICEBIP_API_URL'),\n  voicebipApiKey: env('VOICEBIP_API_KEY'),\n  voiceAgentId: env('VOICEBIP_VOICE_AGENT_ID'),\n  callerId: env('VOICEBIP_CALLER_ID'),\n  smsSenderId: env('VOICEBIP_SMS_SENDER_ID', 'Cedarcare'),\n  whatsappApiUrl: env('WHATSAPP_API_URL', 'https://graph.facebook.com/v19.0/'),\n  whatsappPhoneId: env('WHATSAPP_PHONE_NUMBER_ID'),\n  whatsappToken: env('WHATSAPP_ACCESS_TOKEN'),\n  simulatorUrl: env('PROVIDER_SIMULATOR_URL', 'http://127.0.0.1:5678/webhook/provider-sim'),\n};\n\nconst requestId = src.request_id || '';\nconst patientPhone = src.patient_phone || '';\nconst optionsCount = src.slots_count || (src.options ? src.options.length : 0);\nconst expiryMinutes = src.expiry_minutes || 60;\n\n// Which channels should fire. The WhatsApp leg is the instant-message checkbox;\n// a patient with a Telegram chat already got the Telegram card from Django itself.\nconst active = [];\nif (src.want_whatsapp && !src.chat_id) active.push('whatsapp');\nif (src.want_sms) active.push('sms');\nif (src.want_voice) active.push('voice');\n\nconst configured = providerMock\n  ? { whatsapp: true, sms: true, voice: true }\n  : {\n      sms: Boolean(cfg.voicebipApiUrl && cfg.voicebipApiKey),\n      voice: Boolean(cfg.voicebipApiUrl && cfg.voicebipApiKey && cfg.voiceAgentId),\n      whatsapp: Boolean(cfg.whatsappPhoneId && cfg.whatsappToken),\n    };\n\n// Voice quiet-hours gate (08:00–19:00 Africa/Lagos) — a gate, not date math for labels.\nlet voiceInWindow = true;\ntry {\n  const lagosHour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Lagos', hour: 'numeric', hour12: false }).format(new Date()));\n  voiceInWindow = lagosHour >= 8 && lagosHour < 19;\n} catch (e) { voiceInWindow = true; }\n\n// Dedupe guard (best-effort; static data is not persisted in manual test runs —\n// Django's PATIENT_ALREADY_BOOKED + offer state remain authoritative).\nconst seen = {};\ntry {\n  const sd = $getWorkflowStaticData('global');\n  sd.seen = sd.seen || {};\n  const now = Date.now();\n  for (const k of Object.keys(sd.seen)) { if (now - sd.seen[k] > 600000) delete sd.seen[k]; }\n  for (const ch of active) {\n    const key = requestId + ':' + ch;\n    if (sd.seen[key]) seen[ch] = true; else sd.seen[key] = now;\n  }\n} catch (e) { /* static data unavailable */ }\n\nconst buildRequest = (channel) => {\n  if (providerMock) {\n    // Same request shape, different destination: the simulator answers in-cluster.\n    const headers = { Authorization: 'Bearer mock' };\n    const body = channel === 'sms'\n      ? { to: patientPhone, message: src.sms_body || '', sender_id: cfg.smsSenderId,\n          metadata: { request_code: requestId, channel } }\n      : channel === 'voice'\n        ? { to: patientPhone, agent_id: 'mock-agent', caller_id: 'mock-caller',\n            metadata: { request_code: requestId, channel },\n            variables: { patient_name: src.patient_name || 'Patient',\n                         clinic_name: src.clinic_name || 'Clinic',\n                         service_name: src.service_name || 'Consultation',\n                         options_count: optionsCount, expiry_minutes: expiryMinutes } }\n        : { messaging_product: 'whatsapp', to: patientPhone, type: 'text',\n            text: { body: src.sms_body || src.message_text || '' },\n            metadata: { request_code: requestId, channel } };\n    return { url: cfg.simulatorUrl + '/' + channel, headers, body };\n  }\n\n  if (channel === 'sms') {\n    return {\n      url: cfg.voicebipApiUrl + '/sms',\n      headers: { Authorization: 'Bearer ' + cfg.voicebipApiKey },\n      body: { to: patientPhone, message: src.sms_body || '', sender_id: cfg.smsSenderId,\n              metadata: { request_code: requestId, channel: 'sms' } },\n    };\n  }\n  if (channel === 'voice') {\n    return {\n      url: cfg.voicebipApiUrl + '/voice/calls',\n      headers: { Authorization: 'Bearer ' + cfg.voicebipApiKey },\n      body: { to: patientPhone, agent_id: cfg.voiceAgentId, caller_id: cfg.callerId,\n              metadata: { request_code: requestId, channel: 'voice' },\n              variables: { patient_name: src.patient_name || 'Patient',\n                           clinic_name: src.clinic_name || 'Clinic',\n                           service_name: src.service_name || 'Consultation',\n                           options_count: optionsCount, expiry_minutes: expiryMinutes } },\n    };\n  }\n  return {\n    url: cfg.whatsappApiUrl + cfg.whatsappPhoneId + '/messages',\n    headers: { Authorization: 'Bearer ' + cfg.whatsappToken },\n    body: { messaging_product: 'whatsapp', to: patientPhone, type: 'text',\n            text: { body: src.sms_body || src.message_text || '' },\n            metadata: { request_code: requestId, channel: 'whatsapp' } },\n  };\n};\n\nconst out = active.map((channel) => {\n  let route = channel;\n  let skipReason = null;\n  if (seen[channel]) { route = 'skip'; skipReason = 'duplicate_dispatch'; }\n  else if (channel === 'voice' && !voiceInWindow) { route = 'skip'; skipReason = 'outside_call_window'; }\n  else if (!configured[channel]) { route = 'skip'; skipReason = 'provider_not_configured'; }\n\n  return { json: {\n    ...src,\n    provider_channel: channel,\n    provider_request: {\n      route,\n      skip_reason: skipReason,\n      method: 'POST',\n      ...buildRequest(channel),\n    },\n    adapter_meta: {\n      channel,\n      provider_mock: providerMock,\n      provider_mock_fail: providerMockFail,\n      configured: configured[channel],\n      voice_in_window: voiceInWindow,\n      duplicate: Boolean(seen[channel]),\n      request_id: requestId,\n      external_ref_hint: 'mock-' + channel + '-' + requestId,\n      missing_env: providerMock ? [] : Object.entries({\n        VOICEBIP_API_URL: cfg.voicebipApiUrl,\n        VOICEBIP_API_KEY: cfg.voicebipApiKey,\n        VOICEBIP_VOICE_AGENT_ID: cfg.voiceAgentId,\n        VOICEBIP_CALLER_ID: cfg.callerId,\n        WHATSAPP_PHONE_NUMBER_ID: cfg.whatsappPhoneId,\n        WHATSAPP_ACCESS_TOKEN: cfg.whatsappToken,\n        DJANGO_WEBHOOK_SECRET: env('DJANGO_WEBHOOK_SECRET'),\n      }).filter(([, v]) => !v).map(([k]) => k),\n    },\n  } };\n});\n\nreturn out.length ? out : [{ json: { ...src, provider_channel: null, provider_request: { route: 'skip', skip_reason: 'no_active_channel', method: 'POST', url: '', headers: {}, body: null }, adapter_meta: { channel: null, provider_mock: providerMock, provider_mock_fail: providerMockFail, configured: false, voice_in_window: voiceInWindow, duplicate: false, request_id: requestId, external_ref_hint: null, missing_env: [] } } }];"
+      }
     },
     {
+      "id": "a1d1-switch-0001",
+      "name": "Route Provider Request",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        672,
+        -32
+      ],
       "parameters": {
         "rules": {
           "values": [
@@ -255,20 +264,9 @@
           ]
         },
         "options": {}
-      },
-      "id": "a1d1-switch-0001",
-      "name": "Route Provider Request",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
-      "position": [
-        672,
-        -32
-      ]
+      }
     },
     {
-      "parameters": {
-        "amount": 30
-      },
       "id": "d2-wait-0001",
       "name": "Wait 30s Before Voice Nudge",
       "webhookId": "db5aa2ba-d315-489e-b06d-4e98c0e269dc",
@@ -277,9 +275,21 @@
       "position": [
         896,
         192
-      ]
+      ],
+      "parameters": {
+        "amount": 30
+      }
     },
     {
+      "id": "d2-probe-0001",
+      "name": "Check Patient Replied (dispatch-status)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueErrorOutput",
+      "position": [
+        1120,
+        192
+      ],
       "parameters": {
         "url": "={{ $env.DJANGO_API_BASE_URL }}/booking-requests/{{ encodeURIComponent($json.request_id) }}/dispatch-status/",
         "sendHeaders": true,
@@ -294,21 +304,9 @@
         "options": {
           "timeout": 15000
         }
-      },
-      "id": "d2-probe-0001",
-      "name": "Check Patient Replied (dispatch-status)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1120,
-        192
-      ],
-      "onError": "continueErrorOutput"
+      }
     },
     {
-      "parameters": {
-        "jsCode": "// Workflow D · Stage D-2 — reattach the voice payload after the 30s status probe.\n// The probe response replaces the item, but the send/log nodes need the adapter payload,\n// so pull the voice item back from the adapter and record why we did (or didn't) call.\nconst probe = $input.first().json || {};\n\nconst voiceItem = $('Provider Config & Adapter').all()\n  .map(i => i.json)\n  .find(j => j && j.provider_channel === 'voice');\n\nconst truthy = (v) => v === true || v === 'true' || v === 1 || v === '1';\nconst shouldSkip = truthy(probe.should_skip_voice_call);\n\n// Fail safe: if the adapter payload is missing, do NOT place a call.\nconst payload = voiceItem || {\n  provider_channel: 'voice',\n  provider_request: { route: 'skip', skip_reason: 'voice_payload_missing' },\n};\n\nreturn [{ json: {\n  ...payload,\n  provider_request: shouldSkip\n    ? { ...(payload.provider_request || {}), route: 'skip', skip_reason: 'patient_already_engaged' }\n    : payload.provider_request,\n  voice_guard: {\n    checked: true,\n    checked_at: new Date().toISOString(),\n    wait_seconds: 30,\n    should_skip: shouldSkip,\n    request_status: probe.status || null,\n    has_active_hold: truthy(probe.has_active_hold),\n    has_confirmed_booking: truthy(probe.has_confirmed_booking),\n    appointment_code: probe.appointment_code || null,\n  },\n} }];"
-      },
       "id": "d2-merge-0001",
       "name": "Merge Voice Guard",
       "type": "n8n-nodes-base.code",
@@ -316,9 +314,20 @@
       "position": [
         1344,
         192
-      ]
+      ],
+      "parameters": {
+        "jsCode": "// Workflow D · Stage D-2 — reattach the voice payload after the 30s status probe.\n// The probe response replaces the item, but the send/log nodes need the adapter payload,\n// so pull the voice item back from the adapter and record why we did (or didn't) call.\nconst probe = $input.first().json || {};\n\nconst voiceItem = $('Provider Config & Adapter').all()\n  .map(i => i.json)\n  .find(j => j && j.provider_channel === 'voice');\n\nconst truthy = (v) => v === true || v === 'true' || v === 1 || v === '1';\nconst shouldSkip = truthy(probe.should_skip_voice_call);\n\n// Fail safe: if the adapter payload is missing, do NOT place a call.\nconst payload = voiceItem || {\n  provider_channel: 'voice',\n  provider_request: { route: 'skip', skip_reason: 'voice_payload_missing' },\n};\n\nreturn [{ json: {\n  ...payload,\n  provider_request: shouldSkip\n    ? { ...(payload.provider_request || {}), route: 'skip', skip_reason: 'patient_already_engaged' }\n    : payload.provider_request,\n  voice_guard: {\n    checked: true,\n    checked_at: new Date().toISOString(),\n    wait_seconds: 30,\n    should_skip: shouldSkip,\n    request_status: probe.status || null,\n    has_active_hold: truthy(probe.has_active_hold),\n    has_confirmed_booking: truthy(probe.has_confirmed_booking),\n    appointment_code: probe.appointment_code || null,\n  },\n} }];"
+      }
     },
     {
+      "id": "d2-if-0001",
+      "name": "IF Voice Still Needed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1568,
+        192
+      ],
       "parameters": {
         "conditions": {
           "options": {
@@ -342,20 +351,9 @@
           "combinator": "and"
         },
         "options": {}
-      },
-      "id": "d2-if-0001",
-      "name": "IF Voice Still Needed",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        1568,
-        192
-      ]
+      }
     },
     {
-      "parameters": {
-        "jsCode": "// Workflow D · Stage D-3 — log the provider outcome to Django (authoritative record).\n// Runs for BOTH the success and the error output of the send node: the dashboard's\n// Needs Attention tab reads InteractionLog rows with status failed / no_answer.\nconst incoming = $input.first().json || {};\nconst base = $('Provider Config & Adapter').all()\n  .map(i => i.json)\n  .find(j => j && j.provider_channel === 'whatsapp') || {};\n\nconst isError = Boolean(incoming.error);\nconst resp = isError ? {} : incoming;\n\n// n8n wraps HTTP failures as: 500 - \"{\\\"error\\\":\\\"...\\\",\\\"detail\\\":\\\"...\\\"}\"\n// Pull the provider's own sentence out so reception reads plain language.\nconst humanError = (err) => {\n  const raw = String((err && err.message) || err || '');\n  const jsonPart = raw.match(/\\{[\\s\\S]*\\}/);\n  if (jsonPart) {\n    try {\n      const parsed = JSON.parse(jsonPart[0].replace(/\\\\\"/g, '\"'));\n      const msg = parsed.detail || parsed.message || parsed.error;\n      if (msg) return String(msg).slice(0, 300);\n    } catch (e) { /* fall through to raw */ }\n  }\n  return raw.slice(0, 300);\n};\n\nconst providerStatus = String(resp.status || '').toLowerCase();\nconst failed = isError || providerStatus === 'failed' || resp.ok === false;\n\nconst errorDetail = isError\n  ? humanError(incoming.error)\n  : (failed ? String(resp.error || resp.detail || 'Provider reported a failure').slice(0, 300) : '');\n\nconst payload = {\n  provider: 'meta_whatsapp',\n  channel: 'whatsapp',\n  direction: 'outbound',\n  status: failed ? 'failed' : 'sent',\n  patient_name: base.patient_name || '',\n  patient_phone: base.patient_phone || '',\n  request_code: base.request_id || '',\n  external_ref: failed ? '' : (resp.external_ref || resp.message_id || resp.id || resp.call_id || ''),\n  summary: 'Appointment options sent via WhatsApp',\n  error_detail: errorDetail,\n};\n\nlet logged = { ok: false };\ntry {\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: $env.DJANGO_API_BASE_URL + '/interactions/',\n    headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': $env.DJANGO_WEBHOOK_SECRET || '' },\n    body: payload,\n    json: true,\n  });\n  logged = { ok: true, id: res.id, status: res.status };\n} catch (e) {\n  logged = { ok: false, error: (e.message || String(e)).slice(0, 300) };\n}\n\nreturn [{ json: { ...base, provider_response: resp, interaction_log: { ...logged, payload } } }];"
-      },
       "id": "d3-log-wa",
       "name": "Log WhatsApp Interaction",
       "type": "n8n-nodes-base.code",
@@ -363,12 +361,12 @@
       "position": [
         1120,
         -192
-      ]
+      ],
+      "parameters": {
+        "jsCode": "// Workflow D · Stage D-3 — log the provider outcome to Django (authoritative record).\n// Runs for BOTH the success and the error output of the send node: the dashboard's\n// Needs Attention tab reads InteractionLog rows with status failed / no_answer.\nconst incoming = $input.first().json || {};\nconst base = $('Provider Config & Adapter').all()\n  .map(i => i.json)\n  .find(j => j && j.provider_channel === 'whatsapp') || {};\n\nconst isError = Boolean(incoming.error);\nconst resp = isError ? {} : incoming;\n\n// n8n wraps HTTP failures as: 500 - \"{\\\"error\\\":\\\"...\\\",\\\"detail\\\":\\\"...\\\"}\"\n// Pull the provider's own sentence out so reception reads plain language.\nconst humanError = (err) => {\n  const raw = String((err && err.message) || err || '');\n  const jsonPart = raw.match(/\\{[\\s\\S]*\\}/);\n  if (jsonPart) {\n    try {\n      const parsed = JSON.parse(jsonPart[0].replace(/\\\\\"/g, '\"'));\n      const msg = parsed.detail || parsed.message || parsed.error;\n      if (msg) return String(msg).slice(0, 300);\n    } catch (e) { /* fall through to raw */ }\n  }\n  return raw.slice(0, 300);\n};\n\nconst providerStatus = String(resp.status || '').toLowerCase();\nconst failed = isError || providerStatus === 'failed' || resp.ok === false;\n\nconst errorDetail = isError\n  ? humanError(incoming.error)\n  : (failed ? String(resp.error || resp.detail || 'Provider reported a failure').slice(0, 300) : '');\n\nconst payload = {\n  provider: 'meta_whatsapp',\n  channel: 'whatsapp',\n  direction: 'outbound',\n  status: failed ? 'failed' : 'sent',\n  patient_name: base.patient_name || '',\n  patient_phone: base.patient_phone || '',\n  request_code: base.request_id || '',\n  external_ref: failed ? '' : (resp.external_ref || resp.message_id || resp.id || resp.call_id || ''),\n  summary: 'Appointment options sent via WhatsApp',\n  error_detail: errorDetail,\n};\n\nlet logged = { ok: false };\ntry {\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: $env.DJANGO_API_BASE_URL + '/interactions/',\n    headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': $env.DJANGO_WEBHOOK_SECRET || '' },\n    body: payload,\n    json: true,\n  });\n  logged = { ok: true, id: res.id, status: res.status };\n} catch (e) {\n  logged = { ok: false, error: (e.message || String(e)).slice(0, 300) };\n}\n\nreturn [{ json: { ...base, provider_response: resp, interaction_log: { ...logged, payload } } }];"
+      }
     },
     {
-      "parameters": {
-        "jsCode": "// Workflow D · Stage D-3 — log the provider outcome to Django (authoritative record).\n// Runs for BOTH the success and the error output of the send node: the dashboard's\n// Needs Attention tab reads InteractionLog rows with status failed / no_answer.\nconst incoming = $input.first().json || {};\nconst base = $('Provider Config & Adapter').all()\n  .map(i => i.json)\n  .find(j => j && j.provider_channel === 'sms') || {};\n\nconst isError = Boolean(incoming.error);\nconst resp = isError ? {} : incoming;\n\n// n8n wraps HTTP failures as: 500 - \"{\\\"error\\\":\\\"...\\\",\\\"detail\\\":\\\"...\\\"}\"\n// Pull the provider's own sentence out so reception reads plain language.\nconst humanError = (err) => {\n  const raw = String((err && err.message) || err || '');\n  const jsonPart = raw.match(/\\{[\\s\\S]*\\}/);\n  if (jsonPart) {\n    try {\n      const parsed = JSON.parse(jsonPart[0].replace(/\\\\\"/g, '\"'));\n      const msg = parsed.detail || parsed.message || parsed.error;\n      if (msg) return String(msg).slice(0, 300);\n    } catch (e) { /* fall through to raw */ }\n  }\n  return raw.slice(0, 300);\n};\n\nconst providerStatus = String(resp.status || '').toLowerCase();\nconst failed = isError || providerStatus === 'failed' || resp.ok === false;\n\nconst errorDetail = isError\n  ? humanError(incoming.error)\n  : (failed ? String(resp.error || resp.detail || 'Provider reported a failure').slice(0, 300) : '');\n\nconst payload = {\n  provider: 'voicebip',\n  channel: 'sms',\n  direction: 'outbound',\n  status: failed ? 'failed' : 'sent',\n  patient_name: base.patient_name || '',\n  patient_phone: base.patient_phone || '',\n  request_code: base.request_id || '',\n  external_ref: failed ? '' : (resp.external_ref || resp.message_id || resp.id || resp.call_id || ''),\n  summary: 'Appointment options sent via SMS',\n  error_detail: errorDetail,\n};\n\nlet logged = { ok: false };\ntry {\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: $env.DJANGO_API_BASE_URL + '/interactions/',\n    headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': $env.DJANGO_WEBHOOK_SECRET || '' },\n    body: payload,\n    json: true,\n  });\n  logged = { ok: true, id: res.id, status: res.status };\n} catch (e) {\n  logged = { ok: false, error: (e.message || String(e)).slice(0, 300) };\n}\n\nreturn [{ json: { ...base, provider_response: resp, interaction_log: { ...logged, payload } } }];"
-      },
       "id": "d3-log-sms",
       "name": "Log SMS Interaction",
       "type": "n8n-nodes-base.code",
@@ -376,12 +374,12 @@
       "position": [
         1120,
         0
-      ]
+      ],
+      "parameters": {
+        "jsCode": "// Workflow D · Stage D-3 — log the provider outcome to Django (authoritative record).\n// Runs for BOTH the success and the error output of the send node: the dashboard's\n// Needs Attention tab reads InteractionLog rows with status failed / no_answer.\nconst incoming = $input.first().json || {};\nconst base = $('Provider Config & Adapter').all()\n  .map(i => i.json)\n  .find(j => j && j.provider_channel === 'sms') || {};\n\nconst isError = Boolean(incoming.error);\nconst resp = isError ? {} : incoming;\n\n// n8n wraps HTTP failures as: 500 - \"{\\\"error\\\":\\\"...\\\",\\\"detail\\\":\\\"...\\\"}\"\n// Pull the provider's own sentence out so reception reads plain language.\nconst humanError = (err) => {\n  const raw = String((err && err.message) || err || '');\n  const jsonPart = raw.match(/\\{[\\s\\S]*\\}/);\n  if (jsonPart) {\n    try {\n      const parsed = JSON.parse(jsonPart[0].replace(/\\\\\"/g, '\"'));\n      const msg = parsed.detail || parsed.message || parsed.error;\n      if (msg) return String(msg).slice(0, 300);\n    } catch (e) { /* fall through to raw */ }\n  }\n  return raw.slice(0, 300);\n};\n\nconst providerStatus = String(resp.status || '').toLowerCase();\nconst failed = isError || providerStatus === 'failed' || resp.ok === false;\n\nconst errorDetail = isError\n  ? humanError(incoming.error)\n  : (failed ? String(resp.error || resp.detail || 'Provider reported a failure').slice(0, 300) : '');\n\nconst payload = {\n  provider: 'voicebip',\n  channel: 'sms',\n  direction: 'outbound',\n  status: failed ? 'failed' : 'sent',\n  patient_name: base.patient_name || '',\n  patient_phone: base.patient_phone || '',\n  request_code: base.request_id || '',\n  external_ref: failed ? '' : (resp.external_ref || resp.message_id || resp.id || resp.call_id || ''),\n  summary: 'Appointment options sent via SMS',\n  error_detail: errorDetail,\n};\n\nlet logged = { ok: false };\ntry {\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: $env.DJANGO_API_BASE_URL + '/interactions/',\n    headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': $env.DJANGO_WEBHOOK_SECRET || '' },\n    body: payload,\n    json: true,\n  });\n  logged = { ok: true, id: res.id, status: res.status };\n} catch (e) {\n  logged = { ok: false, error: (e.message || String(e)).slice(0, 300) };\n}\n\nreturn [{ json: { ...base, provider_response: resp, interaction_log: { ...logged, payload } } }];"
+      }
     },
     {
-      "parameters": {
-        "jsCode": "// Workflow D · Stage D-3 — log the provider outcome to Django (authoritative record).\n// Runs for BOTH the success and the error output of the send node: the dashboard's\n// Needs Attention tab reads InteractionLog rows with status failed / no_answer.\nconst incoming = $input.first().json || {};\nconst base = $('Provider Config & Adapter').all()\n  .map(i => i.json)\n  .find(j => j && j.provider_channel === 'voice') || {};\n\nconst isError = Boolean(incoming.error);\nconst resp = isError ? {} : incoming;\n\n// n8n wraps HTTP failures as: 500 - \"{\\\"error\\\":\\\"...\\\",\\\"detail\\\":\\\"...\\\"}\"\n// Pull the provider's own sentence out so reception reads plain language.\nconst humanError = (err) => {\n  const raw = String((err && err.message) || err || '');\n  const jsonPart = raw.match(/\\{[\\s\\S]*\\}/);\n  if (jsonPart) {\n    try {\n      const parsed = JSON.parse(jsonPart[0].replace(/\\\\\"/g, '\"'));\n      const msg = parsed.detail || parsed.message || parsed.error;\n      if (msg) return String(msg).slice(0, 300);\n    } catch (e) { /* fall through to raw */ }\n  }\n  return raw.slice(0, 300);\n};\n\nconst providerStatus = String(resp.status || '').toLowerCase();\nconst failed = isError || providerStatus === 'failed' || resp.ok === false;\n\nconst errorDetail = isError\n  ? humanError(incoming.error)\n  : (failed ? String(resp.error || resp.detail || 'Provider reported a failure').slice(0, 300) : '');\n\nconst payload = {\n  provider: 'voicebip',\n  channel: 'voice',\n  direction: 'outbound',\n  status: failed ? 'failed' : 'sent',\n  patient_name: base.patient_name || '',\n  patient_phone: base.patient_phone || '',\n  request_code: base.request_id || '',\n  external_ref: failed ? '' : (resp.external_ref || resp.message_id || resp.id || resp.call_id || ''),\n  summary: 'Voice nudge call',\n  error_detail: errorDetail,\n};\n\nlet logged = { ok: false };\ntry {\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: $env.DJANGO_API_BASE_URL + '/interactions/',\n    headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': $env.DJANGO_WEBHOOK_SECRET || '' },\n    body: payload,\n    json: true,\n  });\n  logged = { ok: true, id: res.id, status: res.status };\n} catch (e) {\n  logged = { ok: false, error: (e.message || String(e)).slice(0, 300) };\n}\n\nreturn [{ json: { ...base, provider_response: resp, interaction_log: { ...logged, payload } } }];"
-      },
       "id": "d3-log-voice",
       "name": "Log Voice Interaction",
       "type": "n8n-nodes-base.code",
@@ -389,7 +387,91 @@
       "position": [
         2016,
         192
-      ]
+      ],
+      "parameters": {
+        "jsCode": "// Workflow D · Stage D-3 — log the provider outcome to Django (authoritative record).\n// Runs for BOTH the success and the error output of the send node: the dashboard's\n// Needs Attention tab reads InteractionLog rows with status failed / no_answer.\nconst incoming = $input.first().json || {};\nconst base = $('Provider Config & Adapter').all()\n  .map(i => i.json)\n  .find(j => j && j.provider_channel === 'voice') || {};\n\nconst isError = Boolean(incoming.error);\nconst resp = isError ? {} : incoming;\n\n// n8n wraps HTTP failures as: 500 - \"{\\\"error\\\":\\\"...\\\",\\\"detail\\\":\\\"...\\\"}\"\n// Pull the provider's own sentence out so reception reads plain language.\nconst humanError = (err) => {\n  const raw = String((err && err.message) || err || '');\n  const jsonPart = raw.match(/\\{[\\s\\S]*\\}/);\n  if (jsonPart) {\n    try {\n      const parsed = JSON.parse(jsonPart[0].replace(/\\\\\"/g, '\"'));\n      const msg = parsed.detail || parsed.message || parsed.error;\n      if (msg) return String(msg).slice(0, 300);\n    } catch (e) { /* fall through to raw */ }\n  }\n  return raw.slice(0, 300);\n};\n\nconst providerStatus = String(resp.status || '').toLowerCase();\nconst failed = isError || providerStatus === 'failed' || resp.ok === false;\n\nconst errorDetail = isError\n  ? humanError(incoming.error)\n  : (failed ? String(resp.error || resp.detail || 'Provider reported a failure').slice(0, 300) : '');\n\nconst payload = {\n  provider: 'voicebip',\n  channel: 'voice',\n  direction: 'outbound',\n  status: failed ? 'failed' : 'sent',\n  patient_name: base.patient_name || '',\n  patient_phone: base.patient_phone || '',\n  request_code: base.request_id || '',\n  external_ref: failed ? '' : (resp.external_ref || resp.message_id || resp.id || resp.call_id || ''),\n  summary: 'Voice nudge call',\n  error_detail: errorDetail,\n};\n\nlet logged = { ok: false };\ntry {\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: $env.DJANGO_API_BASE_URL + '/interactions/',\n    headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': $env.DJANGO_WEBHOOK_SECRET || '' },\n    body: payload,\n    json: true,\n  });\n  logged = { ok: true, id: res.id, status: res.status };\n} catch (e) {\n  logged = { ok: false, error: (e.message || String(e)).slice(0, 300) };\n}\n\nreturn [{ json: { ...base, provider_response: resp, interaction_log: { ...logged, payload } } }];"
+      }
+    },
+    {
+      "id": "d0-verify-0001",
+      "name": "Verify Dispatch Secret",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Phase 0 — the dispatch webhook is the only n8n entry point that can make the\n// clinic send real messages and place real calls, so it is authenticated before\n// anything else runs. Fail closed: an unset DJANGO_WEBHOOK_SECRET rejects every\n// request (an unconfigured receiver never accepts traffic).\n//\n// Django sends the same value it uses for every X-Webhook-Secret call\n// (ClinicSetting.webhook_secret -> settings.WEBHOOK_SECRET -> dev fallback).\nconst src = $input.first().json || {};\nconst headers = src.headers || {};\n\nconst env = (name) => { try { const v = $env[name]; return v == null ? '' : String(v); } catch (e) { return ''; } };\n\nconst expected = env('DJANGO_WEBHOOK_SECRET');\nconst provided = String(headers['x-webhook-secret'] || '').trim();\nconst authorized = Boolean(expected) && provided === expected;\n\nreturn [{ json: {\n  ...src,\n  dispatch_auth: {\n    authorized: authorized,\n    reason: authorized ? null : (expected ? 'bad_secret' : 'secret_not_configured'),\n  },\n} }];"
+      }
+    },
+    {
+      "id": "d0-if-0002",
+      "name": "IF Dispatch Authorized",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-d0-auth",
+              "leftValue": "={{ $json.dispatch_auth.authorized }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d0-resp-ok-0003",
+      "name": "Respond Dispatch Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        660,
+        -120
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, accepted: true, request_id: ($json.body && $json.body.request_id) || null } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "d0-resp-401-0004",
+      "name": "Respond Dispatch Unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        660,
+        120
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: false, error: 'unauthorized', reason: $json.dispatch_auth.reason } }}",
+        "options": {
+          "responseCode": 401
+        }
+      }
     }
   ],
   "connections": {
@@ -397,7 +479,7 @@
       "main": [
         [
           {
-            "node": "Format Offers & Telegram Buttons",
+            "node": "Verify Dispatch Secret",
             "type": "main",
             "index": 0
           }
@@ -546,6 +628,46 @@
         [
           {
             "node": "Log Voice Interaction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Dispatch Secret": {
+      "main": [
+        [
+          {
+            "node": "IF Dispatch Authorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Dispatch Authorized": {
+      "main": [
+        [
+          {
+            "node": "Respond Dispatch Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Dispatch Unauthorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Dispatch Accepted": {
+      "main": [
+        [
+          {
+            "node": "Format Offers & Telegram Buttons",
             "type": "main",
             "index": 0
           }

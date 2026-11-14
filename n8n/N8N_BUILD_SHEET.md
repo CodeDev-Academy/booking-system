@@ -215,26 +215,46 @@ If `should_skip_voice_call` is `true` (patient already picked an option — hold
 booking), **skip the call entirely** and log nothing extra. Works with the webhook secret;
 no staff session needed.
 
-### 5.1 Current build state (Stage D-1 + D-2 + D-3, 2026-11-14)
+### 5.1 Current build state (Stages D-1 … D-5 + Phase 0 auth, 2026-11-14)
 
-Workflow ID `GtpeOwfnG8yYyAxq` (`05_Slot_Offer_Dispatcher_Bridge`) — **active**, 14 nodes,
+Workflow ID `GtpeOwfnG8yYyAxq` (`05_Slot_Offer_Dispatcher_Bridge`) — **active**, 18 nodes,
 `valid: true` (0 errors). Graph:
 
 ```
-Dispatch Offers Webhook from Django        (responseMode: onReceived — answers instantly)
-   └─ Format Offers & Telegram Buttons      (Task 3.5 code: labels, options, sms_body, want_*)
-        └─ Provider Config & Adapter        (Code, runOnceForAllItems — ONE item per active channel)
-             └─ Route Provider Request      (Switch: whatsapp | sms | voice | skip)
-                  ├─ whatsapp → Send WhatsApp Interactive Message → Log WhatsApp Interaction
-                  ├─ sms      → Send SMS (VoiceBip)               → Log SMS Interaction
-                  ├─ voice    → Wait 30s Before Voice Nudge
-                  │              └─ Check Patient Replied (dispatch-status)  [GET, error → stop]
-                  │                   └─ Merge Voice Guard  (reattach payload + voice_guard)
-                  │                        └─ IF Voice Still Needed
-                  │                             ├─ true  → Send Voice Call (VoiceBip) → Log Voice Interaction
-                  │                             └─ false → (stop, no call)
-                  └─ skip     → (empty, intentional no-op)
+Dispatch Offers Webhook from Django        (responseMode: responseNode)
+   └─ Verify Dispatch Secret                (Code: X-Webhook-Secret vs $env.DJANGO_WEBHOOK_SECRET)
+        └─ IF Dispatch Authorized
+             ├─ false → Respond Dispatch Unauthorized            401  (graph stops here)
+             └─ true  → Respond Dispatch Accepted                200  (Django is released immediately)
+                  └─ Format Offers & Telegram Buttons      (Task 3.5 code: labels, options, sms_body, want_*)
+                       └─ Provider Config & Adapter        (Code, runOnceForAllItems — ONE item per active channel)
+                            └─ Route Provider Request      (Switch: whatsapp | sms | voice | skip)
+                                 ├─ whatsapp → Send WhatsApp Interactive Message → Log WhatsApp Interaction
+                                 ├─ sms      → Send SMS (VoiceBip)               → Log SMS Interaction
+                                 ├─ voice    → Wait 30s Before Voice Nudge
+                                 │              └─ Check Patient Replied (dispatch-status)  [GET, error → stop]
+                                 │                   └─ Merge Voice Guard  (reattach payload + voice_guard)
+                                 │                        └─ IF Voice Still Needed
+                                 │                             ├─ true  → Send Voice Call (VoiceBip) → Log Voice Interaction
+                                 │                             └─ false → (stop, no call)
+                                 └─ skip     → (empty, intentional no-op)
 ```
+
+**Authentication (Phase 0).** This is the only n8n entry point that can make the clinic send
+real messages and place real calls, so it is authenticated **before** anything else runs.
+`Verify Dispatch Secret` compares the `X-Webhook-Secret` header against
+`$env.DJANGO_WEBHOOK_SECRET` and **fails closed** when the env var is unset. The graph uses
+`responseMode: responseNode` so the rejection is a real **401** (not a silent 200), while an
+authorized request is answered **200 in ~200 ms** — before the 30-second voice wait, so
+Django's 5-second fire-and-forget timeout is never at risk.
+
+Django sends the header from `dispatch_service.fire_and_forget_webhook(..., secret=...)`,
+resolved by `resolve_webhook_secret()` (ClinicSetting → `settings.WEBHOOK_SECRET` → dev
+fallback) in the request thread, keeping the daemon thread database-free.
+
+Verified live: no header → `401 bad_secret`; wrong header → `401 bad_secret`; correct header
+→ `200` in 225 ms and the dispatch still completed end-to-end (execution 63, SMS logged with
+`mock-sms-REQ-2026-0044`).
 
 **Sends are LIVE against the simulator (D-3).** All three provider nodes are enabled and
 make a real HTTP POST using `provider_request.{url,headers,body}`. `PROVIDER_MOCK=true`

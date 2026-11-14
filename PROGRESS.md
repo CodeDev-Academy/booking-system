@@ -961,3 +961,71 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
 - **Workflow D is complete (D-1 .. D-5).** Everything left is partner credentials.
 - Next: **C** (patient response handler - testable today over Telegram), then **B**
   (expiry sweeper), then the Phase 5 handover / Railway deployment.
+
+
+## 2026-11-14 - Phase 0: dispatch webhook authentication (review finding #4 closed)
+
+**Why first.** Of every finding from the Workflow D review, this is the only one that can
+cost real money or reach a real patient: `/webhook/dispatch-offers` was the one n8n entry
+point with no auth, and it is the entry point that makes the clinic send SMS/WhatsApp
+messages and place voice calls. Anyone who learned the URL could trigger billable traffic.
+
+**n8n side (`05`, 18 nodes, `valid: true`).** The webhook moved from `responseMode:
+onReceived` to `responseMode: responseNode`, and two nodes now run before anything else:
+
+```
+Dispatch Offers Webhook from Django   (responseMode: responseNode)
+   +- Verify Dispatch Secret          (Code: headers['x-webhook-secret'] vs $env.DJANGO_WEBHOOK_SECRET)
+        +- IF Dispatch Authorized
+             +- false -> Respond Dispatch Unauthorized   401  (graph stops)
+             +- true  -> Respond Dispatch Accepted       200  (Django released here)
+                  +- Format Offers & Telegram Buttons ...
+```
+
+- Fails **closed**: an unset `DJANGO_WEBHOOK_SECRET` rejects every request
+  (`reason: secret_not_configured`), so an unconfigured receiver never accepts traffic.
+- A real `401` is returned, not a silent 200 - `responseMode: responseNode` is what makes
+  that possible.
+- The `Respond` node passes items downstream (verified with a throwaway probe workflow
+  before committing to the design), so answering 200 does not interrupt the graph: the
+  dispatch continues while Django has already been released.
+- The 200 is sent **before** the 30-second voice wait, so Django's 5-second fire-and-forget
+  timeout is never at risk.
+
+**Django side.** `dispatch_service._post_webhook(..., secret='')` adds `X-Webhook-Secret`
+when a secret is supplied, and `views_booking.py` resolves it in the request thread via
+`resolve_webhook_secret()` (ClinicSetting -> `settings.WEBHOOK_SECRET` -> DEBUG-only dev
+fallback) and passes it into `fire_and_forget_webhook`. The daemon thread stays
+database-free, which was the constraint the original design was built around.
+
+**Verified live (execution 63):**
+
+| Request | Response |
+|---|---|
+| no header | `401 {"ok":false,"error":"unauthorized","reason":"bad_secret"}` |
+| wrong header (`nope`) | `401`, same body |
+| correct header | `200 {"ok":true,"accepted":true,"request_id":"REQ-2026-0044"}` in **225 ms** |
+
+and the same execution then completed normally: `Send SMS (VoiceBip)` succeeded and
+`Log SMS Interaction` posted `external_ref: mock-sms-REQ-2026-0044`, so authentication does
+not break the dispatch path.
+
+**Tests.** New `AsyncDispatchWebhookTests.test_dispatch_webhook_sends_webhook_secret_header`
+asserts the header and `Content-Type` on the captured `urllib.request.Request`
+(`AsyncDispatchWebhookTests` 2/2). Full suite: **182 tests, 181 pass** - the only failure is
+the pre-existing `Phase5TelegramTests.test_telegram_interactive_service_booking_and_dispatch`
+(`'prompted_date_range' != 'booking_request_created'`), which predates this work and is
+tracked separately.
+
+**Docs synced.** `n8n.md` section 3 rewritten as a per-webhook auth table (which paths are
+authenticated, which are not yet, and the failure mode of each) plus 5.5 config contract
+and 5.7 build-sequence step 7; `n8n/.env.example` now documents `DJANGO_WEBHOOK_SECRET` as
+a **two-direction** value; `FLIP_LIVE_RUNBOOK.md` gained a "verify the dispatch secret"
+check, smoke item 11 and a rotation warning (both sides must change together);
+`N8N_BUILD_SHEET.md` 5.1 has the new graph; `TEST.md` T-708 + log row.
+
+**Known remaining gap, deliberately left for Workflow C.** `01` (intake) and `04` (patient
+response) are still `authentication: none` and do not verify Telegram's
+`X-Telegram-Bot-Api-Secret-Token`. `04` is about to be rebuilt as Workflow C, so the
+secret-token check will be built into it there rather than retrofitted twice. `01` is lower
+risk (it creates a review card, it cannot send anything) but gets the same treatment.

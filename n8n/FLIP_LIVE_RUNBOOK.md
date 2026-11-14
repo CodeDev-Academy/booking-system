@@ -86,6 +86,29 @@ curl.exe -s -X POST -H "Content-Type: application/json" -d "{}" `
 | `401` with `reason:"receiver_not_configured"` | `PROVIDER_CALLBACK_TOKEN` is **empty** — fix it |
 | `401` with `reason:"invalid_callback_token"` | Token **is set** and the request simply had none — correct |
 
+### Verify the dispatch secret (the inbound direction)
+
+`DJANGO_WEBHOOK_SECRET` is used in **both** directions: n8n sends it to Django, and
+`/webhook/dispatch-offers` demands it from Django. If only one side was updated, every
+dispatch is silently refused with a `401` that Django logs as a failed webhook.
+
+```powershell
+# 1. Missing header -> must be refused before any message is sent
+curl.exe -s -X POST -H "Content-Type: application/json" -d "{}" `
+  "https://n8n.yourclinic.com/webhook/dispatch-offers"
+# expect: 401 {"ok":false,"error":"unauthorized","reason":"bad_secret"}
+
+# 2. Correct header -> accepted (use a throwaway request id; this WILL send)
+curl.exe -s -X POST -H "Content-Type: application/json" `
+  -H "X-Webhook-Secret: <DJANGO_WEBHOOK_SECRET>" `
+  -d "<a real dispatch payload>" `
+  "https://n8n.yourclinic.com/webhook/dispatch-offers"
+# expect: 200 {"ok":true,"accepted":true,...}
+```
+
+`reason:"secret_not_configured"` means `DJANGO_WEBHOOK_SECRET` is empty in n8n — the
+receiver fails closed, so nothing is sent. Fix the env and restart.
+
 ---
 
 ## 3. Regression gate (still in mock mode)
@@ -195,6 +218,7 @@ Once SMS, voice and callbacks are green:
 | 8 | Patient already holds a slot before the voice leg | no call placed (30s guard) |
 | 9 | Voice dispatch at 20:00 Lagos | skipped (`outside_call_window`) |
 | 10 | Repeat dispatch within 10 min | `duplicate_dispatch` for every channel |
+| 11 | `POST /webhook/dispatch-offers` without `X-Webhook-Secret` | `401`, no message sent |
 
 ---
 
@@ -218,6 +242,9 @@ already happened in Django, and interactions are additive log rows.
 
 - `PROVIDER_CALLBACK_TOKEN` must be long and random; rotate it by changing the env var,
   restarting n8n and updating the partner's webhook URL. No deploy required.
+- `DJANGO_WEBHOOK_SECRET` protects the **inbound** dispatch webhook too. Rotating it means
+  updating both sides (backend `.env` / `ClinicSetting.webhook_secret` **and** n8n's env)
+  before restarting, or dispatch is refused with `401` until they match again.
 - The callback receiver compares the token exactly; it does not log it.
 - Exports in `n8n/*.json` must never contain secrets — configuration lives only in env.
 - n8n holds provider keys and the Django webhook secret. It must **never** hold

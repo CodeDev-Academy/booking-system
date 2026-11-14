@@ -199,21 +199,45 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
 
 ## 3. Webhook Security & Idempotency Governance
 
-1. **Authentication Header**:
-   - Every webhook between Django and n8n requires the shared secret:
+1. **Authentication Header** (Django ⇄ n8n):
+   - Every call the n8n Dispatcher makes into Django carries the shared secret:
      ```http
      X-Webhook-Secret: {{ DJANGO_WEBHOOK_SECRET }}
      ```
-   - Requests without this valid header are rejected immediately with `401 Unauthorized`.
+   - Django resolves the expected value from `ClinicSetting.webhook_secret` →
+     `settings.WEBHOOK_SECRET` → dev fallback (`DEBUG` only) and compares it in constant
+     time. An unconfigured secret rejects every guarded request (fail closed).
 
-2. **Idempotency & Deduplication**:
-   - Every message dispatch includes an `idempotency_key` (e.g. `req_{id}_sweep_{timestamp}`).
-   - n8n checks a Redis/local memory cache before processing duplicate webhook retries to prevent double-messaging patients.
+2. **Inbound authentication per webhook** (verified 2026-11-14):
 
-3. **Fault Tolerance & Failure Alerting**:
-   - Every workflow contains an **Error Trigger Node**.
-   - If an HTTP request to Django fails (e.g., backend restarting), n8n retries 3 times with exponential backoff (1s, 5s, 15s).
-   - If all retries fail, an alert is posted to the clinic admin Telegram log group.
+   | Workflow | Path | Auth | Failure mode |
+   |---|---|---|---|
+   | `05` Slot Offer Dispatcher | `/webhook/dispatch-offers` | `X-Webhook-Secret` checked **before** the graph runs (`Verify Dispatch Secret` → `IF Dispatch Authorized`) | **401** `{ok:false,error:"unauthorized",reason}` — nothing is sent |
+   | `07` Provider Callback | `/webhook/provider-callback` | `PROVIDER_CALLBACK_TOKEN` (header preferred, query accepted) | **401**, fail closed when unset |
+   | `06` Provider Simulator | `/webhook/provider-sim/*` | none — dev-only, deactivated before launch | n/a |
+   | `01` Intake / `04` Patient Response | `/webhook/intake`, `/webhook/messaging/inbound` | **none yet** — scheduled with Workflow C (Telegram `secret_token` header check) | n/a |
+
+   `05` is the most sensitive entry point because it triggers real outbound messages and
+   calls, so it answers with a true **401** (`responseMode: responseNode`) instead of the
+   default silent 200, while an authorised request is released in ~200 ms — well inside
+   Django's 5-second fire-and-forget timeout.
+
+3. **Idempotency & Deduplication**:
+   - Each dispatch carries `request_id`; `Provider Config & Adapter` keeps a 10-minute
+     in-memory `seen` map in workflow static data and routes repeats to
+     `skip / duplicate_dispatch`.
+   - Best-effort by design: static data is not authoritative, so Django's offer state and
+     `PATIENT_ALREADY_BOOKED` remain the real guard.
+
+4. **Fault Tolerance & Failure Alerting**:
+   - Provider sends use `onError: continueErrorOutput`; the error branch writes an
+     `InteractionLog` row with a plain-language `error_detail`, which surfaces in the
+     dashboard's **Needs Attention** tab.
+   - The voice probe fails closed (no call) and the callback receiver answers `500` on
+     transient Django errors so the provider retries; `4xx` answers `200 rejected` to stop
+     retry storms.
+   - An **Error Trigger** workflow that posts to the clinic admin Telegram log group is
+     still to be added (Phase 5 hardening).
 
 ---
 
@@ -287,6 +311,10 @@ voice provider again later (e.g. to Vapi) is a config edit, not a graph rebuild.
 ### 5.5 Config contract (the only thing that changes when credentials land)
 
 ```
+# Django (authoritative API) — same secret both directions
+DJANGO_API_BASE_URL=http://127.0.0.1:8000/api/v1
+DJANGO_WEBHOOK_SECRET=        # outbound header + inbound dispatch-offers gate
+
 # VoiceBip — one account covers BOTH voice and SMS
 VOICEBIP_API_URL=
 VOICEBIP_API_KEY=
@@ -427,6 +455,12 @@ Layer 4 contract — enforcement (opt-in, default OFF):
    the sample payload, then one real call to a test number. ✅ Done (Stage D-5) — the
    procedure is `n8n/FLIP_LIVE_RUNBOOK.md`; configuration template is `n8n/.env.example`.
    The flip is env-only: no node edits and no Django deploy.
+7. **Authenticate the dispatch webhook** — the one entry point that can make the clinic send
+   real messages. ✅ Done (Phase 0). `05` now runs `Verify Dispatch Secret` → `IF Dispatch
+   Authorized` before anything else and answers **401** on a missing/wrong header; Django
+   sends `X-Webhook-Secret` from `dispatch_service.fire_and_forget_webhook(secret=...)`.
+   Verified live: no header → 401, wrong header → 401, correct header → 200 in 225 ms with
+   the dispatch still completing. `04`/`01` get the same treatment in Workflow C.
 
 ### 5.8 Edge cases owned by this integration
 

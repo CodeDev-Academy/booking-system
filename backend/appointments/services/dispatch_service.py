@@ -27,17 +27,19 @@ logger = logging.getLogger(__name__)
 N8N_DISPATCH_TIMEOUT_SECONDS = 5.0
 
 
-def _post_webhook(url, payload, timeout):
+def _post_webhook(url, payload, timeout, secret=''):
     try:
         # default=str absorbs DRF serializer values that aren't natively JSON-safe
         # (e.g. PrimaryKeyRelatedField emits raw UUID objects). The old synchronous
         # implementation silently failed on this every time — surfaced by Task 2.2 tests.
         data = json.dumps(payload, default=str).encode('utf-8')
-        req = urllib.request.Request(
-            url,
-            data=data,
-            headers={'Content-Type': 'application/json'}
-        )
+        headers = {'Content-Type': 'application/json'}
+        # Phase 0: the dispatch webhook triggers real patient messages/calls, so it is
+        # authenticated in n8n (it answers 401 before the graph runs). The secret is
+        # resolved by the caller, keeping this thread free of database access.
+        if secret:
+            headers['X-Webhook-Secret'] = secret
+        req = urllib.request.Request(url, data=data, headers=headers)
         urllib.request.urlopen(req, timeout=timeout)
         logger.info(
             "n8n dispatch webhook delivered for request %s",
@@ -50,14 +52,17 @@ def _post_webhook(url, payload, timeout):
         )
 
 
-def fire_and_forget_webhook(url, payload, timeout=N8N_DISPATCH_TIMEOUT_SECONDS):
+def fire_and_forget_webhook(url, payload, timeout=N8N_DISPATCH_TIMEOUT_SECONDS, secret=''):
     """
     POST `payload` to `url` in a daemon thread. Returns the started thread
     (handy for test synchronization); never raises to the caller.
+
+    `secret` is sent as `X-Webhook-Secret` so the n8n dispatch webhook can
+    authenticate the caller before it sends anything to a patient.
     """
     thread = threading.Thread(
         target=_post_webhook,
-        args=(url, payload, timeout),
+        args=(url, payload, timeout, secret),
         daemon=True,
         name='n8n-dispatch-webhook'
     )

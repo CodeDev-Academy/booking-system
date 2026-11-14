@@ -3961,6 +3961,74 @@ class AsyncDispatchWebhookTests(APITestCase):
         # The core guarantee: response returns in well under the 2s n8n hang
         self.assertLess(elapsed, 1.5, f"Dispatch response blocked for {elapsed:.2f}s")
 
+    def test_dispatch_webhook_sends_webhook_secret_header(self):
+        """
+        Phase 0: the n8n dispatch webhook authenticates the caller before it can
+        send anything to a patient. Django must therefore send X-Webhook-Secret,
+        using the same value every other guarded endpoint verifies.
+        """
+        import os
+        from unittest.mock import patch
+
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+
+        self.client.force_authenticate(user=self.receptionist)
+        req = BookingRequest.objects.create(
+            patient_name='Amina Yusuf',
+            patient_phone='+2348077778888',
+            service=self.service,
+            preferred_doctor=self.doctor,
+            status='awaiting_review',
+        )
+
+        now = timezone.now()
+        slot_start = now + datetime.timedelta(days=1, hours=4)
+        slot_end = slot_start + datetime.timedelta(minutes=30)
+
+        payload = {
+            'slots': [{
+                'doctor_id': str(self.doctor.id),
+                'start_datetime': slot_start.isoformat(),
+                'end_datetime': slot_end.isoformat(),
+                'is_alternative_date': False,
+            }],
+            'dispatch_channels': ['sms'],
+        }
+
+        captured = {}
+
+        def capture_urlopen(request, timeout=None):
+            captured['request'] = request
+
+            class FakeResp:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+            return FakeResp()
+
+        with patch.dict(os.environ, {'N8N_DISPATCH_WEBHOOK_URL': 'https://n8n.example.com/webhook/dispatch-offers'}):
+            with patch('appointments.services.dispatch_service.urllib.request.urlopen', side_effect=capture_urlopen):
+                with self.captureOnCommitCallbacks(execute=True):
+                    res = self.client.post(
+                        f'/api/v1/booking-requests/{req.request_code}/dispatch-offers/',
+                        payload, format='json'
+                    )
+                import threading
+                for t in threading.enumerate():
+                    if t.name == 'n8n-dispatch-webhook' and t.is_alive():
+                        t.join(timeout=5)
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        request = captured.get('request')
+        self.assertIsNotNone(request, "The dispatch webhook was never attempted")
+        headers = {k.lower(): v for k, v in request.header_items()}
+        self.assertEqual(headers.get('x-webhook-secret'), 'clinic_dev_secret_2026')
+        self.assertEqual(headers.get('content-type'), 'application/json')
+
 
 class SlotOptionNumberHoldTests(APITestCase):
     """

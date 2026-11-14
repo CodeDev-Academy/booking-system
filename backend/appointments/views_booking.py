@@ -30,7 +30,7 @@ from .services.channel_availability import (
 from .services.dispatch_service import fire_and_forget_webhook
 from .services.sse_bus import broadcast_event
 from .services.telegram_service import TelegramService
-from .services.webhook_security import has_staff_or_webhook_access
+from .services.webhook_security import has_staff_or_webhook_access, resolve_webhook_secret
 
 logger = logging.getLogger(__name__)
 
@@ -582,7 +582,14 @@ class DispatchOffersView(APIView):
                     'offer_expires_at': expires_at.isoformat(),
                     'candidate_slots': slot_data,
                 }
-                fire_and_forget_webhook(n8n_dispatch_url, n8n_payload)
+                # Phase 0: n8n authenticates this call before sending anything to a
+                # patient. Resolve the secret here (request thread) so the daemon
+                # thread stays database-free.
+                fire_and_forget_webhook(
+                    n8n_dispatch_url,
+                    n8n_payload,
+                    secret=resolve_webhook_secret(),
+                )
 
         transaction.on_commit(_post_commit_outbound)
 
