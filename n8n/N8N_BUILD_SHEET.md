@@ -215,12 +215,13 @@ If `should_skip_voice_call` is `true` (patient already picked an option — hold
 booking), **skip the call entirely** and log nothing extra. Works with the webhook secret;
 no staff session needed.
 
-### 5.1 Current build state (Stages D-1 … D-5 + Phase 0 auth + Phase 1 WhatsApp, 2026-11-14)
+### 5.1 Current build state (Stages D-1 … D-5 + Phases 0-2, 2026-11-14)
 
-Workflow ID `GtpeOwfnG8yYyAxq` (`05_Slot_Offer_Dispatcher_Bridge`) — **active**, 18 nodes,
-`valid: true` (0 errors). Graph:
+Workflow ID `GtpeOwfnG8yYyAxq` (`05_Slot_Offer_Dispatcher_Bridge`) — **active**, 20 nodes,
+`valid: true` (**0 errors, 0 warnings** — the old fail-closed warning was closed in
+Phase 2 by wiring the probe's error output). Graph:
 
-```
+````
 Dispatch Offers Webhook from Django        (responseMode: responseNode)
    └─ Verify Dispatch Secret                (Code: X-Webhook-Secret vs $env.DJANGO_WEBHOOK_SECRET)
         └─ IF Dispatch Authorized
@@ -232,13 +233,16 @@ Dispatch Offers Webhook from Django        (responseMode: responseNode)
                                  ├─ whatsapp → Send WhatsApp Interactive Message → Log WhatsApp Interaction
                                  ├─ sms      → Send SMS (VoiceBip)               → Log SMS Interaction
                                  ├─ voice    → Wait 30s Before Voice Nudge
-                                 │              └─ Check Patient Replied (dispatch-status)  [GET, error → stop]
-                                 │                   └─ Merge Voice Guard  (reattach payload + voice_guard)
-                                 │                        └─ IF Voice Still Needed
-                                 │                             ├─ true  → Send Voice Call (VoiceBip) → Log Voice Interaction
-                                 │                             └─ false → (stop, no call)
-                                 └─ skip     → (empty, intentional no-op)
-```
+                                 │              └─ Check Patient Replied (dispatch-status)  [GET, onError: continueErrorOutput]
+                                 │                   ├─ ok    → Merge Voice Guard  (reattach payload + voice_guard)
+                                 │                   │            └─ IF Voice Still Needed
+                                 │                   │                 ├─ true  → Send Voice Call (VoiceBip) → Log Voice Interaction
+                                 │                   │                 └─ false → (stop, no call)
+                                 │                   └─ error → Log Voice Probe Failure   (Phase 2)
+                                 │                                └─ failed row: call suppressed (fail closed)
+                                 └─ skip     → Log Skipped Channel  (Phase 2)
+                                              └─ queued row per actionable skip reason
+````
 
 **Authentication (Phase 0).** This is the only n8n entry point that can make the clinic send
 real messages and place real calls, so it is authenticated **before** anything else runs.
@@ -293,7 +297,7 @@ hardcodes a URL, key or sender id; everything comes from `$env`):
 |---|---|
 | `provider_channel` | `whatsapp` \| `sms` \| `voice` (the item's channel) |
 | `provider_request.route` | same value, or `skip` |
-| `provider_request.skip_reason` | `duplicate_dispatch` \| `outside_call_window` \| `provider_not_configured` \| `whatsapp_template_not_configured` \| `no_active_channel` \| `patient_already_engaged` \| `voice_payload_missing` |
+| `provider_request.skip_reason` | `duplicate_dispatch` \| `missing_phone` \| `outside_call_window` \| `provider_not_configured` \| `whatsapp_template_not_configured` \| `no_active_channel` \| `patient_already_engaged` \| `voice_payload_missing` |
 | `provider_request.{method,url,headers,body}` | the exact HTTP call the send node makes (live since D-3) |
 | `adapter_meta` | `channel, provider_mock, provider_mock_fail, configured, voice_in_window, duplicate, request_id, external_ref_hint, missing_env[]` |
 | `voice_guard` (voice branch only) | `checked, checked_at, wait_seconds, should_skip, request_status, has_active_hold, has_confirmed_booking, appointment_code` |
@@ -373,7 +377,41 @@ inserted:
 
 Verified live: mock dispatch built the template body (`to` without `+`, 6 params, 2 quick
 replies) and logged `wamid.mock-whatsapp-REQ-2026-0040`; live mode with fake credentials but
-no template → `skip / whatsapp_template_not_configured`, empty url/body, no send node run.
+no template → `skip / whatsapp_template_not_configured`, empty url/body, no send node.
+
+**Skip visibility (Phase 2).** Before Phase 2, a channel the receptionist asked for that
+could not fire vanished into the execution log — the switch's skip output and the voice
+probe's error output were both dead ends. Now every actionable skip is a **record in
+Django**, and the suppressed voice call is a **Needs Attention** row:
+
+- **`Log Skipped Channel`** (switch `skip` output) writes one `status: queued` InteractionLog
+  row per actionable reason — `outside_call_window`, `provider_not_configured`,
+  `whatsapp_template_not_configured`, `missing_phone` — with `summary: "Held back: <plain
+  language>"`, `error_detail: <reason code>` and a deterministic `external_ref`
+  (`skip-<channel>-<request_code>`, so repeats upsert instead of piling up). By decision,
+  `duplicate_dispatch` (the original send row exists) and `no_active_channel` (the Telegram
+  card Django sent is already logged) write **no** row.
+- **`Log Voice Probe Failure`** (probe error output) writes a `status: failed` voice row —
+  `external_ref: probe-<request_code>`, plain-language `error_detail` ("Status probe
+  failed — voice call suppressed (fail closed): …") — so a suppressed call surfaces in
+  Needs Attention instead of disappearing. This is what closed the last validation warning.
+- **`missing_phone` guard** in the adapter: precedence `duplicate_dispatch` →
+  `missing_phone` → `outside_call_window` → `provider_not_configured` →
+  `whatsapp_template_not_configured`; a skipped leg builds no URL/body.
+- **Django side:** `POST /interactions/` accepts a phoneless row **only** when
+  `status=queued` AND it links a request (skip rows are internal bookkeeping; a `sent`
+  row without a phone is still 400), and `resolve_channel_availability` marks sms/voice
+  (and provider-WhatsApp) unreachable with *"No phone number on file for this patient."*
+  when the booking has no number — reception sees the warning **before** dispatch.
+- Best-effort by design: the skip/probe loggers catch their own errors, so a Django outage
+  can never fail a dispatch. The skip already happened; the row is a record, not a gate.
+
+Verified live: phoneless dispatch → 3 queued rows (`missing_phone`); evening dispatch →
+queued row (`outside_call_window`); live mode no creds → queued row
+(`provider_not_configured`); live mode fake creds + no template → queued row
+(`whatsapp_template_not_configured`); dead-port probe → **failed** row, no call placed;
+repeat dispatch inside the 10-min dedupe window → no rows (duplicate is not row-worthy);
+normal dispatch → sends + `sent` rows, no queued rows. Adapter harness 38/38.
 
 ### 5.2 Remaining D steps
 

@@ -1106,3 +1106,83 @@ semantics); `n8n/FLIP_LIVE_RUNBOOK.md` 2 (env), 4c (template + registration step
 **Still blocked on the partner.** WhatsApp Business account (template approval, phone
 number id, access token, verify token), VoiceBip API key + voice agent/caller ids + SMS
 endpoint/sender contract. Nothing in the code needs to change when they arrive.
+
+---
+
+## 2026-11-14 - Phase 2: skip visibility (a held-back channel is now a record, not a log line)
+
+**Goal.** Before Phase 2, a channel the receptionist asked for that could not fire vanished
+inside the n8n execution log: the switch's skip output was wired to nothing, and the voice
+probe's error output (the one intentional validation warning on `05`) dropped failures
+silently. Reception had no way to learn that "dispatched" quietly meant "two of three legs
+never went out". Four judgment calls were settled up front with the user: log the four
+*actionable* skip reasons; keep `patient_already_engaged`, `duplicate_dispatch` and
+`no_active_channel` unlogged (the Telegram card Django sends in the `no_active_channel`
+case is already a `telegram-msg-*` row); fold `voice_payload_missing` into Phase 3; and
+include the pre-dispatch phoneless-availability fix.
+
+**2.1 - Django: queued rows without a phone (test-first).** A "held back, not attempted"
+row has no destination number because nothing was sent - but `POST /interactions/` required
+one for brand-new rows. The relaxation is narrow: blank `patient_phone` is accepted **only**
+when `status=queued` **and** the row links a request, so the row is always findable. A
+`sent` row without a phone is still 400. Bonus pinned by test: when the channel later fires
+for real, the higher-ranked provider event advances the same row and fills the blank phone
+(`InteractionLogAPITests` now 22/22).
+
+**2.2 - Django: phoneless availability (test-first).** `resolve_channel_availability` never
+looked at the patient's data - sms/voice showed "reachable" for a phoneless booking as long
+as the provider flags were on. Now any booking without a number makes sms, voice and
+provider-WhatsApp unreachable with reason *"No phone number on file for this patient."*;
+the Telegram card (`via: "telegram"`) remains the one road that needs no number. Reception
+sees the warning **before** dispatch, and Layer-4 enforcement refuses such dispatches when
+the flag is on (`ChannelAvailabilityTests` now 10/10).
+
+**2.3 - Adapter: `missing_phone` guard.** New skip reason with explicit precedence:
+`duplicate_dispatch` -> `missing_phone` -> `outside_call_window` -> `provider_not_configured`
+-> `whatsapp_template_not_configured`. A phoneless patient previously produced requests with
+`to: ""`; now every channel skips and - as since Phase 1 - a skipped leg builds no URL and
+no body. Node harness extended 27 -> 38 assertions (all pass), including the precedence
+check (phoneless beats unconfigured).
+
+**2.4 - `Log Skipped Channel` (switch skip output wired, first time).** One Code node per
+skip item writes the queued row via the same `this.helpers.httpRequest` + try/catch pattern
+as the three send loggers (a Django outage can never fail a dispatch - the row is a record,
+not a gate). Deterministic `external_ref` (`skip-<channel>-<request_code>`) makes repeats
+upsert instead of piling up; a later real send uses a different ref so the history stays
+honest. Row-worthy reasons only; `duplicate_dispatch` and `no_active_channel` pass through
+unlogged by design.
+
+**2.5 - `Log Voice Probe Failure` (the last warning, closed).** The probe's error output now
+feeds a node that writes a `failed` voice row - `external_ref: probe-<request_code>`, plain
+language in `error_detail` - which lands in **Needs Attention**. Verified live by pointing
+the probe at a dead port: the row recorded "voice call suppressed (fail closed):
+connect ECONNREFUSED 127.0.0.1:9" and `Send Voice Call` never ran. `05` is now **20 nodes,
+0 errors / 0 warnings**.
+
+**Verified live (executions 105-123).** Phoneless dispatch -> three queued rows
+(`missing_phone`); evening dispatch -> queued row (`outside_call_window`) - the case
+originally planned as harness-only, live because Lagos passed 19:00 mid-test; live mode
+with no credentials -> queued row (`provider_not_configured`); live mode with fake creds +
+no template -> queued row (`whatsapp_template_not_configured`); dead-port probe -> failed
+row, no call; repeat dispatch inside the 10-minute dedupe window -> no rows; normal
+dispatches -> `sent` rows only, skip node idle. One genuine puzzle during verification -
+two consecutive "duplicate" results - was measured, not guessed: the static-data timestamps
+proved all of Phase 2's live work happened inside eight minutes, so the dedupe stamps were
+simply still alive. No bug; the guard works exactly as designed.
+
+**Temporary test patches, all asserted and restored byte-exact:** probe URL -> dead port
+and back; voice quiet-hours window forced open (to reach the probe path at night) and back.
+
+**Docs synced.** `N8N_BUILD_SHEET.md` 5.1 (20-node graph, both new nodes, skip-reason
+table + Phase 2 section with the verified-live list); `n8n.md` 5.6 (phone check in the
+availability contract), 5.7 (step 9), 5.10 (phone rule now says queued+linked rows are
+accepted); `FLIP_LIVE_RUNBOOK.md` smoke items 12-13 + a "reading queued rows" note;
+`TEST.md` T-710 + log row; `PROGRESS.md` this entry. `n8n/.env.example` unchanged (no new
+env vars). `06`/`07` re-exported byte-identical (frozen 1:1 holds).
+
+**State.** Full suite **187 tests / 186 pass** - the only failure remains the pre-existing
+`Phase5TelegramTests` Telegram test. `05` (20 nodes), `06` (9), `07` (13) all `valid: true`
+0/0; `PROVIDER_MOCK=true` restored. Next: Phase 3 hardening (dedupe stamping only on real
+sends, `error.status` before the regex, header-only token, unknown channel -> ignore,
+`patient_phone` guard on callbacks, SMS grammar for <3 options, `voice_payload_missing`
+row, and the `update_or_create` link-clobber quirk noted in 2.1), then Workflow C.

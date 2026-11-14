@@ -254,9 +254,19 @@ Once SMS, voice and callbacks are green:
 | 6 | Late/duplicate callback | `200`, status never downgraded |
 | 7 | Callback without token | `401` |
 | 8 | Patient already holds a slot before the voice leg | no call placed (30s guard) |
-| 9 | Voice dispatch at 20:00 Lagos | skipped (`outside_call_window`) |
-| 10 | Repeat dispatch within 10 min | `duplicate_dispatch` for every channel |
+| 9 | Voice dispatch at 20:00 Lagos | skipped (`outside_call_window`) **+ a `queued` "Held back" row in the interactions feed** |
+| 10 | Repeat dispatch within 10 min | `duplicate_dispatch` for every channel (no extra rows) |
 | 11 | `POST /webhook/dispatch-offers` without `X-Webhook-Secret` | `401`, no message sent |
+| 12 | Dispatch while a provider is unconfigured | `queued` row with `error_detail: provider_not_configured` — reception sees it without digging through n8n |
+| 13 | Django briefly down when the voice guard probes | `failed` voice row "Status probe failed — voice call suppressed (fail closed)" in Needs Attention; no call placed |
+
+**Reading `queued` rows (Phase 2):** a `queued` interaction row means *"held back, not
+attempted"* — the receptionist asked for the channel, the system refused to fire it, and
+the row says why in plain language (`summary`) plus a machine code (`error_detail`:
+`outside_call_window` / `provider_not_configured` / `whatsapp_template_not_configured` /
+`missing_phone`). They are deliberately **not** failures: nothing was sent, nothing was
+billed. A later real send for the same channel creates its own row, so the history stays
+honest ("first attempt held, second sent").
 
 ---
 

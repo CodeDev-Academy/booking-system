@@ -46,6 +46,7 @@ _VOICE_DISABLED_REASON = (
 _WHATSAPP_DISABLED_REASON = (
     'WhatsApp is not enabled and this patient has no Telegram chat.'
 )
+_NO_PHONE_REASON = 'No phone number on file for this patient.'
 
 
 def _enabled(flag_name):
@@ -123,6 +124,10 @@ def resolve_channel_availability(booking, request_data=None):
     ``reachable`` / ``unreachable`` only contain the dispatch channels
     (whatsapp, sms, voice) so callers can intersect them with the receptionist's
     checkbox selection. ``telegram`` is informational.
+
+    Phase 2: channels that need a phone number (WhatsApp via a real provider,
+    SMS, voice) are unreachable when the booking has none — the Telegram card
+    is the one road that needs no number.
     """
     chat_id = resolve_telegram_chat_id(booking, request_data)
     telegram_ok = _telegram_configured()
@@ -132,33 +137,45 @@ def resolve_channel_availability(booking, request_data=None):
     sms_enabled = _enabled('SMS_ENABLED')
     voice_enabled = _enabled('VOICE_ENABLED')
 
+    booking_phone = str(getattr(booking, 'patient_phone', '') or '')
+    has_phone = any(ch.isdigit() for ch in booking_phone)
+    whatsapp_via_provider = whatsapp_enabled and has_phone
+
     channels = {
         'whatsapp': {
             'configured': whatsapp_enabled,
-            'reachable': whatsapp_enabled or telegram_reachable,
+            'reachable': whatsapp_via_provider or telegram_reachable,
             'via': (
-                'whatsapp' if whatsapp_enabled
+                'whatsapp' if whatsapp_via_provider
                 else ('telegram' if telegram_reachable else None)
             ),
             'reason': (
-                None if whatsapp_enabled
+                None if whatsapp_via_provider
                 else (
                     'Delivered through the Telegram card (WhatsApp stand-in).'
-                    if telegram_reachable else _WHATSAPP_DISABLED_REASON
+                    if telegram_reachable
+                    else (_NO_PHONE_REASON if whatsapp_enabled
+                          else _WHATSAPP_DISABLED_REASON)
                 )
             ),
         },
         'sms': {
             'configured': sms_enabled,
-            'reachable': sms_enabled,
-            'via': 'sms' if sms_enabled else None,
-            'reason': None if sms_enabled else _SMS_DISABLED_REASON,
+            'reachable': sms_enabled and has_phone,
+            'via': 'sms' if (sms_enabled and has_phone) else None,
+            'reason': (
+                None if (sms_enabled and has_phone)
+                else (_SMS_DISABLED_REASON if not sms_enabled else _NO_PHONE_REASON)
+            ),
         },
         'voice': {
             'configured': voice_enabled,
-            'reachable': voice_enabled,
-            'via': 'voice' if voice_enabled else None,
-            'reason': None if voice_enabled else _VOICE_DISABLED_REASON,
+            'reachable': voice_enabled and has_phone,
+            'via': 'voice' if (voice_enabled and has_phone) else None,
+            'reason': (
+                None if (voice_enabled and has_phone)
+                else (_VOICE_DISABLED_REASON if not voice_enabled else _NO_PHONE_REASON)
+            ),
         },
         'telegram': {
             'configured': telegram_ok,

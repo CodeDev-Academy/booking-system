@@ -439,6 +439,12 @@ Layer 1 contract (also documented in `API_REFERENCE.md`):
 - Why it is not a duplicate of **Needs Attention**: that tab is reactive (an attempted send
   failed and wrote an `InteractionLog`). A dispatch that reaches nobody writes no log at all,
   so the tab stays green while the patient receives nothing. The guard closes that gap.
+- **Phone check (Phase 2, 2026-11-14):** reachability now also reflects the *patient's
+  data*, not just provider flags. A booking with no phone number cannot be texted, called
+  or messaged by a real provider, so `sms` and `voice` (and `whatsapp` via a provider) are
+  `reachable: false` with reason *"No phone number on file for this patient."* — only the
+  Telegram card (`via: "telegram"`) still reaches a phoneless patient. Pinned by
+  `ChannelAvailabilityTests` (10 tests).
 
 Layer 2 contract — advisory `delivery` / `delivery_warning` on `dispatch-offers`:
 
@@ -514,6 +520,19 @@ Layer 4 contract — enforcement (opt-in, default OFF):
    (`skip / whatsapp_template_not_configured`, no URL/body built), and the `GET`
    `hub.challenge` handshake on `07` (`multipleMethods: true` — one webhook output per
    method, both must be wired). Verified live; see `TEST.md` T-709.
+9. **Skip visibility** — a channel that cannot fire is a *record*, not a log line.
+   ✅ Done (Phase 2). The switch's skip output feeds `Log Skipped Channel`, which writes a
+   `status: queued` InteractionLog row (`external_ref: skip-<channel>-<request_code>`,
+   plain-language summary, reason code in `error_detail`) for the actionable reasons
+   (`outside_call_window`, `provider_not_configured`, `whatsapp_template_not_configured`,
+   `missing_phone`); `duplicate_dispatch` and `no_active_channel` stay unlogged by decision.
+   The voice probe's error output feeds `Log Voice Probe Failure` — a `failed` row ("voice
+   call suppressed, fail closed") that lands in Needs Attention and closed the workflow's
+   last validation warning. Supporting Django changes: `POST /interactions/` accepts a
+   phoneless row only for `status=queued` with a request link, and
+   `resolve_channel_availability` marks phone-dependent channels unreachable ("No phone
+   number on file for this patient.") so reception learns it *before* dispatch. Verified
+   live (all four reasons + the probe failure); see `TEST.md` T-710.
 
 ### 5.8 Edge cases owned by this integration
 
@@ -609,7 +628,10 @@ row and only fills blank fields; same-rank terminal events overwrite (last one w
 holds even if a callback is replayed outside n8n.
 
 **Phone is optional** when `external_ref` matches an existing row (Django reuses the stored
-number). A brand-new row without a phone is still rejected `400`.
+number). Since Phase 2, a brand-new row may also omit the phone **only** when
+`status=queued` **and** it links a request (`request_code`) — that is the skip-visibility
+contract: a "held back, not attempted" row has no destination number because nothing was
+sent. Any other new row without a phone is still rejected `400`.
 
 **Vocabulary tables** live in the `Verify & Normalize Provider Event` Code node
 (`STATUS_ALIASES`, `CHANNEL_ALIASES`). Only those two tables need editing when the partner's

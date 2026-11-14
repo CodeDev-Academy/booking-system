@@ -73,12 +73,21 @@ class InteractionListCreateView(APIView):
         # only. When the row already exists, reuse its stored number instead of rejecting
         # the event; a brand-new row still has to carry a phone number.
         if not (validated.get('patient_phone') or ''):
-            if existing is None:
+            # Phase 2 skip visibility: a "held back, not attempted" row
+            # (status queued) is internal bookkeeping linked to the booking
+            # request — no destination number, because nothing was sent. The
+            # request link is mandatory so the row is always findable.
+            phoneless_skip_row = (
+                (validated.get('status') or '') == 'queued'
+                and validated.get('booking_request') is not None
+            )
+            if existing is not None:
+                validated['patient_phone'] = existing.patient_phone
+            elif not phoneless_skip_row:
                 return Response(
                     {'patient_phone': ['patient_phone is required.']},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            validated['patient_phone'] = existing.patient_phone
 
         created = False
         if external_ref:

@@ -3784,6 +3784,76 @@ class InteractionLogAPITests(APITestCase):
         self.assertIn('patient_phone', res.data)
         self.assertEqual(InteractionLog.objects.count(), 0)
 
+    def test_queued_skip_row_without_phone_accepted(self):
+        # Phase 2 skip visibility: a "held back, not attempted" row (status
+        # queued) is internal bookkeeping linked to the booking request — it
+        # carries no destination number because nothing was sent anywhere.
+        payload = {
+            'provider': 'voicebip',
+            'channel': 'voice',
+            'status': 'queued',
+            'request_code': 'REQ-2026-0042',
+            'external_ref': 'skip-voice-REQ-2026-0042',
+            'summary': 'Held back: outside calling hours (08:00-19:00).',
+            'error_detail': 'outside_call_window',
+        }
+        res = self._post_with_secret(payload)
+
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        log = InteractionLog.objects.get(external_ref='skip-voice-REQ-2026-0042')
+        self.assertEqual(log.status, 'queued')
+        self.assertEqual(log.patient_phone, '')
+        self.assertEqual(log.booking_request, self.booking)
+
+    def test_queued_row_without_phone_and_without_request_link_rejected(self):
+        # A phoneless queued row with no request link would be an orphan —
+        # nothing to look it up by. The relaxation requires the link.
+        payload = {
+            'provider': 'voicebip',
+            'channel': 'voice',
+            'status': 'queued',
+            'external_ref': 'skip-voice-ORPHAN',
+        }
+        res = self._post_with_secret(payload)
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('patient_phone', res.data)
+        self.assertEqual(InteractionLog.objects.count(), 0)
+
+    def test_phoneless_queued_row_advanced_by_later_delivery_event(self):
+        # The skip row must not trap the history: when the channel later fires,
+        # the real provider event (higher rank, carries a phone) advances the
+        # row and fills the blank number. Our callback receiver always sends
+        # request_code alongside the provider id, so the link survives.
+        skip = {
+            'provider': 'voicebip',
+            'channel': 'voice',
+            'status': 'queued',
+            'request_code': 'REQ-2026-0042',
+            'external_ref': 'VB-CALL-LATER-1',
+            'error_detail': 'outside_call_window',
+        }
+        res = self._post_with_secret(skip)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+        delivered = {
+            'provider': 'voicebip',
+            'channel': 'voice',
+            'status': 'answered',
+            'request_code': 'REQ-2026-0042',
+            'external_ref': 'VB-CALL-LATER-1',
+            'patient_phone': '+234 803 000 1122',
+            'call_duration_seconds': 30,
+        }
+        res = self._post_with_secret(delivered)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        log = InteractionLog.objects.get(external_ref='VB-CALL-LATER-1')
+        self.assertEqual(log.status, 'answered')
+        self.assertEqual(log.patient_phone, '+2348030001122')
+        self.assertEqual(log.booking_request, self.booking)
+        self.assertEqual(InteractionLog.objects.count(), 1)
+
     def test_post_invalid_channel_rejected(self):
         bad = dict(self.valid_payload)
         bad['channel'] = 'carrier_pigeon'
@@ -4837,6 +4907,54 @@ class ChannelAvailabilityTests(APITestCase):
 
         self.assertEqual(data['telegram_chat_id'], '99001')
         self.assertIn('whatsapp', data['reachable'])
+
+    def test_phoneless_booking_reaches_nothing_without_telegram(self):
+        # Phase 2: reachability must reflect the patient's data, not just the
+        # provider flags — a booking with no number cannot be texted, called or
+        # messaged, and pretending otherwise hides the problem until after
+        # dispatch. The Telegram card is the one road that needs no phone.
+        from .services.channel_availability import (
+            resolve_channel_availability, build_delivery_plan,
+        )
+        self.booking.patient_phone = ''
+        self.booking.save(update_fields=['patient_phone'])
+
+        with self._flags(WHATSAPP_ENABLED='true', SMS_ENABLED='true', VOICE_ENABLED='true'), \
+                override_settings(TELEGRAM_BOT_TOKEN=''):
+            data = resolve_channel_availability(self.booking)
+            plan = build_delivery_plan(data, ['whatsapp', 'sms', 'voice'])
+
+        self.assertTrue(data['none'])
+        self.assertEqual(data['unreachable'], ['whatsapp', 'sms', 'voice'])
+        for channel in ('whatsapp', 'sms', 'voice'):
+            self.assertEqual(
+                data['channels'][channel]['reason'],
+                'No phone number on file for this patient.',
+                f'{channel} should name the missing phone number',
+            )
+        self.assertIn('nothing will be delivered', plan['warning'])
+
+    def test_phoneless_booking_whatsapp_still_reachable_via_telegram(self):
+        # Even with every provider flag on, a phoneless patient's only honest
+        # instant-message road is the Telegram card — 'via' must say so.
+        from .services.channel_availability import resolve_channel_availability
+        self.booking.patient_phone = ''
+        self.booking.patient_notes = 'telegram_chat_id: 55882'
+        self.booking.save(update_fields=['patient_phone', 'patient_notes'])
+
+        with self._flags(WHATSAPP_ENABLED='true', SMS_ENABLED='true', VOICE_ENABLED='true'), \
+                override_settings(TELEGRAM_BOT_TOKEN='test-bot-token'):
+            data = resolve_channel_availability(self.booking)
+
+        self.assertFalse(data['none'])
+        self.assertIn('whatsapp', data['reachable'])
+        self.assertEqual(data['channels']['whatsapp']['via'], 'telegram')
+        self.assertNotIn('sms', data['reachable'])
+        self.assertNotIn('voice', data['reachable'])
+        self.assertEqual(
+            data['channels']['sms']['reason'],
+            'No phone number on file for this patient.',
+        )
 
     # ---------------------------------------------------------------- endpoint
     def test_endpoint_returns_availability_shape(self):
