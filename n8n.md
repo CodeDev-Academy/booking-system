@@ -392,15 +392,18 @@ Layer 4 contract — enforcement (opt-in, default OFF):
 ### 5.7 Build sequence (mock-first, so "connect the API" is the only step left)
 
 1. **Channel-availability guard** — backend + dashboard (no provider needed; fully testable).
+   ✅ Done (Option B layers 1–4).
 2. **Mock provider adapter** — `PROVIDER_MOCK=true` returns fake call IDs/statuses and can
    simulate callbacks; lets the whole D graph, logging and dashboard run today.
+   ✅ Done (Stage D-1, live workflow `GtpeOwfnG8yYyAxq`).
 3. **Voice guard** — Wait 30s → `GET dispatch-status/` → skip when the patient already replied.
+   ✅ Done (Stage D-2; probe errors fail closed — no call is placed).
 4. **InteractionLog nodes** — after every provider branch (sent / failed / no_answer), tested
-   against mock responses.
+   against mock responses. ⏳ Next (Stage D-3).
 5. **Callback receiver** — one authenticated webhook for provider events; idempotent upsert by
-   `external_ref`; status rank so late events never downgrade a row.
+   `external_ref`; status rank so late events never downgrade a row. ⏳ Stage D-4.
 6. **Flip to live** — fill §5.5, set `PROVIDER_MOCK=false`, enable the provider nodes, re-run
-   the sample payload, then one real call to a test number.
+   the sample payload, then one real call to a test number. ⏳ Stage D-5.
 
 ### 5.8 Edge cases owned by this integration
 

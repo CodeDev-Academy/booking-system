@@ -809,3 +809,35 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
 - Next: **D-2** voice guard (`Wait 30s` -> `GET dispatch-status/` -> skip when
   `should_skip_voice_call`), then D-3 enable sends + `InteractionLog` per branch,
   D-4 provider callback receiver, D-5 freeze.
+
+
+## 2026-11-14 - Workflow D Stage D-2: 30s voice fast-replier guard (live n8n)
+
+- The voice leg no longer calls blindly. New chain between the switch and the call:
+  `Wait 30s Before Voice Nudge` -> `Check Patient Replied (dispatch-status)` (HTTP GET,
+  `X-Webhook-Secret`) -> `Merge Voice Guard` (Code) -> `IF Voice Still Needed` ->
+  `Send Voice Call (VoiceBip)`.
+- Probe contract (already built in Task 3.5, `DispatchStatusView`): `GET
+  /api/v1/booking-requests/{request_code}/dispatch-status/` returns
+  `{status, has_active_hold, has_confirmed_booking, appointment_code, should_skip_voice_call}`.
+- `should_skip_voice_call: true` (patient already holds or booked a slot within the 30s) ->
+  route becomes `skip` / `patient_already_engaged`, the IF's false output goes nowhere and
+  **no call is placed**.
+- **Fails closed:** the HTTP node uses `onError: continueErrorOutput` with the error output
+  deliberately unwired, so a 404 (request gone) or an unreachable Django stops the branch
+  instead of calling the patient. Never call on uncertainty.
+- `Merge Voice Guard` exists because the probe response replaces the item: it pulls the
+  voice item back from `Provider Config & Adapter`, reattaches the provider payload, and
+  records `voice_guard {checked, checked_at, wait_seconds, should_skip, request_status,
+  has_active_hold, has_confirmed_booking, appointment_code}` for the D-3 log nodes.
+- Verified live (executions 20-22):
+  - **20** no hold (REQ-2026-0006) - 30.2s total, probe `should_skip:false`, IF `[1,0]`,
+    call leg reached with the payload intact.
+  - **21** active hold (`AP-D2GUARD` on REQ-2026-0043) - probe `should_skip:true`,
+    IF `[0,1]`, `Send Voice Call` never ran.
+  - **22** unknown request (REQ-2026-9999) - probe 404 -> error output -> branch stopped,
+    no call, execution still `success`.
+- Cleanup: the temporary `AP-D2GUARD` hold was deleted; the workflow is 11 nodes,
+  `valid: true`, exported to `n8n/05_slot_offer_dispatcher.json`.
+- Next: **D-3** - enable the three send nodes, add `InteractionLog` posts per branch
+  (sent / failed / no_answer), verify `PROVIDER_MOCK_FAIL=true` lands in Needs Attention.

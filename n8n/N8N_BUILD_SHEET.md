@@ -215,11 +215,10 @@ If `should_skip_voice_call` is `true` (patient already picked an option — hold
 booking), **skip the call entirely** and log nothing extra. Works with the webhook secret;
 no staff session needed.
 
-### 5.1 Current build state (2026-11-13 → Stage D-1, 2026-11-14)
+### 5.1 Current build state (Stage D-1 + D-2, 2026-11-14)
 
-Workflow ID `GtpeOwfnG8yYyAxq` (`05_Slot_Offer_Dispatcher_Bridge`) — **active**, 7 nodes,
-`valid: true` (0 errors; the only warnings are the three expected "connection to disabled
-node" pass-throughs). Graph:
+Workflow ID `GtpeOwfnG8yYyAxq` (`05_Slot_Offer_Dispatcher_Bridge`) — **active**, 11 nodes,
+`valid: true` (0 errors). Graph:
 
 ```
 Dispatch Offers Webhook from Django        (responseMode: onReceived — answers instantly)
@@ -228,7 +227,12 @@ Dispatch Offers Webhook from Django        (responseMode: onReceived — answers
              └─ Route Provider Request      (Switch: whatsapp | sms | voice | skip)
                   ├─ whatsapp → Send WhatsApp Interactive Message  [DISABLED — awaits Meta creds]
                   ├─ sms      → Send SMS (VoiceBip)                [DISABLED — awaits VoiceBip creds]
-                  ├─ voice    → Send Voice Call (VoiceBip)         [DISABLED — awaits VoiceBip creds]
+                  ├─ voice    → Wait 30s Before Voice Nudge
+                  │              └─ Check Patient Replied (dispatch-status)  [GET, error → stop]
+                  │                   └─ Merge Voice Guard  (reattach payload + voice_guard)
+                  │                        └─ IF Voice Still Needed
+                  │                             ├─ true  → Send Voice Call (VoiceBip)  [DISABLED]
+                  │                             └─ false → (stop, no call)
                   └─ skip     → (empty, intentional no-op)
 ```
 
@@ -245,10 +249,11 @@ hardcodes a URL, key or sender id; everything comes from `$env`):
 |---|---|
 | `provider_channel` | `whatsapp` \| `sms` \| `voice` (the item's channel) |
 | `provider_request.route` | same value, or `skip` |
-| `provider_request.skip_reason` | `duplicate_dispatch` \| `outside_call_window` \| `provider_not_configured` \| `no_active_channel` |
+| `provider_request.skip_reason` | `duplicate_dispatch` \| `outside_call_window` \| `provider_not_configured` \| `no_active_channel` \| `patient_already_engaged` \| `voice_payload_missing` |
 | `provider_request.{method,url,headers,body}` | the exact HTTP call a send node would make (enabled at D-3) |
 | `provider_response` | mock object while `PROVIDER_MOCK` is on, else `null` |
 | `adapter_meta` | `channel, provider_mock, provider_mock_fail, configured, voice_in_window, duplicate, request_id, external_ref_hint, missing_env[]` |
+| `voice_guard` (voice branch only) | `checked, checked_at, wait_seconds, should_skip, request_status, has_active_hold, has_confirmed_booking, appointment_code` |
 
 Active-channel rules (in the adapter, in this order):
 - `whatsapp` — `want_whatsapp && !chat_id` (a Telegram patient already got Django's card)
@@ -264,6 +269,14 @@ Guards:
   `PROVIDER_MOCK_FAIL=true` simulates a provider failure for the Needs-Attention path.
 - **Not configured** — with mock off, a channel missing its env vars routes to `skip`
   (`provider_not_configured`) instead of firing a broken call.
+- **Voice fast-replier guard (D-2)** — the voice leg waits **30s**, then
+  `GET {DJANGO_API_BASE_URL}/booking-requests/{request_id}/dispatch-status/` with
+  `X-Webhook-Secret`. `should_skip_voice_call: true` (patient already holds or booked a
+  slot) → route becomes `skip` / `patient_already_engaged`, the IF sends nothing and **no
+  call is placed**. If the probe fails (404 / Django down) the HTTP node's **error output
+  is deliberately unwired**, so the call is also skipped — the guard fails closed, never
+  open. The `Merge Voice Guard` code node reattaches the adapter payload (the probe
+  response replaces the item) and records the full `voice_guard` block for the D-3 log.
 
 - Workflow settings timezone: `Africa/Lagos`.
 - Disabled send nodes are pass-through in n8n, so the workflow completes cleanly with every
@@ -271,6 +284,10 @@ Guards:
 - Verified live (executions 15–18): per-channel routing, Telegram patient suppressing the
   WhatsApp leg, `duplicate_dispatch`, `outside_call_window`, and the mock
   `external_ref`/`status`.
+- Verified live (executions 20–22, D-2): **20** no hold → 30.2s → probe `should_skip:
+  false` → IF true → call leg reached; **21** active hold `AP-D2GUARD` → probe
+  `should_skip: true` → IF false → `Send Voice Call` never ran; **22** unknown request →
+  probe 404 → error output → branch stopped, no call, execution still `success`.
 - Flip-live is **config only**: enable the send nodes, set `PROVIDER_MOCK=false` plus the
   `VOICEBIP_*` / `WHATSAPP_*` env vars, restart n8n (env vars are read at process start).
 
@@ -283,7 +300,7 @@ Guards:
 | 3 | WhatsApp send | ⏳ D-3 — enable node; Meta Cloud API template with 3 quick-reply buttons; params: patient name, service, option labels, `expiry_minutes`. |
 | 4 | SMS send | ⏳ D-3 — enable node; VoiceBip SMS, body already composed as `sms_body`; sender ID `Cedarcare`. |
 | 5 | Log ×2 | ⏳ D-3 — `POST {{$env.DJANGO_API_BASE_URL}}/api/v1/interactions/`, header `X-Webhook-Secret: {{$env.DJANGO_WEBHOOK_SECRET}}`, `external_ref` = provider message id (`mock-*` while mocking). |
-| 6 | Voice guard | ⏳ D-2 — `Wait 30s` → `GET dispatch-status/` → stop the branch when `should_skip_voice_call` is true. |
+| 6 | Voice guard | ✅ Done (D-2) — `Wait 30s` → `GET dispatch-status/` → `Merge Voice Guard` → `IF Voice Still Needed`; skip + fail-closed on probe error. |
 | 7 | VoiceBip call | ⏳ D-3 — `POST {VOICEBIP_API_URL}/voice/calls`, `Authorization: Bearer {{$env.VOICEBIP_API_KEY}}`, `agent_id`, `caller_id`; nudge only, no DTMF. |
 | 8 | Log voice | ⏳ D-3 — `provider:"voicebip"`, `channel:"voice"`, status `answered`/`no_answer`/`failed`, `external_call_id`. |
 | 9 | Callback receiver | ⏳ D-4 — `06_provider_callback.json` receives VoiceBip delivery-report / call-outcome webhooks and POSTs them to `interactions/`. |
@@ -299,7 +316,7 @@ Guards:
 | `02_hold_and_offer_expiry_cron.json` | Sweeper skeleton | Per §3 — add nudge branch + recovery sends + logging |
 | `03_reminder_flows.json` | Reminder skeleton | Per §2 — add SMS leg + logging + dedupe |
 | `04_patient_response_handler.json` | Response skeleton | Per §4 — add SMS "1/2/3" replies, re-request, channel neutralization, logging |
-| `05_slot_offer_dispatcher.json` | ⚠ Skeleton in repo is stale vs live | The **live** workflow (`GtpeOwfnG8yYyAxq`) is already rebuilt per §5.1. Re-export it from n8n to refresh this file, or edit the live one via n8n-mcp. |
+| `05_slot_offer_dispatcher.json` | ✅ Fresh export of the live workflow | Re-export after any live edit (see §5.1). Graph = 11 nodes incl. the D-2 voice guard; send nodes still disabled until partner creds. |
 
 ## 7. Build & test order (recommended)
 
