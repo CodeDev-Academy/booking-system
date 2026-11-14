@@ -18,7 +18,11 @@
         0
       ],
       "parameters": {
-        "httpMethod": "POST",
+        "multipleMethods": true,
+        "httpMethod": [
+          "GET",
+          "POST"
+        ],
         "path": "provider-callback",
         "responseMode": "responseNode",
         "options": {}
@@ -30,11 +34,11 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        240,
+        480,
         0
       ],
       "parameters": {
-        "jsCode": "// Workflow D · Stage D-4 — provider callback receiver (VoiceBip voice/SMS, Meta WhatsApp).\n// One authenticated webhook for every asynchronous provider event: delivery reports,\n// call outcomes and recordings. Django remains the source of truth: this node only\n// normalizes the provider's vocabulary, then POSTs to /interactions/ where the\n// status-rank guard decides whether the stored row may advance.\nconst src = $input.first().json || {};\nconst body = src.body || {};\nconst query = src.query || {};\nconst headers = src.headers || {};\n\nconst env = function (name, fallback) {\n  try {\n    var v = $env[name];\n    return (v === undefined || v === null) ? (fallback || '') : String(v);\n  } catch (e) { return fallback || ''; }\n};\nconst first = function () {\n  for (var i = 0; i < arguments.length; i++) {\n    var v = arguments[i];\n    if (v !== undefined && v !== null && String(v).trim() !== '') return v;\n  }\n  return '';\n};\nconst norm = function (v) {\n  return String(v || '').trim().toLowerCase().replace(new RegExp('[^a-z0-9]+', 'g'), '_');\n};\n\n// ---------- 1. Authentication (fail closed) ----------\nconst expected = env('PROVIDER_CALLBACK_TOKEN');\nconst provided = String(first(\n  query.token,\n  query.access_token,\n  headers['x-provider-token'],\n  headers['x-callback-token'],\n  headers['x-webhook-token'],\n  body.token\n)).trim();\nconst authorized = Boolean(expected) && provided === expected;\n\nif (!authorized) {\n  return [{ json: {\n    authorized: false,\n    skip: true,\n    reason: expected ? 'bad_token' : 'callback_token_not_configured',\n    http_code: 401,\n    response: {\n      ok: false,\n      error: 'unauthorized',\n      reason: expected ? 'invalid_callback_token' : 'receiver_not_configured',\n    },\n  } }];\n}\n\n// ---------- 2. Provider vocabulary -> clinic vocabulary ----------\n// Adjust these two tables (only these) when VoiceBip's real payload spec lands.\nconst STATUS_ALIASES = {\n  queued: 'queued', pending: 'queued', scheduled: 'queued', initiated: 'queued', created: 'queued',\n  sent: 'sent', submitted: 'sent', accepted: 'sent', ringing: 'sent', in_progress: 'sent', calling: 'sent',\n  delivered: 'delivered', delivery: 'delivered', read: 'delivered', delivery_success: 'delivered', message_delivered: 'delivered',\n  answered: 'answered', completed: 'answered', call_answered: 'answered', call_completed: 'answered', human_answered: 'answered',\n  no_answer: 'no_answer', noanswer: 'no_answer', unanswered: 'no_answer', busy: 'no_answer',\n  line_busy: 'no_answer', voicemail: 'no_answer', machine_detected: 'no_answer', no_response: 'no_answer',\n  failed: 'failed', failure: 'failed', error: 'failed', rejected: 'failed', undelivered: 'failed',\n  delivery_failed: 'failed', cancelled: 'failed', canceled: 'failed', call_failed: 'failed',\n  expired: 'expired', timeout: 'expired', timed_out: 'expired', offer_expired: 'expired',\n};\nconst CHANNEL_ALIASES = {\n  voice: 'voice', call: 'voice', voice_call: 'voice', voicecall: 'voice', phone: 'voice', ivr: 'voice',\n  sms: 'sms', text: 'sms', message: 'sms', messaging: 'sms', text_message: 'sms',\n  whatsapp: 'whatsapp', wa: 'whatsapp', whatsapp_cloud: 'whatsapp', whatsapp_message: 'whatsapp',\n  telegram: 'telegram', tg: 'telegram',\n};\n\nconst rawEvent = String(first(body.event, body.type, body.status, body.call_status, body.delivery_status, body.state));\nconst eventTail = norm(rawEvent).split('_').pop() || '';\nconst rawStatus = norm(first(body.status, body.call_status, body.delivery_status, body.state, rawEvent));\nconst status = STATUS_ALIASES[rawStatus] || STATUS_ALIASES[eventTail] || STATUS_ALIASES[norm(rawEvent)] || '';\n\nconst externalRef = String(first(\n  body.external_ref, body.externalRef, body.message_id, body.messageId,\n  body.call_id, body.callId, body.reference, body.sid, body.provider_ref, body.id\n));\n\nlet requestCode = String(first(\n  body.request_code,\n  body.client_reference,\n  body.metadata && body.metadata.request_code,\n  body.custom_data && body.custom_data.request_code\n));\nif (!requestCode) {\n  const hit = externalRef.match(new RegExp('REQ-[0-9]{4}-[0-9]+', 'i'));\n  if (hit) requestCode = hit[0].toUpperCase();\n}\n\nlet channel = CHANNEL_ALIASES[norm(first(body.channel, body.medium, body.channel_type))] || '';\nif (!channel) {\n  const ref = externalRef.toLowerCase();\n  if (ref.indexOf('voice') !== -1 || ref.indexOf('call') !== -1) channel = 'voice';\n  else if (ref.indexOf('sms') !== -1) channel = 'sms';\n  else if (ref.indexOf('whatsapp') !== -1 || ref.indexOf('wa-') !== -1) channel = 'whatsapp';\n}\nif (!channel && (status === 'answered' || status === 'no_answer')) channel = 'voice';\nif (!channel && rawEvent) {\n  const ev = norm(rawEvent);\n  if (ev.indexOf('sms') === 0) channel = 'sms';\n  else if (ev.indexOf('whatsapp') === 0 || ev.indexOf('wa_') === 0) channel = 'whatsapp';\n  else if (ev.indexOf('call') === 0 || ev.indexOf('voice') === 0) channel = 'voice';\n}\n// Last resort: VoiceBip's remaining product is SMS. Confirm with the partner contract.\nif (!channel) channel = 'sms';\n\nconst explicitProvider = norm(first(body.provider, body.provider_name, body.vendor));\nlet provider = '';\nif (explicitProvider.indexOf('voicebip') !== -1 || explicitProvider.indexOf('bip') !== -1) provider = 'voicebip';\nelse if (explicitProvider.indexOf('meta') !== -1 || explicitProvider.indexOf('whatsapp') !== -1) provider = 'meta_whatsapp';\nelse if (explicitProvider.indexOf('telegram') !== -1) provider = 'telegram';\nif (!provider) provider = channel === 'whatsapp' ? 'meta_whatsapp' : (channel === 'telegram' ? 'telegram' : 'voicebip');\n\nconst phone = String(first(\n  body.patient_phone, body.to, body.phone, body.destination, body.recipient, body.customer_number,\n  body.metadata && body.metadata.patient_phone,\n  body.metadata && body.metadata.to\n));\n\nconst rawDuration = first(body.call_duration_seconds, body.duration_seconds, body.duration, body.call_duration, body.billable_duration);\nconst duration = (rawDuration === '' || isNaN(Number(rawDuration))) ? null : Math.max(0, Math.round(Number(rawDuration)));\nconst recording = String(first(body.recording_url, body.recordingUrl, body.recording && body.recording.url, body.call_recording_url));\nconst transcript = String(first(body.transcript, body.transcription, body.call_transcript));\nconst rawError = first(body.error_detail, body.error, body.reason, body.failure_reason, body.error_message);\nconst errorDetail = (rawError && typeof rawError === 'object') ? JSON.stringify(rawError) : String(rawError || '');\n\nconst STATUS_LABEL = {\n  queued: 'queued', sent: 'sent', delivered: 'delivered',\n  answered: 'answered', no_answer: 'did not answer', failed: 'failed', expired: 'expired',\n};\nconst summary = String(first(body.summary, body.note, 'Provider callback: ' + channel + ' ' + (STATUS_LABEL[status] || status)));\n\n// ---------- 3. Ignore anything we cannot place (still a 200, so the provider stops retrying) ----------\nconst ignore = function (reason) {\n  return [{ json: {\n    authorized: true, skip: true, reason: reason, http_code: 200,\n    response: { ok: true, ignored: true, reason: reason, external_ref: externalRef || null },\n  } }];\n};\nif (!status) return ignore('unknown_status');\nif (!externalRef) return ignore('missing_external_ref');\n\n// ---------- 4. Ready to hand to Django ----------\nconst payload = {\n  provider: provider,\n  channel: channel,\n  direction: 'outbound',\n  status: status,\n  patient_name: String(first(body.patient_name, body.customer_name, body.metadata && body.metadata.patient_name)),\n  patient_phone: phone,\n  request_code: requestCode,\n  external_ref: externalRef,\n  summary: summary,\n  error_detail: errorDetail,\n};\nif (duration !== null) payload.call_duration_seconds = duration;\nif (recording) payload.recording_url = recording;\nif (transcript) payload.transcript = transcript;\n\nreturn [{ json: {\n  authorized: true,\n  skip: false,\n  reason: null,\n  http_code: 200,\n  payload: payload,\n  response: { ok: true, accepted: true, external_ref: externalRef, status: status },\n} }];"
+        "jsCode": "// Workflow D · Stage D-4 — provider callback receiver (VoiceBip voice/SMS, Meta WhatsApp).\n// One authenticated webhook for every asynchronous provider event: delivery reports,\n// call outcomes and recordings. Django remains the source of truth: this node only\n// normalizes the provider's vocabulary, then POSTs to /interactions/ where the\n// status-rank guard decides whether the stored row may advance.\n//\n// Phase 1: Meta WhatsApp is understood natively. Meta wraps statuses inside\n// entry[].changes[].value.statuses[] and can batch several of them into ONE request\n// (sent + delivered arrive together when the phone is online). Every status becomes\n// its own item, so the tail of a batch is never silently dropped.\nconst src = $input.first().json || {};\nconst body = src.body || {};\nconst query = src.query || {};\nconst headers = src.headers || {};\n\nconst env = function (name, fallback) {\n  try {\n    var v = $env[name];\n    return (v === undefined || v === null) ? (fallback || '') : String(v);\n  } catch (e) { return fallback || ''; }\n};\nconst first = function () {\n  for (var i = 0; i < arguments.length; i++) {\n    var v = arguments[i];\n    if (v !== undefined && v !== null && String(v).trim() !== '') return v;\n  }\n  return '';\n};\nconst norm = function (v) {\n  return String(v || '').trim().toLowerCase().replace(new RegExp('[^a-z0-9]+', 'g'), '_');\n};\n\n// ---------- 1. Authentication (fail closed) ----------\nconst expected = env('PROVIDER_CALLBACK_TOKEN');\nconst provided = String(first(\n  query.token,\n  query.access_token,\n  headers['x-provider-token'],\n  headers['x-callback-token'],\n  headers['x-webhook-token'],\n  body.token\n)).trim();\nconst authorized = Boolean(expected) && provided === expected;\n\nif (!authorized) {\n  return [{ json: {\n    authorized: false,\n    skip: true,\n    reason: expected ? 'bad_token' : 'callback_token_not_configured',\n    http_code: 401,\n    response: {\n      ok: false,\n      error: 'unauthorized',\n      reason: expected ? 'invalid_callback_token' : 'receiver_not_configured',\n    },\n  } }];\n}\n\n// ---------- 2. Unwrap the provider envelope ----------\n// VoiceBip posts one flat event. Meta posts a batch. Both become a list of raw\n// event objects; each is normalized into one item below.\nconst unwrap = function (b) {\n  const entries = Array.isArray(b.entry) ? b.entry : null;\n  if (!entries) return [{ meta: false, event: b }];\n\n  const out = [];\n  for (var i = 0; i < entries.length; i++) {\n    const changes = Array.isArray(entries[i] && entries[i].changes) ? entries[i].changes : [];\n    for (var c = 0; c < changes.length; c++) {\n      const value = (changes[c] && changes[c].value) || {};\n      const statuses = Array.isArray(value.statuses) ? value.statuses : [];\n      for (var s = 0; s < statuses.length; s++) {\n        const st = statuses[s] || {};\n        out.push({\n          meta: true,\n          event: {\n            status: st.status,\n            id: st.id,\n            recipient_id: st.recipient_id,\n            timestamp: st.timestamp,\n            biz_opaque_callback_data: st.biz_opaque_callback_data,\n            errors: st.errors,\n            conversation: st.conversation,\n            pricing: st.pricing,\n          },\n        });\n      }\n      // Inbound patient replies share this webhook in Meta's model. They are\n      // Workflow C's job (Telegram is the launch channel), so they are acked and\n      // ignored here rather than mis-recorded as an outbound SMS.\n      const msgs = Array.isArray(value.messages) ? value.messages : [];\n      if (msgs.length && !statuses.length) {\n        out.push({ meta: true, inbound: true, event: { id: msgs[0].id } });\n      }\n    }\n  }\n  return out;\n};\n\n// ---------- 3. Provider vocabulary -> clinic vocabulary ----------\n// Adjust these two tables (only these) when VoiceBip's real payload spec lands.\nconst STATUS_ALIASES = {\n  queued: 'queued', pending: 'queued', scheduled: 'queued', initiated: 'queued', created: 'queued',\n  sent: 'sent', submitted: 'sent', accepted: 'sent', ringing: 'sent', in_progress: 'sent', calling: 'sent',\n  delivered: 'delivered', delivery: 'delivered', read: 'delivered', delivery_success: 'delivered', message_delivered: 'delivered',\n  answered: 'answered', completed: 'answered', call_answered: 'answered', call_completed: 'answered', human_answered: 'answered',\n  no_answer: 'no_answer', noanswer: 'no_answer', unanswered: 'no_answer', busy: 'no_answer',\n  line_busy: 'no_answer', voicemail: 'no_answer', machine_detected: 'no_answer', no_response: 'no_answer',\n  failed: 'failed', failure: 'failed', error: 'failed', rejected: 'failed', undelivered: 'failed',\n  delivery_failed: 'failed', cancelled: 'failed', canceled: 'failed', call_failed: 'failed',\n  expired: 'expired', timeout: 'expired', timed_out: 'expired', offer_expired: 'expired',\n};\nconst CHANNEL_ALIASES = {\n  voice: 'voice', call: 'voice', voice_call: 'voice', voicecall: 'voice', phone: 'voice', ivr: 'voice',\n  sms: 'sms', text: 'sms', message: 'sms', messaging: 'sms', text_message: 'sms',\n  whatsapp: 'whatsapp', wa: 'whatsapp', whatsapp_cloud: 'whatsapp', whatsapp_message: 'whatsapp',\n  telegram: 'telegram', tg: 'telegram',\n};\n\nconst STATUS_LABEL = {\n  queued: 'queued', sent: 'sent', delivered: 'delivered',\n  answered: 'answered', no_answer: 'did not answer', failed: 'failed', expired: 'expired',\n};\n\n// Meta nests the failure reason: errors[0].error_data.details holds the human\n// sentence, title is the short label, code is the numeric reason (e.g. 131047).\nconst metaError = function (errors) {\n  if (!Array.isArray(errors) || !errors.length) return '';\n  const e0 = errors[0] || {};\n  const detail = String(first(\n    e0.error_data && e0.error_data.details,\n    e0.title,\n    e0.message,\n    'WhatsApp delivery failed'\n  ));\n  return e0.code ? '(' + e0.code + ') ' + detail : detail;\n};\n\nconst normalize = function (wrapped) {\n  const ev = wrapped.event || {};\n  const isMeta = wrapped.meta === true;\n\n  const rawEvent = String(first(ev.event, ev.type, ev.status, ev.call_status, ev.delivery_status, ev.state));\n  const eventTail = norm(rawEvent).split('_').pop() || '';\n  const rawStatus = norm(first(ev.status, ev.call_status, ev.delivery_status, ev.state, rawEvent));\n  const status = STATUS_ALIASES[rawStatus] || STATUS_ALIASES[eventTail] || STATUS_ALIASES[norm(rawEvent)] || '';\n\n  const externalRef = String(first(\n    ev.id, ev.external_ref, ev.externalRef, ev.message_id, ev.messageId,\n    ev.call_id, ev.callId, ev.reference, ev.sid, ev.provider_ref\n  ));\n\n  // Meta echoes biz_opaque_callback_data (set by the dispatcher on every send),\n  // which is how a real wamid is linked back to a BookingRequest.\n  let requestCode = String(first(\n    ev.biz_opaque_callback_data,\n    ev.request_code,\n    ev.client_reference,\n    ev.metadata && ev.metadata.request_code,\n    ev.custom_data && ev.custom_data.request_code\n  ));\n  if (!requestCode) {\n    const hit = externalRef.match(new RegExp('REQ-[0-9]{4}-[0-9]+', 'i'));\n    if (hit) requestCode = hit[0].toUpperCase();\n  }\n\n  let channel = CHANNEL_ALIASES[norm(first(ev.channel, ev.medium, ev.channel_type))] || '';\n  if (!channel) {\n    const ref = externalRef.toLowerCase();\n    if (ref.indexOf('voice') !== -1 || ref.indexOf('call') !== -1) channel = 'voice';\n    else if (ref.indexOf('sms') !== -1) channel = 'sms';\n    else if (ref.indexOf('whatsapp') !== -1 || ref.indexOf('wa-') !== -1) channel = 'whatsapp';\n  }\n  if (!channel && (status === 'answered' || status === 'no_answer')) channel = 'voice';\n  if (!channel && rawEvent) {\n    const evn = norm(rawEvent);\n    if (evn.indexOf('sms') === 0) channel = 'sms';\n    else if (evn.indexOf('whatsapp') === 0 || evn.indexOf('wa_') === 0) channel = 'whatsapp';\n    else if (evn.indexOf('call') === 0 || evn.indexOf('voice') === 0) channel = 'voice';\n  }\n  // A Meta status event is WhatsApp by construction, whatever the ref looks like.\n  if (isMeta) channel = 'whatsapp';\n  // Last resort: VoiceBip's remaining product is SMS. Confirm with the partner contract.\n  if (!channel) channel = 'sms';\n\n  const explicitProvider = norm(first(ev.provider, ev.provider_name, ev.vendor));\n  let provider = '';\n  if (explicitProvider.indexOf('voicebip') !== -1 || explicitProvider.indexOf('bip') !== -1) provider = 'voicebip';\n  else if (explicitProvider.indexOf('meta') !== -1 || explicitProvider.indexOf('whatsapp') !== -1) provider = 'meta_whatsapp';\n  else if (explicitProvider.indexOf('telegram') !== -1) provider = 'telegram';\n  if (!provider) provider = (isMeta || channel === 'whatsapp') ? 'meta_whatsapp' : (channel === 'telegram' ? 'telegram' : 'voicebip');\n\n  const phone = String(first(\n    ev.patient_phone, ev.recipient_id, ev.to, ev.phone, ev.destination, ev.recipient, ev.customer_number,\n    ev.metadata && ev.metadata.patient_phone,\n    ev.metadata && ev.metadata.to\n  ));\n\n  const patientName = String(first(\n    ev.patient_name, ev.customer_name,\n    ev.metadata && ev.metadata.patient_name,\n    ev.contacts && ev.contacts[0] && ev.contacts[0].profile && ev.contacts[0].profile.name\n  ));\n\n  const rawDuration = first(ev.call_duration_seconds, ev.duration_seconds, ev.duration, ev.call_duration, ev.billable_duration);\n  const duration = (rawDuration === '' || isNaN(Number(rawDuration))) ? null : Math.max(0, Math.round(Number(rawDuration)));\n  const recording = String(first(ev.recording_url, ev.recordingUrl, ev.recording && ev.recording.url, ev.call_recording_url));\n  const transcript = String(first(ev.transcript, ev.transcription, ev.call_transcript));\n\n  let errorDetail = '';\n  if (isMeta) {\n    errorDetail = metaError(ev.errors);\n  } else {\n    const rawError = first(ev.error_detail, ev.error, ev.reason, ev.failure_reason, ev.error_message);\n    errorDetail = (rawError && typeof rawError === 'object') ? JSON.stringify(rawError) : String(rawError || '');\n  }\n\n  const summary = String(first(ev.summary, ev.note, 'Provider callback: ' + channel + ' ' + (STATUS_LABEL[status] || status)));\n\n  return {\n    isMeta: isMeta,\n    inbound: wrapped.inbound === true,\n    status: status,\n    channel: channel,\n    provider: provider,\n    externalRef: externalRef,\n    patient_name: patientName,\n    requestCode: requestCode,\n    phone: phone,\n    duration: duration,\n    recording: recording,\n    transcript: transcript,\n    errorDetail: errorDetail,\n    summary: summary,\n  };\n};\n\n// ---------- 4. Ignore anything we cannot place (still a 200, so the provider stops retrying) ----------\nconst ignoreItem = function (reason, extra) {\n  return { json: Object.assign({\n    authorized: true, skip: true, reason: reason, http_code: 200,\n    response: { ok: true, ignored: true, reason: reason, external_ref: (extra && extra.external_ref) || null },\n  }, extra || {}) };\n};\n\nconst items = [];\nconst events = unwrap(body);\nfor (var e = 0; e < events.length; e++) {\n  const wrapped = events[e];\n  if (wrapped.inbound) {\n    items.push(ignoreItem('inbound_message_not_a_status_event', {\n      external_ref: String(wrapped.event.id || ''),\n    }));\n    continue;\n  }\n\n  const n = normalize(wrapped);\n  if (!n.status) { items.push(ignoreItem('unknown_status', { external_ref: n.externalRef })); continue; }\n  if (!n.externalRef) { items.push(ignoreItem('missing_external_ref')); continue; }\n\n  // ---------- 5. Ready to hand to Django ----------\n  const payload = {\n    provider: n.provider,\n    channel: n.channel,\n    direction: 'outbound',\n    status: n.status,\n    patient_name: n.patientName,\n    patient_phone: n.phone,\n    request_code: n.requestCode,\n    external_ref: n.externalRef,\n    summary: n.summary,\n    error_detail: n.errorDetail,\n  };\n  if (n.duration !== null) payload.call_duration_seconds = n.duration;\n  if (n.recording) payload.recording_url = n.recording;\n  if (n.transcript) payload.transcript = n.transcript;\n\n  items.push({ json: {\n    authorized: true,\n    skip: false,\n    reason: null,\n    http_code: 200,\n    payload: payload,\n    response: { ok: true, accepted: true, external_ref: n.externalRef, status: n.status, channel: n.channel },\n  } });\n}\n\nif (!items.length) items.push(ignoreItem('empty_callback'));\nreturn items;\n"
       }
     },
     {
@@ -43,7 +47,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        480,
+        700,
         0
       ],
       "parameters": {
@@ -77,7 +81,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        700,
+        920,
         -120
       ],
       "parameters": {
@@ -112,7 +116,7 @@
       "typeVersion": 4.2,
       "onError": "continueErrorOutput",
       "position": [
-        920,
+        1140,
         -120
       ],
       "parameters": {
@@ -150,7 +154,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1140,
+        1360,
         -20
       ],
       "parameters": {
@@ -163,7 +167,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
       "position": [
-        1140,
+        1360,
         -120
       ],
       "parameters": {
@@ -180,7 +184,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
       "position": [
-        920,
+        1140,
         120
       ],
       "parameters": {
@@ -197,8 +201,8 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
       "position": [
-        700,
-        200
+        920,
+        220
       ],
       "parameters": {
         "respondWith": "json",
@@ -214,7 +218,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
       "position": [
-        1360,
+        1580,
         -20
       ],
       "parameters": {
@@ -224,6 +228,70 @@
           "responseCode": "={{ $json.http_code }}"
         }
       }
+    },
+    {
+      "id": "p1-handshake-0001",
+      "name": "Handle Verification Handshake",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Phase 1 — Meta webhook verification.\n// Meta registers a callback URL by calling\n//   GET <url>?hub.mode=subscribe&hub.challenge=<nonce>&hub.verify_token=<token>\n// and expects the challenge echoed back as plain text. Without this the callback\n// URL cannot be added in the Meta console at all, so the WhatsApp leg could never\n// go live even with every credential filled in.\n// Fail closed: an unset WHATSAPP_VERIFY_TOKEN answers 403, never a challenge.\nconst src = $input.first().json || {};\nconst q = src.query || {};\nconst env = (name) => {\n  try { const v = $env[name]; return (v === undefined || v === null) ? '' : String(v); }\n  catch (e) { return ''; }\n};\n\nconst mode = String(q['hub.mode'] || '').trim().toLowerCase();\nif (mode !== 'subscribe') {\n  // Not a verification request: continue into the normal callback pipeline.\n  return [{ json: Object.assign({ handshake: false }, src) }];\n}\n\nconst expected = env('WHATSAPP_VERIFY_TOKEN').trim();\nconst provided = String(q['hub.verify_token'] || '').trim();\nconst challenge = String(q['hub.challenge'] || '');\n\nif (!expected) {\n  return [{ json: { handshake: true, handshake_code: 403, challenge: '', reason: 'verify_token_not_configured' } }];\n}\nif (provided !== expected) {\n  return [{ json: { handshake: true, handshake_code: 403, challenge: '', reason: 'bad_verify_token' } }];\n}\nreturn [{ json: { handshake: true, handshake_code: 200, challenge: challenge, reason: null } }];"
+      }
+    },
+    {
+      "id": "p1-if-0002",
+      "name": "IF Verification Handshake",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        360,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-p1-handshake",
+              "leftValue": "={{ $json.handshake }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "p1-resp-0003",
+      "name": "Respond Verification Challenge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        480,
+        -200
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.challenge || $json.reason }}",
+        "options": {
+          "responseCode": "={{ $json.handshake_code }}"
+        }
+      }
     }
   ],
   "connections": {
@@ -231,7 +299,14 @@
       "main": [
         [
           {
-            "node": "Verify & Normalize Provider Event",
+            "node": "Handle Verification Handshake",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Verification Handshake",
             "type": "main",
             "index": 0
           }
@@ -308,6 +383,35 @@
         [
           {
             "node": "Respond Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Verification Handshake": {
+      "main": [
+        [
+          {
+            "node": "IF Verification Handshake",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Verification Handshake": {
+      "main": [
+        [
+          {
+            "node": "Respond Verification Challenge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Verify & Normalize Provider Event",
             "type": "main",
             "index": 0
           }

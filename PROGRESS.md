@@ -1029,3 +1029,80 @@ response) are still `authentication: none` and do not verify Telegram's
 `X-Telegram-Bot-Api-Secret-Token`. `04` is about to be rebuilt as Workflow C, so the
 secret-token check will be built into it there rather than retrofitted twice. `01` is lower
 risk (it creates a review card, it cannot send anything) but gets the same treatment.
+
+
+## 2026-11-14 - Phase 1: WhatsApp credential-readiness (dormant but fully wired)
+
+**Goal.** Telegram is the launch channel, so WhatsApp must be **pre-wired and inert**:
+the moment a Business account, phone number id, access token and an approved template
+exist, going live is config-only. Phase 1 removed every place where the WhatsApp path
+would have silently misbehaved once real credentials were inserted.
+
+**1.1 - Real wamid + Meta envelope.** Two bugs that only appear with a real provider:
+
+- The dispatcher logged `external_ref` from flat fields (`external_ref`, `message_id`, …).
+  Meta answers `{ contacts: [...], messages: [{ id: "wamid..." }] }`, so the field would
+  have been **NULL** and no delivery callback could ever find the row. It now reads
+  `messages[0].id` first. The simulator was changed to return Meta's **real** shape
+  (instead of a convenient flat `external_ref`) precisely so a green mock run proves the
+  parsing rather than hiding it.
+- The callback receiver assumed one flat event. Meta wraps statuses in
+  `entry[].changes[].value.statuses[]` and **batches** them (`sent` + `delivered` together
+  when a phone comes online). The normalizer now emits **one item per status**, so the
+  tail of a batch is never dropped, maps `recipient_id` -> phone,
+  `errors[0].error_data.details` -> `error_detail` prefixed with the code (`(131047) ...`),
+  and `biz_opaque_callback_data` -> booking link. Inbound patient `messages[]` are acked
+  and ignored (`inbound_message_not_a_status_event`) because Workflow C owns them.
+
+**1.2 - Template mode + gate.** Meta rejects business-initiated free-form text outside the
+24-hour customer-service window (`131047`), and a slot offer always reaches a patient who
+has not messaged us recently - so `template` is the only correct live mode.
+`WHATSAPP_TEMPLATE_MODE=template` (default) builds a `type: "template"` body with the
+approved name/language, positional body params from `WHATSAPP_TEMPLATE_PARAM_ORDER`
+(default `patient_name,service_name,option_1,option_2,option_3,expiry`), and up to **3**
+quick-reply buttons (`1`,`2`,`3` - Meta's cap, even though Telegram shows more). `to` is
+E.164 **without** the plus. `biz_opaque_callback_data: <request_code>` is attached to
+every send. Mock mode uses the placeholder `mock_clinic_slot_offer`, so the template body
+is still exercised today. Gate precedence: `provider_not_configured` first, then
+`whatsapp_template_not_configured`; a skipped leg builds **no URL and no body**.
+
+**1.3 - Meta GET handshake.** The webhook is now `multipleMethods: true` (`GET` + `POST`).
+`Handle Verification Handshake` answers Meta's
+`GET ?hub.mode=subscribe&hub.challenge=...&hub.verify_token=...` with the raw challenge
+(`200`) and fails closed (`403`) on a wrong or unset `WHATSAPP_VERIFY_TOKEN`; a GET
+without `hub.mode` falls through to the normal pipeline and is `401`. Without this the
+callback URL could not be registered in the Meta console at all.
+
+**Gotcha found live.** With `multipleMethods: true` the webhook node exposes **one output
+per HTTP method** (`main[0]` = GET, `main[1]` = POST). Wiring only the first made every
+POST return an empty `200` - the graph had simply stopped. Both outputs now connect to
+the same handler.
+
+**No HMAC - verified limitation, not an omission.** Meta signs POSTs with
+`X-Hub-Signature-256` over the **raw** body. n8n's webhook node parses JSON before the
+workflow runs and exposes no raw bytes (`rawBody: true` still yields an object,
+`binaryData` yields nothing - both probed on the live instance). The signature therefore
+cannot be computed in-graph. Meta's authentication is the shared token in the registered
+callback URL (`...?token=<PROVIDER_CALLBACK_TOKEN>`, preserved on every POST); true HMAC
+would need a proxy that retains the body.
+
+**Verified live.** Dispatcher logged `wamid.mock-whatsapp-REQ-2026-0043`; a `delivered`
+callback advanced that row; a `[sent, delivered]` batch left one row at `delivered`; a
+`failed` callback stored `(131047) Message failed to send because more than 24 hours...`;
+inbound and unknown-status callbacks were `200 ignored`; flat VoiceBip SMS/voice were
+unchanged. Mock dispatch built the 6-param template with 2 quick replies and `to` without
+`+`. A Node harness (27/27) covers every adapter branch including live mode; live mode
+with fake credentials and no template produced `skip / whatsapp_template_not_configured`
+with an empty url/body and no send node. Handshake: `200 1158201444` (correct token),
+`403 bad_verify_token` (wrong), `401` (no `hub.mode`). Mock mode restored; `05` (18
+nodes), `06` (9) and `07` (13) all `valid: true`; probe workflows deleted.
+
+**Docs synced.** `n8n.md` section 3 auth table (GET + POST on `07`, no-HMAC note), 5.5
+config contract (full WhatsApp block), 5.10 callback contract (handshake, envelope, batch
+semantics); `n8n/FLIP_LIVE_RUNBOOK.md` 2 (env), 4c (template + registration steps), 5
+(callback URL, no-HMAC warning); `N8N_BUILD_SHEET.md` 5.1/5.3; `n8n/.env.example`;
+`TEST.md` T-709.
+
+**Still blocked on the partner.** WhatsApp Business account (template approval, phone
+number id, access token, verify token), VoiceBip API key + voice agent/caller ids + SMS
+endpoint/sender contract. Nothing in the code needs to change when they arrive.

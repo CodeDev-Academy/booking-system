@@ -66,6 +66,13 @@ VOICEBIP_SMS_SENDER_ID=Cedarcare
 
 PROVIDER_CALLBACK_TOKEN=<long random string>
 
+# WhatsApp is dormant until these are filled; Telegram ships first.
+WHATSAPP_PHONE_NUMBER_ID=
+WHATSAPP_ACCESS_TOKEN=
+WHATSAPP_TEMPLATE_NAME=
+WHATSAPP_TEMPLATE_LANG=en_US
+WHATSAPP_VERIFY_TOKEN=<the string you type into Meta's Verify token box>
+
 N8N_BLOCK_ENV_ACCESS_IN_NODE=false
 ```
 
@@ -159,10 +166,29 @@ Interaction` row `status: sent` with the provider call id.
 Then wait for the partner's callback and confirm the same row advances to `answered` or
 `no_answer` (not a new row — `external_ref` upserts).
 
-### 4c. WhatsApp (only if the template is approved)
+### 4c. WhatsApp (only once the template is approved)
 
-Same as SMS. Without an approved template the send fails and lands in Needs Attention —
-which is honest, but do not enable the WhatsApp checkbox for patients until it is approved.
+Telegram is the launch channel; this step is what turns the dormant WhatsApp leg on. In
+order:
+
+1. **Create the template** in WhatsApp Manager (utility category). It must match the
+   parameter order in `WHATSAPP_TEMPLATE_PARAM_ORDER`
+   (default `patient_name,service_name,option_1,option_2,option_3,expiry` — six `{{n}}`
+   placeholders) and, if `WHATSAPP_TEMPLATE_QUICK_REPLIES=true`, three quick-reply
+   buttons. Set `WHATSAPP_TEMPLATE_NAME` / `WHATSAPP_TEMPLATE_LANG` to the approved
+   values — they must match **exactly**, or Meta answers `132001`/`132000`.
+2. **Register the callback URL** (§5 below) and type the same string as
+   `WHATSAPP_VERIFY_TOKEN` into Meta's *Verify token* box. Meta calls the GET handshake
+   immediately; a `403` means the two values differ or n8n was not restarted.
+3. **Subscribe the app** to the `messages` field on the WABA.
+4. Set `WHATSAPP_PHONE_NUMBER_ID` and `WHATSAPP_ACCESS_TOKEN`, restart n8n, then send one
+   throwaway request with `dispatch_channels: ["whatsapp"]`.
+
+Do **not** set `WHATSAPP_TEMPLATE_MODE=text` for offers: free-form business-initiated text
+is rejected with `131047` outside the 24-hour customer-service window.
+
+If the template name is still empty the leg is safe: it routes to
+`skip / whatsapp_template_not_configured` and sends nothing.
 
 ---
 
@@ -175,9 +201,21 @@ POST https://n8n.yourclinic.com/webhook/provider-callback?token=<PROVIDER_CALLBA
 Content-Type: application/json
 ```
 
+For **Meta**, register the same URL in the app's WhatsApp → Configuration → Webhook and
+enter `WHATSAPP_VERIFY_TOKEN` as the verify token. The receiver answers Meta's
+`GET ?hub.mode=subscribe&hub.challenge=…` handshake automatically.
+
+> **No HMAC check.** Meta signs POSTs with `X-Hub-Signature-256` over the raw body, but
+> n8n's webhook node parses JSON before the workflow runs and exposes no raw bytes
+> (`rawBody: true` still returns an object, `binaryData` returns nothing — verified). The
+> query-string token is therefore the authentication for Meta. Treat
+> `PROVIDER_CALLBACK_TOKEN` as a production secret and rotate it in both places together.
+
 The receiver is tolerant of field names (`call_id`, `message_id`, `external_ref`,
-`status`, `event`, `duration`, `recording_url`, `to`, `request_code`). Send them
-`n8n.md` §5.10 for the exact contract and the status vocabulary.
+`status`, `event`, `duration`, `recording_url`, `to`, `request_code`) and understands
+Meta's `entry[].changes[].value.statuses[]` envelope natively (a batch carrying several
+statuses is processed in full). Send them `n8n.md` §5.10 for the exact contract and the
+status vocabulary.
 
 ### Callback acceptance test (from outside the network)
 

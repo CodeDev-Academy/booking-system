@@ -215,7 +215,7 @@ If `should_skip_voice_call` is `true` (patient already picked an option — hold
 booking), **skip the call entirely** and log nothing extra. Works with the webhook secret;
 no staff session needed.
 
-### 5.1 Current build state (Stages D-1 … D-5 + Phase 0 auth, 2026-11-14)
+### 5.1 Current build state (Stages D-1 … D-5 + Phase 0 auth + Phase 1 WhatsApp, 2026-11-14)
 
 Workflow ID `GtpeOwfnG8yYyAxq` (`05_Slot_Offer_Dispatcher_Bridge`) — **active**, 18 nodes,
 `valid: true` (0 errors). Graph:
@@ -293,7 +293,7 @@ hardcodes a URL, key or sender id; everything comes from `$env`):
 |---|---|
 | `provider_channel` | `whatsapp` \| `sms` \| `voice` (the item's channel) |
 | `provider_request.route` | same value, or `skip` |
-| `provider_request.skip_reason` | `duplicate_dispatch` \| `outside_call_window` \| `provider_not_configured` \| `no_active_channel` \| `patient_already_engaged` \| `voice_payload_missing` |
+| `provider_request.skip_reason` | `duplicate_dispatch` \| `outside_call_window` \| `provider_not_configured` \| `whatsapp_template_not_configured` \| `no_active_channel` \| `patient_already_engaged` \| `voice_payload_missing` |
 | `provider_request.{method,url,headers,body}` | the exact HTTP call the send node makes (live since D-3) |
 | `adapter_meta` | `channel, provider_mock, provider_mock_fail, configured, voice_in_window, duplicate, request_id, external_ref_hint, missing_env[]` |
 | `voice_guard` (voice branch only) | `checked, checked_at, wait_seconds, should_skip, request_status, has_active_hold, has_confirmed_booking, appointment_code` |
@@ -341,6 +341,40 @@ Guards:
   `WHATSAPP_*` env vars, restart n8n (env vars are read at process start), then deactivate
   and delete `06_Provider_Simulator`.
 
+**WhatsApp leg is credential-ready but dormant (Phase 1).** Telegram is the launch channel
+(no WhatsApp Business account yet), so the leg is pre-wired and inert until credentials are
+inserted:
+
+- **Template mode is the only live mode.** Meta rejects business-initiated free-form text
+  outside the 24-hour customer-service window (`131047`), and a slot offer always goes to a
+  patient who has not messaged us recently. `WHATSAPP_TEMPLATE_MODE=template` (default) builds
+  `type: "template"` with the approved name/language and positional body parameters from
+  `WHATSAPP_TEMPLATE_PARAM_ORDER` (default `patient_name,service_name,option_1,option_2,option_3,expiry`).
+  Up to **3** quick-reply buttons (`1`,`2`,`3`) are appended, capped because that is Meta's
+  limit even though Telegram shows more. `WHATSAPP_TEMPLATE_MODE=text` exists only for
+  in-window replies.
+- **Gate:** in template mode with `WHATSAPP_TEMPLATE_NAME` empty, the leg routes to
+  `skip / whatsapp_template_not_configured` — it never fires a request, so a half-filled
+  config cannot produce a wall of 400s. Precedence: `provider_not_configured` (no phone
+  id/token) is reported first, then the template gate.
+- **`to` is E.164 without the plus** (`+2348033112233` → `2348033112233`); Django
+  re-normalizes whatever comes back.
+- **`biz_opaque_callback_data: <request_code>`** is sent on every WhatsApp message. Meta
+  echoes it in every status callback, and it is the only reliable way to link a real
+  `wamid…` back to a `BookingRequest`.
+- **Mock still exercises the template path:** with `PROVIDER_MOCK=true` the template name
+  defaults to `mock_clinic_slot_offer`, so the real template body is built and posted to the
+  simulator. The simulator now answers with Meta's **real** response shape
+  (`{contacts:[…], messages:[{id:"wamid.mock-whatsapp-<REQ>"}]}`) instead of a convenient
+  flat `external_ref`, so the wamid capture is genuinely tested.
+- **`external_ref`** for WhatsApp is read as `messages[0].id` **first**, then the legacy flat
+  fields — missing it would leave `external_ref` NULL and no callback could ever advance the
+  row.
+
+Verified live: mock dispatch built the template body (`to` without `+`, 6 params, 2 quick
+replies) and logged `wamid.mock-whatsapp-REQ-2026-0040`; live mode with fake credentials but
+no template → `skip / whatsapp_template_not_configured`, empty url/body, no send node run.
+
 ### 5.2 Remaining D steps
 
 | Step | Node | Detail |
@@ -353,28 +387,67 @@ Guards:
 | 6 | Voice guard | ✅ Done (D-2) — `Wait 30s` → `GET dispatch-status/` → `Merge Voice Guard` → `IF Voice Still Needed`; skip + fail-closed on probe error. |
 | 7 | VoiceBip call | ✅ Done (D-3) — enabled, `POST {VOICEBIP_API_URL}/voice/calls`, `Authorization: Bearer {{$env.VOICEBIP_API_KEY}}`, `agent_id`, `caller_id`; nudge only, no DTMF. |
 | 8 | Log voice | ✅ Done (D-3) — `provider:"voicebip"`, `channel:"voice"`, `status: sent|failed`; `answered`/`no_answer` arrive with the D-4 callback. |
-| 9 | Callback receiver | ✅ Done (D-4) — `07_Provider_Callback_Receiver` (`rmqf5Z5K3EfapVGo`, 10 nodes) receives VoiceBip delivery-report / call-outcome webhooks and POSTs them to `interactions/`. See §5.3. |
+| 9 | Callback receiver | ✅ Done (D-4) — `07_Provider_Callback_Receiver` (`rmqf5Z5K3EfapVGo`, **13 nodes**) receives VoiceBip delivery-report / call-outcome webhooks, **and Meta WhatsApp status callbacks**, and POSTs them to `interactions/`. See §5.3. |
 | 10 | Respond | ✅ Not needed — webhook responds immediately. |
 
-### 5.3 Provider callback receiver (Stage D-4)
+### 5.3 Provider callback receiver (Stage D-4 + Phase 1 WhatsApp)
 
-Workflow `07_Provider_Callback_Receiver` (`rmqf5Z5K3EfapVGo`) — **active**, 10 nodes,
-`valid: true` (0 errors, 0 warnings). Webhook: `POST /webhook/provider-callback`,
-`responseMode: responseNode` (the caller gets a real status code, unlike the dispatcher).
+Workflow `07_Provider_Callback_Receiver` (`rmqf5Z5K3EfapVGo`) — **active**, 13 nodes,
+`valid: true` (0 errors, 0 warnings). Webhook: **`GET` + `POST` on the same path**
+(`/webhook/provider-callback`), `multipleMethods: true`, `responseMode: responseNode`
+(the caller gets a real status code, unlike the dispatcher).
 
 ```
-Provider Callback Webhook
-   └─ Verify & Normalize Provider Event     (Code: auth + vocabulary + payload)
-        └─ IF Authorized
-             ├─ true  → IF Should Forward
-             │            ├─ true  → Post Interaction Update  (POST {DJANGO_API_BASE_URL}/interactions/)
-             │            │            ├─ success → Respond Accepted           200
-             │            │            └─ error   → Classify Update Failure
-             │            │                         ├─ 4xx → Respond Retry 200 (rejected: true)
-             │            │                         └─ else → Respond Retry 500 (retry: true)
-             │            └─ false → Respond Ignored                            200
-             └─ false → Respond Unauthorized                                    401
+Provider Callback Webhook                    (GET + POST, one output PER METHOD)
+   ├─ GET  → Handle Verification Handshake   (Meta hub.challenge)
+   │           └─ IF Verification Handshake
+   │                ├─ true  → Respond Verification Challenge   text, 200 or 403
+   │                └─ false → (unused on GET)
+   └─ POST → Handle Verification Handshake   (mode != subscribe → handshake:false)
+                └─ IF Verification Handshake
+                     └─ false → Verify & Normalize Provider Event   (Code)
+                          └─ IF Authorized
+                               ├─ true  → IF Should Forward
+                               │            ├─ true  → Post Interaction Update
+                               │            │            ├─ success → Respond Accepted           200
+                               │            │            └─ error   → Classify Update Failure
+                               │            │                         ├─ 4xx → Respond Retry 200 (rejected: true)
+                               │            │                         └─ else → Respond Retry 500 (retry: true)
+                               │            └─ false → Respond Ignored                            200
+                               └─ false → Respond Unauthorized                                    401
 ```
+
+> **Gotcha found live:** with `multipleMethods: true` the webhook node exposes **one
+> output per HTTP method** (`main[0]` = GET, `main[1]` = POST). Wiring only `main[0]`
+> makes every POST callback fall off the graph and return an empty `200`. Both outputs
+> must connect to the same handler.
+
+**Meta webhook verification (Phase 1).** Meta registers a callback URL by calling
+`GET <url>?hub.mode=subscribe&hub.challenge=<nonce>&hub.verify_token=<token>` and expects
+the challenge echoed as **plain text**. `Handle Verification Handshake` compares
+`hub.verify_token` with `WHATSAPP_VERIFY_TOKEN` and answers the raw challenge (200) or
+`403` when the token is wrong/unset — fail closed, so an unconfigured receiver never
+verifies.
+
+**Meta status envelope (Phase 1).** Meta wraps events in
+`entry[].changes[].value.statuses[]` and can batch several into one request (a phone
+coming online produces `sent` + `delivered` together). `Verify & Normalize` unwraps the
+batch and emits **one item per status**, so the tail of a batch is never dropped. The
+wamid is taken from `statuses[].id`, the phone from `recipient_id`, the failure sentence
+from `errors[0].error_data.details` (prefixed with `errors[0].code`, e.g. `(131047)`), and
+the booking link from `biz_opaque_callback_data` — which the dispatcher sets on every
+WhatsApp send, because nothing else survives the round trip.
+
+Inbound patient replies arrive on the same webhook in Meta's model; they are acked and
+ignored (`inbound_message_not_a_status_event`) because Workflow C owns them.
+
+**No HMAC signature check (verified limitation).** Meta signs POSTs with
+`X-Hub-Signature-256`, computed over the **raw body**. n8n's webhook node parses JSON
+before the workflow sees it and exposes no raw bytes (`rawBody: true` still yields an
+object; `binaryData` yields nothing), so the signature cannot be verified in-graph. The
+shared token is therefore the authentication for Meta: register the callback URL as
+`https://<n8n>/webhook/provider-callback?token=<PROVIDER_CALLBACK_TOKEN>` — Meta preserves
+the query string on every POST. Add HMAC later via a proxy that keeps the raw body.
 
 **Auth — fail closed.** A shared token (`PROVIDER_CALLBACK_TOKEN`) must appear as
 `?token=` / `?access_token=` or in `X-Provider-Token` / `X-Callback-Token` /
@@ -431,6 +504,20 @@ row without a phone is still rejected `400`.
 | `sms.delivered` for `mock-sms-REQ-2026-0038` | `200`, row `sent` → `delivered` |
 | unknown `request_code` → Django 400 | `200 {rejected:true, retry:false}` (no retry storm) |
 | Django unreachable (POST pointed at a dead port) | `500 {retry:true, reason:"django_unavailable"}` |
+
+**Phase 1 (Meta WhatsApp), verified live:**
+
+| Case | Result |
+|---|---|
+| `GET ?hub.mode=subscribe` + correct `hub.verify_token` | `200` with the raw challenge (`1158201444`) |
+| `GET` + wrong verify token | `403 bad_verify_token` |
+| `GET` without `hub.mode` | falls through to the callback pipeline → `401` |
+| Meta `statuses:[delivered]` for a real wamid | `200 accepted`, row `sent` → `delivered`, **1 row**, linked to `REQ-2026-0043` via `biz_opaque_callback_data` |
+| Meta batch `[sent, delivered]` in one POST | both items processed, row ends `delivered` (tail not dropped) |
+| Meta `failed` + `errors[]` (code 131047) | row `failed`, `error_detail: "(131047) Message failed to send because more than 24 hours…"` |
+| Meta inbound `messages[]` | `200 {ignored:true, reason:"inbound_message_not_a_status_event"}`, no row created |
+| Meta unknown status (`deleted`) | `200 {ignored:true, reason:"unknown_status"}` |
+| flat VoiceBip SMS / voice (regression) | unchanged: `delivered` / `answered` + duration + recording |
 
 ---
 

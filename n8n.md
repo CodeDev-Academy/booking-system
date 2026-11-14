@@ -213,7 +213,7 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
    | Workflow | Path | Auth | Failure mode |
    |---|---|---|---|
    | `05` Slot Offer Dispatcher | `/webhook/dispatch-offers` | `X-Webhook-Secret` checked **before** the graph runs (`Verify Dispatch Secret` → `IF Dispatch Authorized`) | **401** `{ok:false,error:"unauthorized",reason}` — nothing is sent |
-   | `07` Provider Callback | `/webhook/provider-callback` | `PROVIDER_CALLBACK_TOKEN` (header preferred, query accepted) | **401**, fail closed when unset |
+   | `07` Provider Callback | `/webhook/provider-callback` (**GET + POST**, one output per method) | POST: `PROVIDER_CALLBACK_TOKEN` (header preferred, query accepted). GET: `hub.verify_token` vs `WHATSAPP_VERIFY_TOKEN` (Meta handshake only) | POST **401**; GET **403** — both fail closed when the env var is unset |
    | `06` Provider Simulator | `/webhook/provider-sim/*` | none — dev-only, deactivated before launch | n/a |
    | `01` Intake / `04` Patient Response | `/webhook/intake`, `/webhook/messaging/inbound` | **none yet** — scheduled with Workflow C (Telegram `secret_token` header check) | n/a |
 
@@ -221,6 +221,15 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
    calls, so it answers with a true **401** (`responseMode: responseNode`) instead of the
    default silent 200, while an authorised request is released in ~200 ms — well inside
    Django's 5-second fire-and-forget timeout.
+
+   **Meta's authentication is the token in the registered callback URL.** Meta signs POSTs
+   with `X-Hub-Signature-256` over the **raw** body, but n8n's webhook node parses JSON
+   before the workflow sees it and exposes no raw bytes (`rawBody: true` still yields an
+   object, `binaryData` yields nothing — verified 2026-11-14), so the HMAC cannot be
+   computed in-graph. The callback URL is therefore registered as
+   `https://<n8n-host>/webhook/provider-callback?token=<PROVIDER_CALLBACK_TOKEN>`; Meta
+   preserves the query string on every POST. Adding true HMAC later requires a proxy that
+   retains the raw body.
 
 3. **Idempotency & Deduplication**:
    - Each dispatch carries `request_id`; `Provider Config & Adapter` keeps a 10-minute
@@ -334,6 +343,18 @@ PROVIDER_MOCK=true
 PROVIDER_MOCK_FAIL=false      # true → the simulator rejects every send (tests Needs Attention)
 PROVIDER_SIMULATOR_URL=http://127.0.0.1:5678/webhook/provider-sim
 
+# Meta WhatsApp Cloud — PRE-WIRED, DORMANT until the Business account exists.
+# Telegram is the launch channel; filling these in is the whole flip.
+WHATSAPP_API_URL=https://graph.facebook.com/v19.0/
+WHATSAPP_PHONE_NUMBER_ID=
+WHATSAPP_ACCESS_TOKEN=
+WHATSAPP_TEMPLATE_NAME=       # approved template; empty in live mode = leg refuses to send
+WHATSAPP_TEMPLATE_LANG=en_US
+WHATSAPP_TEMPLATE_PARAM_ORDER=patient_name,service_name,option_1,option_2,option_3,expiry
+WHATSAPP_TEMPLATE_QUICK_REPLIES=true
+WHATSAPP_TEMPLATE_MODE=template   # 'template' (only correct live mode) | 'text' (in-window only)
+WHATSAPP_VERIFY_TOKEN=        # the string typed into Meta's "Verify token" box
+
 # Inbound provider callbacks (07_Provider_Callback_Receiver)
 PROVIDER_CALLBACK_TOKEN=      # shared secret; unset = every callback rejected 401
 ```
@@ -353,6 +374,31 @@ that answers `/webhook/provider-sim/{whatsapp|sms|voice}` with a realistic provi
   Needs Attention tab), not a simulated branch.
 - Flipping live is still config only: `PROVIDER_MOCK=false` + real `VOICEBIP_*` /
   `WHATSAPP_*` values. The simulator workflow can then be deactivated and deleted.
+
+**WhatsApp leg: dormant but credential-ready (Phase 1).** Telegram ships first, so the
+WhatsApp path is fully built and inert. It refuses to fire until it is genuinely configured:
+
+- **Template mode is the only correct live mode.** Meta rejects business-initiated
+  free-form text outside the 24-hour customer-service window (`131047`), and a slot offer
+  always reaches a patient who has not messaged us recently. `WHATSAPP_TEMPLATE_MODE=template`
+  builds `type: "template"` with the approved name/language and positional body parameters
+  from `WHATSAPP_TEMPLATE_PARAM_ORDER` (default six: patient, service, three options,
+  expiry), plus up to **3** quick-reply buttons (`1`,`2`,`3`) because that is Meta's cap.
+- **Gate precedence:** `provider_not_configured` (no phone id/token) is reported first;
+  with credentials present but no `WHATSAPP_TEMPLATE_NAME` the leg routes to
+  `skip / whatsapp_template_not_configured`. A skipped leg builds **no** URL and **no**
+  body, so nothing downstream can send it by accident.
+- **`to` is E.164 without the plus** (`+2348033112233` → `2348033112233`); Django
+  re-normalizes whatever comes back.
+- **`biz_opaque_callback_data: <request_code>`** rides on every send. Meta echoes it in
+  every status callback and it is the only reliable link from a real `wamid…` back to a
+  `BookingRequest`.
+- **Mock mode still exercises the template.** With `PROVIDER_MOCK=true` the template name
+  defaults to `mock_clinic_slot_offer` and the simulator answers with Meta's real shape
+  (`{contacts:[…], messages:[{id:"wamid.mock-whatsapp-<REQ>"}]}`), so wamid capture is
+  tested rather than assumed.
+- **`external_ref` is read as `messages[0].id` first**, then the legacy flat fields — the
+  old flat-only read would have left `external_ref` NULL and made every callback a no-op.
 
 ### 5.6 Channel-availability guard (Option B — decided)
 
@@ -461,6 +507,13 @@ Layer 4 contract — enforcement (opt-in, default OFF):
    sends `X-Webhook-Secret` from `dispatch_service.fire_and_forget_webhook(secret=...)`.
    Verified live: no header → 401, wrong header → 401, correct header → 200 in 225 ms with
    the dispatch still completing. `04`/`01` get the same treatment in Workflow C.
+8. **WhatsApp credential-readiness** — the leg is fully built while Telegram ships first.
+   ✅ Done (Phase 1). Real `wamid` capture (`messages[0].id` first), Meta
+   `statuses[]` envelope unwrapped one-item-per-status, template-mode body with positional
+   params + ≤3 quick replies and `biz_opaque_callback_data`, a fail-closed template gate
+   (`skip / whatsapp_template_not_configured`, no URL/body built), and the `GET`
+   `hub.challenge` handshake on `07` (`multipleMethods: true` — one webhook output per
+   method, both must be wired). Verified live; see `TEST.md` T-709.
 
 ### 5.8 Edge cases owned by this integration
 
@@ -527,6 +580,28 @@ request is `401` (fail closed).
 
 The 4xx/5xx split is deliberate: a retry cannot fix a rejected event, so it answers 200;
 only transient failures ask the provider to try again.
+
+**Meta WhatsApp (Phase 1) — same webhook, two directions.**
+
+1. *Verification handshake (GET).* Meta registers the callback URL by calling
+   `GET /webhook/provider-callback?hub.mode=subscribe&hub.challenge=<nonce>&hub.verify_token=<token>`
+   and expects the challenge echoed as **plain text**. `Handle Verification Handshake`
+   compares the token with `WHATSAPP_VERIFY_TOKEN` and answers `200 <challenge>` or
+   `403 bad_verify_token` (unset env var → `403 verify_token_not_configured`). A GET
+   without `hub.mode` falls through to the normal pipeline and is `401` for a missing
+   callback token.
+2. *Status callbacks (POST).* Meta wraps events in `entry[].changes[].value.statuses[]`
+   and **can batch several** into one request (`sent` + `delivered` arrive together when a
+   phone comes online). The normalizer emits **one item per status**, so the tail of a
+   batch is never dropped. Field mapping: wamid ← `statuses[].id`, phone ←
+   `recipient_id`, failure sentence ← `errors[0].error_data.details` prefixed with
+   `errors[0].code` (e.g. `(131047) …`), booking link ← `biz_opaque_callback_data`.
+   Inbound patient messages share the webhook in Meta's model and are acked and ignored
+   (`inbound_message_not_a_status_event`) because Workflow C owns them.
+
+> **Gotcha:** with `multipleMethods: true` the webhook node exposes **one output per HTTP
+> method** (`main[0]` = GET, `main[1]` = POST). Wiring only the first makes every POST
+> silently return an empty `200` — both outputs must connect to the same handler.
 
 **Status rank is enforced in Django**, not n8n: `queued 0 < sent 1 < delivered 2 <
 answered|no_answer|failed|expired 3`. A lower-ranked event never overwrites a higher-ranked
