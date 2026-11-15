@@ -17,7 +17,7 @@ Exit code `0` = every assertion passed, `1` = at least one failed. Each assertio
 | Harness | Node under test | Assertions |
 |---|---|---|
 | `test_format.js` | `Format Offers & Telegram Buttons` — patient-facing grammar per option count | 22 |
-| `test_adapter.js` | `Provider Config & Adapter` — routing, guards, skip reasons, request body | 47 |
+| `test_adapter.js` | `Provider Config & Adapter` — routing, guards, skip reasons, dedupe stamping, request body | 62 |
 | `test_lognodes.js` | the three `Log * Interaction` nodes — provider error classification | 121 |
 
 Counts are the harness's own output (`ok` lines), not an estimate.
@@ -46,3 +46,10 @@ assertion and `process.exit(failures ? 1 : 0)`.
 Fixtures must be built the way n8n builds them, not the way you imagine them: for HTTP
 failures that means `{ message: '<status> - ' + JSON.stringify(body), name, stack }`, since
 the status only exists as a prefix and the body is a JSON string literal.
+
+**Stateful globals must be shared, not re-created.** `test_adapter.js` used to stub
+`$getWorkflowStaticData: () => ({})` — a fresh object per call — which quietly made the
+whole dedupe path untestable and let a stamp-on-attempt bug survive three phases. It now
+takes an optional third argument (`run(env, overrides, staticData)`) and passes the *same*
+object to consecutive runs to simulate two dispatches inside the 10-minute window. Any
+future harness that touches static data must do the same.

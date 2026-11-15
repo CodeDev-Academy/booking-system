@@ -234,7 +234,11 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
 3. **Idempotency & Deduplication**:
    - Each dispatch carries `request_id`; `Provider Config & Adapter` keeps a 10-minute
      in-memory `seen` map in workflow static data and routes repeats to
-     `skip / duplicate_dispatch`.
+     `skip / duplicate_dispatch`. The window is **read before routing and stamped after
+     it**, only for legs that actually fire (Phase 3 / 3.4): a skipped leg never reached a
+     provider, so it must leave the window open — otherwise fixing the cause and
+     re-dispatching minutes later is refused as `duplicate_dispatch` (which is unlogged)
+     and the patient silently gets nothing.
    - Best-effort by design: static data is not authoritative, so Django's offer state and
      `PATIENT_ALREADY_BOOKED` remain the real guard.
 
@@ -566,11 +570,22 @@ Layer 4 contract — enforcement (opt-in, default OFF):
     one line and capped at 300 chars. An `ok:false` answer without an exception keeps the
     provider's `error_message` verbatim. `06`/`07` need no equivalent (they never format a
     provider HTTP failure). See `TEST.md` T-712c.
+12. **Dedupe stamped by sends, not attempts** — ✅ Done (Phase 3 / 3.4). The 10-minute
+    window was written at decision time for every ticked channel, so all five skip reasons
+    (`no_slots`, `missing_phone`, `outside_call_window`, `provider_not_configured`,
+    `whatsapp_template_not_configured`) burned it without contacting anyone. The read and
+    the write are now separate: read + prune before routing, stamp after, single condition
+    `skip_reason === null`. `adapter_meta.duplicate` therefore means "a previous dispatch
+    actually fired". A leg that **fails** still stamps — the adapter cannot see the HTTP
+    outcome, so un-stamping could duplicate a message that was already delivered. Verified
+    live with a skip → send → repeat sequence on one request; see `TEST.md` T-712d.
 
 ### 5.8 Edge cases owned by this integration
 
 - Partial dispatch where the only checked channel is unconfigured → guard blocks it (§5.6).
 - Duplicate dispatch → existing `PATIENT_ALREADY_BOOKED` guard + idempotency key per provider call.
+  The 10-minute n8n window only blocks a repeat of a leg that actually sent (3.4); retrying
+  a *skipped* leg immediately is expected and allowed.
 - Offer expires while the call is ringing → log the call, flag the mismatch, never resurrect the offer.
 - Call window 08:00–19:00 Africa/Lagos; call started at 18:59 still completes.
 - Retry policy: max 2 attempts, backoff; each attempt logged separately with its own `external_ref`.

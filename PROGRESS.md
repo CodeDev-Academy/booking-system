@@ -1385,3 +1385,50 @@ are 22 / 47 / 121, and `TEST.md` T-712b is corrected.
 regression guard; `python manage.py test --parallel 1` exits 0). Live dispatcher in sync
 with the repo export; test rows cleaned up. Next: 3.4 (dedupe stamping only on real
 sends), then 3.5-3.8.
+
+**3.4 - The dedupe window is stamped by sends, not by attempts.** `Provider Config &
+Adapter` wrote its 10-minute dedupe stamp at *decision* time, for every channel the
+receptionist had ticked - before any of the five skip reasons was evaluated 130 lines
+later. So a leg that never left the building still burned the window, and 3.2's `no_slots`
+turned that from a papercut into a customer-loss path:
+
+| t | What happened | Patient |
+|---|---|---|
+| 0 min | dispatch, 0 options -> `skip / no_slots`, `queued` row written, window **stamped** | nothing |
+| 2 min | reception finds a free slot, re-dispatches -> `duplicate_dispatch`, which is **deliberately unlogged** | nothing |
+| - | dashboard shows the request as dispatched | nothing |
+
+`missing_phone`, `outside_call_window`, `provider_not_configured` and
+`whatsapp_template_not_configured` all had the same shape: fix the cause, retry
+immediately, get refused, and lose the trace.
+
+The fix splits the read from the write. The window is read (and entries older than 10
+minutes pruned) before routing, and stamped *after* the per-channel map exists, with one
+condition - `skip_reason === null` - which by construction covers all five skip reasons. A
+leg that actually fires still stamps, so the guard's original purpose is intact;
+`adapter_meta.duplicate` now means "a previous dispatch actually fired" rather than
+"someone clicked recently".
+
+**Verification.** The harness could not have caught this: `test_adapter.js` stubbed
+`$getWorkflowStaticData` as `() => ({})`, a fresh object per call, so the dedupe path had
+never been exercised there at all (T-701's dedupe claim was live-only). It now takes a
+shared static-data object across `run()` calls and carries section M, 15 assertions:
+**62 total, 7 red first** (M2/M3/M4 skipped-dispatch-burns-the-window,
+M9/M10 config-fix-blocked, M12/M13 phone-fix-blocked). Live on `REQ-2026-9401`, three
+dispatches seconds apart: 0 options -> `skip / no_slots` + one `queued` row; 1 option ->
+`route=sms`, `duplicate=false`, row written; repeat -> `duplicate_dispatch`,
+`duplicate=true`, no new row - 10/10, asserted on the adapter's own output read back from
+each execution, so it holds regardless of the mock endpoint. That also proves
+`$getWorkflowStaticData` persists across executions in this deployment, which the harness
+can only stub. Full suite 200/200, `valid: true` 20 nodes / 22 connections / 0 errors.
+
+Deliberately out of scope: **retry after a failed send.** The adapter cannot see the HTTP
+outcome, so un-stamping on `failed` would equally allow duplicating a message the provider
+had already delivered before the connection dropped. A failure keeps its stamp; the
+operator decides. Concurrency is unchanged and still best-effort (static data is
+per-execution; Django's `PATIENT_ALREADY_BOOKED` and offer state remain authoritative).
+
+**State.** Full suite **200 tests / 200 pass** (`python manage.py test --parallel 1`,
+exit 0). Adapter live and in sync with `n8n/05_slot_offer_dispatcher.json`; dispatch
+workflow `valid: true`. Next: 3.5 (header-only callback token), 3.6 (unknown channel =
+ignore), 3.7 (`patient_phone` guard on callbacks), 3.8 (`voice_payload_missing` row).

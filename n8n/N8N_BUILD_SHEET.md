@@ -319,6 +319,13 @@ Guards:
   Django's `PATIENT_ALREADY_BOOKED` 409 + offer state remain authoritative. (It *does*
   survive an n8n restart, which is why a repeat test inside 10 minutes shows
   `duplicate_dispatch`.)
+  **Stamped by sends, not by attempts (Phase 3 / 3.4):** the window is read before routing
+  and written only for legs whose `skip_reason === null`. A skipped leg never reached a
+  provider, so it must leave the window open — otherwise fixing the cause (adding a slot,
+  pasting credentials, adding a phone number) and re-dispatching minutes later is refused
+  as `duplicate_dispatch`, which is unlogged, and the patient silently gets nothing. A leg
+  that *fails* still stamps: the adapter cannot see the HTTP outcome, so the operator
+  decides whether to retry.
 - **Mock** — `PROVIDER_MOCK` unset **or** true → every provider URL is pointed at
   `06_Provider_Simulator`; the send nodes still run for real. `PROVIDER_MOCK_FAIL=true`
   makes the simulator answer **HTTP 500**, which drives the real failure path.
