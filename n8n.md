@@ -576,6 +576,7 @@ Layer 4 contract — enforcement (opt-in, default OFF):
 | 8 | **Sandbox/test** numbers and keys | End-to-end test without real patients |
 | 9 | Rate limits, concurrent-call limit, retry/backoff expectations | Burst control |
 | 10 | Call outcome vocabulary (answered/no_answer/failed/voicemail) + error codes | Status mapping |
+| 11 | **DND routing**: does free-text SMS deliver to DND-locked Nigerian numbers, or is a transactional route / pre-registered template required? If templates are required, ask for the **SMS template id + variable syntax** | SMS copy is composed by us (Phase 3 / 3.2). A "templates required" answer is config-only to absorb: a `VOICEBIP_SMS_TEMPLATE_ID` env var + one branch in the adapter's body builder, mirroring WhatsApp |
 
 ### 5.10 Provider callback contract (Stage D-4)
 
