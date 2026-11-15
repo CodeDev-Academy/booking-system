@@ -74,14 +74,19 @@ export const usePinLock = () => {
 
   // 3. Process PIN Submission when 4 digits are reached
   const processPin = useCallback(
-    (pinToTest) => {
+    async (pinToTest) => {
       if (lockoutRemaining > 0) return;
 
-      const result = unlockWorkstation(pinToTest);
+      // unlockWorkstation is async in live mode (the server verifies the PIN).
+      const result = await unlockWorkstation(pinToTest);
       if (result.success) {
         soundService.playChime();
         setPinInput('');
         setHasError(false);
+      } else if (result.reason === 'SESSION_EXPIRED') {
+        // The store already cleared the session; the router takes over and
+        // shows the full password login. No numpad shake needed.
+        setPinInput('');
       } else {
         soundService.playErrorBlip();
         setHasError(true);

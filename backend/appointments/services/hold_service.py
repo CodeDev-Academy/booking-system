@@ -26,6 +26,52 @@ class HoldService:
     """
 
     @classmethod
+    def purge_expired_holds(cls, doctor, now=None):
+        """
+        Lazy self-healing expiry: expired holds must not block conflict checks.
+        Callers should already hold the doctor row lock.
+        """
+        now = now or timezone.now()
+        Appointment.objects.filter(
+            doctor=doctor,
+            status='held',
+            hold_expires_at__lt=now
+        ).update(status='hold_expired')
+
+    @classmethod
+    def find_slot_conflict(cls, doctor, start_datetime, end_datetime, service=None, exclude_appointment_id=None):
+        """
+        Two-way conflict detection against active appointments + sterilization
+        buffer (Risk R-13). Read-only: returns the conflicting Appointment or
+        None. The caller MUST already hold the doctor row lock
+        (select_for_update) for the check to be race-free — this is the same
+        guarantee acquire_slot gives a new booking, now shared by reschedule
+        and colleague reassignment (system review finding #4).
+        """
+        clinic = ClinicSetting.get_settings()
+        buffer_min = (service.buffer_minutes if service else None) or clinic.default_buffer_minutes
+        effective_block_end = end_datetime + datetime.timedelta(minutes=buffer_min)
+
+        # Query all active appointments in the vicinity (including 60m lookback for prior appointment buffer)
+        candidate_appts = Appointment.objects.filter(
+            doctor=doctor,
+            status__in=['confirmed', 'held', 'arrived', 'in_consultation'],
+            start_datetime__lt=effective_block_end,
+            end_datetime__gt=start_datetime - datetime.timedelta(minutes=60)
+        ).select_related('service')
+
+        if exclude_appointment_id:
+            candidate_appts = candidate_appts.exclude(id=exclude_appointment_id)
+
+        for appt in candidate_appts:
+            appt_buf = appt.service.buffer_minutes or clinic.default_buffer_minutes
+            appt_effective_end = appt.end_datetime + datetime.timedelta(minutes=appt_buf)
+            # Two-way overlap test
+            if start_datetime < appt_effective_end and effective_block_end > appt.start_datetime:
+                return appt
+        return None
+
+    @classmethod
     @transaction.atomic
     def acquire_slot(
         cls,
@@ -63,33 +109,15 @@ class HoldService:
             booking_request = BookingRequest.objects.get(id=booking_request_id)
 
         # 2. Lazy self-healing expiry: purge expired holds for this doctor
-        Appointment.objects.filter(
-            doctor=doctor,
-            status='held',
-            hold_expires_at__lt=now
-        ).update(status='hold_expired')
+        cls.purge_expired_holds(doctor, now)
 
         # 3. Two-way conflict detection against active appointments + sterilization buffer (Risk R-13)
-        buffer_min = service.buffer_minutes or clinic.default_buffer_minutes
-        effective_block_end = end_datetime + datetime.timedelta(minutes=buffer_min)
-
-        # Query all active appointments in the vicinity (including 60m lookback for prior appointment buffer)
-        candidate_appts = Appointment.objects.filter(
-            doctor=doctor,
-            status__in=['confirmed', 'held', 'arrived', 'in_consultation'],
-            start_datetime__lt=effective_block_end,
-            end_datetime__gt=start_datetime - datetime.timedelta(minutes=60)
-        ).select_related('service')
-
-        for appt in candidate_appts:
-            appt_buf = appt.service.buffer_minutes or clinic.default_buffer_minutes
-            appt_effective_end = appt.end_datetime + datetime.timedelta(minutes=appt_buf)
-            # Two-way overlap test
-            if start_datetime < appt_effective_end and effective_block_end > appt.start_datetime:
-                raise SlotConflictException(
-                    f"Slot conflict: Time block overlaps with active appointment ({appt.appointment_code}) or its sterilization buffer.",
-                    conflicting_appointment=appt
-                )
+        conflict = cls.find_slot_conflict(doctor, start_datetime, end_datetime, service=service)
+        if conflict is not None:
+            raise SlotConflictException(
+                f"Slot conflict: Time block overlaps with active appointment ({conflict.appointment_code}) or its sterilization buffer.",
+                conflicting_appointment=conflict
+            )
 
         # 4. Create atomic Appointment record
         if initial_status:

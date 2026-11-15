@@ -34,7 +34,7 @@ export const Shell = () => {
           useQueueStore.getState().syncFromBackend();
         }
         soundService.playChime();
-      } else if (evt.type === 'slot.held' || evt.type === 'appointment.updated') {
+      } else if (evt.type === 'slot.held' || evt.type === 'appointment.status_changed') {
         if (useQueueStore.getState().syncFromBackend) {
           useQueueStore.getState().syncFromBackend();
         }
@@ -42,14 +42,25 @@ export const Shell = () => {
           useCalendarStore.getState().syncFromBackend();
         }
         soundService.playChime();
-      } else if (evt.type === 'presence.reviewing') {
+      } else if (evt.type === 'request.reviewing') {
         const reqId = evt.request_id || evt.data?.request_id;
         const reviewer = evt.reviewer_name || evt.data?.reviewer_name || null;
-        if (reqId) {
+        const reviewerEmail = (evt.reviewer_email || evt.data?.reviewer_email || '').toLowerCase();
+        // Hide MY OWN presence badge by comparing identities (email), not a
+        // hardcoded first name (system review finding #8).
+        const myEmail = (useAuthStore.getState().currentStaff?.email || '').toLowerCase();
+        if (reqId && (!reviewerEmail || reviewerEmail !== myEmail)) {
           useQueueStore.getState().updateRequestField(reqId, {
             reviewingBy: evt.action === 'stop_review' ? null : reviewer,
           });
         }
+      } else if (evt.type === 'request.re_requested') {
+        // An expired-offer patient asked for fresh times: refresh the queue so
+        // the priority Re-Requested tab updates live (was previously unhandled).
+        if (useQueueStore.getState().syncFromBackend) {
+          useQueueStore.getState().syncFromBackend();
+        }
+        soundService.playChime();
       }
     });
 

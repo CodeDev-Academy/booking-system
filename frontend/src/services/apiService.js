@@ -161,62 +161,11 @@ export const apiService = {
     return request('/staff/');
   },
 
-  async createStaff(staffData) {
-    const payload = {
-      full_name: staffData.fullName || staffData.full_name || staffData.name,
-      email: staffData.email,
-      role: staffData.role || 'receptionist',
-      shift: staffData.shift || '',
-      specialty: staffData.specialty || '',
-      password: staffData.password || 'password123',
-      pin: staffData.pin || '1234',
-    };
-    return request('/staff/', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-  },
-
-  async updateStaff(staffId, staffData) {
-    const payload = {
-      name: staffData.name || staffData.fullName || staffData.full_name,
-      email: staffData.email,
-      specialty: staffData.specialty,
-      shift: staffData.shift,
-      is_active:
-        staffData.isActive !== undefined
-          ? staffData.isActive
-          : staffData.is_active !== undefined
-          ? staffData.is_active
-          : staffData.status ? staffData.status !== 'deactivated' : undefined,
-    };
-    return request(`/staff/${staffId}/`, {
-      method: 'PATCH',
-      body: JSON.stringify(payload),
-    });
-  },
-
-  async resetStaffPassword(staffId, newPassword) {
-    return request(`/staff/${staffId}/reset-password/`, {
-      method: 'POST',
-      body: JSON.stringify({ new_password: newPassword }),
-    });
-  },
-
-  async resetStaffPin(staffId, newPin) {
-    return request(`/staff/${staffId}/reset-pin/`, {
-      method: 'POST',
-      body: JSON.stringify({ new_pin: newPin }),
-    });
-  },
-
-  async toggleStaffActive(staffId, isActive = null) {
-    const body = isActive !== null ? JSON.stringify({ is_active: isActive }) : JSON.stringify({});
-    return request(`/staff/${staffId}/toggle-active/`, {
-      method: 'POST',
-      body,
-    });
-  },
+  // NOTE (Phase 2.5, system review finding #7): the five staff-management
+  // methods below were previously defined TWICE in this object literal (the
+  // duplicate block that used to sit here was dead code — JS object literals
+  // silently keep the last definition). The canonical versions live with the
+  // rest of the staff directory API further down.
 
   // ==========================================
   // 3. Inbound Booking Requests & Triage Queue
@@ -518,7 +467,9 @@ export const apiService = {
   async resetStaffPin(staffId, newPin) {
     return request(`/staff/${staffId}/reset-pin/`, {
       method: 'POST',
-      body: JSON.stringify({ pin: newPin }),
+      // 'new_pin' is the PinResetSerializer contract (Phase 2.5: the old
+      // duplicate sent 'pin'; the view tolerates both, the serializer does not).
+      body: JSON.stringify({ new_pin: newPin }),
     });
   },
 
@@ -582,14 +533,19 @@ export const apiService = {
 
       eventSource.onmessage = (event) => handleIncomingEvent('message', event.data);
 
+      // Canonical SSE event names — the backend owns this contract (Phase 2.5,
+      // system review finding #5): request.reviewing, appointment.status_changed
+      // and request.re_requested are broadcast by Django and were previously
+      // registered under different names, so those live events never fired.
+      // 'calendar.slot_updated' was removed: no backend broadcaster exists.
       const namedEvents = [
         'connected',
         'request.created',
         'offer.dispatched',
         'slot.held',
-        'presence.reviewing',
-        'appointment.updated',
-        'calendar.slot_updated',
+        'request.reviewing',
+        'appointment.status_changed',
+        'request.re_requested',
         'interaction_logged',
       ];
       namedEvents.forEach((evtName) => {

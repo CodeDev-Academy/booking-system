@@ -1201,6 +1201,212 @@ class Phase3LiveVisitsTests(APITestCase):
         self.assertIn(self.doctor.name, content)
 
 
+class RescheduleConflictTests(APITestCase):
+    """
+    Phase 2.5 / system-review finding #4: Reschedule and 1-Click Colleague
+    Reassignment must give the SAME zero-double-booking guarantee as
+    HoldService.acquire_slot — doctor row lock, active/leave check, and the
+    two-way overlap + sterilization-buffer conflict test — instead of silently
+    saving onto an occupied calendar block.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+
+        self.doctor = Doctor.objects.create(
+            name='Dr. Bello Ibrahim',
+            specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(18, 0),
+        )
+        self.colleague = Doctor.objects.create(
+            name='Dr. Chinwe Okafor',
+            specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6],
+            shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(18, 0),
+        )
+        self.service = Service.objects.create(
+            name='Tooth Extraction',
+            category='Dental Care',
+            duration_minutes=45,
+            buffer_minutes=15,
+            price=25000.00,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.service)
+        DoctorService.objects.create(doctor=self.colleague, service=self.service)
+
+        self.receptionist = StaffUser.objects.create(
+            full_name='Reschedule Tester',
+            email='reschedule@clinic.com',
+            role='receptionist',
+            is_active=True,
+        )
+        self.receptionist.set_password('DeskPass123!')
+        self.receptionist.save()
+
+        now = timezone.now()
+        self.base = now  # frozen reference so assertions never race wall-clock microseconds
+        # Occupied block on self.doctor: 10:00-10:45 (buffer 15 -> effective end 11:00)
+        self.occupied = Appointment.objects.create(
+            patient_name='Occupied Block',
+            patient_phone='+2348000000001',
+            doctor=self.doctor,
+            service=self.service,
+            start_datetime=now + datetime.timedelta(days=1, hours=2),
+            end_datetime=now + datetime.timedelta(days=1, hours=2, minutes=45),
+            status='confirmed',
+        )
+        # The appointment under test on the same doctor: 12:00-12:45
+        self.movable = Appointment.objects.create(
+            patient_name='Movable Visit',
+            patient_phone='+2348000000002',
+            doctor=self.doctor,
+            service=self.service,
+            start_datetime=now + datetime.timedelta(days=1, hours=4),
+            end_datetime=now + datetime.timedelta(days=1, hours=4, minutes=45),
+            status='confirmed',
+        )
+        self.client.force_authenticate(user=self.receptionist)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _url(self, appt):
+        return f'/api/v1/appointments/{appt.id}/reschedule/'
+
+    def test_reschedule_onto_occupied_slot_rejected_409(self):
+        # 10:15-11:00 overlaps the occupied 10:00-10:45 block head-on.
+        res = self.client.post(self._url(self.movable), {
+            'start_datetime': (self.base + datetime.timedelta(days=1, hours=2, minutes=15)).isoformat(),
+            'end_datetime': (self.base + datetime.timedelta(days=1, hours=3)).isoformat(),
+        }, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['error'], 'SLOT_CONFLICT')
+        self.assertEqual(res.data['conflicting_appointment'], self.occupied.appointment_code)
+
+        # The rejected move must leave the appointment exactly where it was.
+        self.movable.refresh_from_db()
+        now = self.base
+        self.assertEqual(
+            self.movable.start_datetime,
+            now + datetime.timedelta(days=1, hours=4),
+        )
+        self.assertEqual(
+            self.movable.end_datetime - self.movable.start_datetime,
+            datetime.timedelta(minutes=45),
+        )
+        self.assertEqual(Appointment.objects.filter(doctor=self.doctor).count(), 2)
+
+    def test_reschedule_into_buffer_zone_rejected_409(self):
+        # 10:50 start sits inside the occupied block's 15-minute sterilization buffer.
+        res = self.client.post(self._url(self.movable), {
+            'start_datetime': (self.base + datetime.timedelta(days=1, hours=2, minutes=50)).isoformat(),
+            'end_datetime': (self.base + datetime.timedelta(days=1, hours=3, minutes=35)).isoformat(),
+        }, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['error'], 'SLOT_CONFLICT')
+
+    def test_reschedule_to_free_slot_succeeds(self):
+        res = self.client.post(self._url(self.movable), {
+            'start_datetime': (self.base + datetime.timedelta(days=1, hours=6)).isoformat(),
+            'end_datetime': (self.base + datetime.timedelta(days=1, hours=6, minutes=45)).isoformat(),
+        }, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.movable.refresh_from_db()
+        self.assertEqual(
+            self.movable.start_datetime,
+            self.base + datetime.timedelta(days=1, hours=6),
+        )
+
+    def test_reschedule_to_own_slot_allowed(self):
+        # Moving an appointment to (effectively) its own time must not trip
+        # the conflict check against itself.
+        res = self.client.post(self._url(self.movable), {
+            'start_datetime': self.movable.start_datetime.isoformat(),
+            'end_datetime': self.movable.end_datetime.isoformat(),
+        }, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_reschedule_preserves_duration_when_only_start_sent(self):
+        # Moving only the start keeps the 45-minute visit length instead of
+        # silently stretching or shrinking the appointment.
+        res = self.client.post(self._url(self.movable), {
+            'start_datetime': (self.base + datetime.timedelta(days=1, hours=6)).isoformat(),
+        }, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.movable.refresh_from_db()
+        self.assertEqual(
+            self.movable.end_datetime - self.movable.start_datetime,
+            datetime.timedelta(minutes=45),
+        )
+
+    def test_reschedule_to_doctor_on_leave_rejected_409(self):
+        self.colleague.is_on_leave = True
+        self.colleague.save(update_fields=['is_on_leave'])
+
+        res = self.client.post(self._url(self.movable), {
+            'doctor_id': str(self.colleague.id),
+        }, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['error'], 'SLOT_CONFLICT')
+        self.movable.refresh_from_db()
+        self.assertEqual(self.movable.doctor, self.doctor)
+
+    def test_reassign_to_busy_colleague_rejected_409(self):
+        # The colleague already has a visit overlapping the movable time block.
+        now = self.base
+        Appointment.objects.create(
+            patient_name='Colleague Busy',
+            patient_phone='+2348000000003',
+            doctor=self.colleague,
+            service=self.service,
+            start_datetime=now + datetime.timedelta(days=1, hours=4),
+            end_datetime=now + datetime.timedelta(days=1, hours=4, minutes=30),
+            status='confirmed',
+        )
+
+        res = self.client.post(f'/api/v1/appointments/{self.movable.id}/reassign-leave/', {
+            'new_doctor_id': str(self.colleague.id)
+        }, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['error'], 'SLOT_CONFLICT')
+        self.movable.refresh_from_db()
+        self.assertEqual(self.movable.doctor, self.doctor)
+
+    def test_reassign_to_colleague_on_leave_rejected_409(self):
+        self.colleague.is_on_leave = True
+        self.colleague.save(update_fields=['is_on_leave'])
+
+        res = self.client.post(f'/api/v1/appointments/{self.movable.id}/reassign-leave/', {
+            'new_doctor_id': str(self.colleague.id)
+        }, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.movable.refresh_from_db()
+        self.assertEqual(self.movable.doctor, self.doctor)
+
+    def test_reassign_to_free_colleague_succeeds(self):
+        res = self.client.post(f'/api/v1/appointments/{self.movable.id}/reassign-leave/', {
+            'new_doctor_id': str(self.colleague.id)
+        }, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.movable.refresh_from_db()
+        self.assertEqual(self.movable.doctor, self.colleague)
+
+
 class Phase3ClinicSettingsTests(APITestCase):
     """
     Rigorously verifies Task 3.4:
@@ -1504,6 +1710,68 @@ class Phase3RealtimeWebhookTests(APITestCase):
 
         # Cache key should be cleaned up immediately
         self.assertIsNone(cache.get(f"review_presence_{req_id}"))
+
+    def test_sse_event_name_contract_phase25(self):
+        """
+        Phase 2.5 (system review finding #5): pin the canonical SSE event
+        NAMES the backend broadcasts. The frontend registers listeners for
+        exactly these names — a rename on either side silently kills live
+        updates (presence badges, swimlane moves, re-request alerts), so the
+        contract is asserted here per broadcaster, end to end.
+        """
+        from unittest.mock import patch
+
+        self.client.force_authenticate(user=self.receptionist)
+
+        # 1. Desk presence -> 'request.reviewing'
+        with patch('appointments.views_realtime.broadcast_event') as mock_b:
+            res = self.client.post('/api/v1/realtime/presence/', {
+                'request_id': 'REQ-2026-0042',
+                'action': 'start_review',
+            }, format='json')
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            mock_b.assert_called_once()
+            self.assertEqual(mock_b.call_args[0][0], 'request.reviewing')
+
+        # 2. Appointment lifecycle -> 'appointment.status_changed'
+        now = timezone.now()
+        doctor = Doctor.objects.create(name='Dr. SSE Contract')
+        service = Service.objects.create(
+            name='SSE Contract Consult', duration_minutes=30, buffer_minutes=5, price=1000,
+        )
+        appt = Appointment.objects.create(
+            patient_name='SSE Contract',
+            patient_phone='+2348099990001',
+            doctor=doctor,
+            service=service,
+            start_datetime=now + datetime.timedelta(days=1),
+            end_datetime=now + datetime.timedelta(days=1, minutes=30),
+            status='confirmed',
+        )
+        with patch('appointments.views_appointment.broadcast_event') as mock_b:
+            res = self.client.patch(f'/api/v1/appointments/{appt.id}/status/', {
+                'status': 'arrived',
+            }, format='json')
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            mock_b.assert_called_once()
+            self.assertEqual(mock_b.call_args[0][0], 'appointment.status_changed')
+
+        # 3. Expired-offer re-request -> 'request.re_requested'
+        booking = BookingRequest.objects.create(
+            request_code='REQ-2026-7777',
+            patient_name='Re Request SSE',
+            patient_phone='+2348099990002',
+            service=service,
+            status='offer_expired',
+        )
+        with patch('appointments.views_booking.broadcast_event') as mock_b:
+            res = self.client.post(
+                f'/api/v1/booking-requests/{booking.request_code}/re-request/',
+                HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026',
+            )
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            mock_b.assert_called_once()
+            self.assertEqual(mock_b.call_args[0][0], 'request.re_requested')
 
     def test_webhook_idempotency_deduplication_t312(self):
         """
@@ -2104,20 +2372,61 @@ class Phase5TelegramTests(APITestCase):
 
     def test_telegram_interactive_service_booking_and_dispatch(self):
         """
-        Patient clicks a service button (book_svc_<id>) in Telegram -> creates BookingRequest
-        with telegram_chat_id in patient_notes, and receptionist can dispatch offers without error.
+        Patient walks the FULL Telegram conversational booking flow:
+        book_svc_<id> -> date range (tg_rng) -> time window (tg_win) ->
+        gender (tg_gen) -> BookingRequest created with telegram_chat_id in
+        patient_notes, and receptionist can dispatch offers without error.
+
+        Phase 2.5 (system review finding #9): the flow gained the
+        date-range / time-window / gender conversational steps after this
+        test was written; it asserted 'booking_request_created' straight
+        after the service tap and has been the suite's one red test since.
         """
-        payload = {
-            'update_id': 100200308,
-            'channel': 'telegram',
-            'callback_query': {
-                'id': 'cq_book_svc_1',
-                'data': f'book_svc_{self.service.id}',
-                'from': {'id': 98765432, 'first_name': 'Musa', 'last_name': 'Yusuf'},
-                'message': {'message_id': 562, 'chat': {'id': 98765432}}
+        def tg_callback(update_id, data, callback_id):
+            return {
+                'update_id': update_id,
+                'channel': 'telegram',
+                'callback_query': {
+                    'id': callback_id,
+                    'data': data,
+                    'from': {'id': 98765432, 'first_name': 'Musa', 'last_name': 'Yusuf'},
+                    'message': {'message_id': 562, 'chat': {'id': 98765432}}
+                }
             }
-        }
-        res = self.client.post('/api/v1/webhooks/telegram/inbound/', payload, format='json')
+
+        # 1. Service tap -> prompted for a preferred date range
+        res = self.client.post(
+            '/api/v1/webhooks/telegram/inbound/',
+            tg_callback(100200308, f'book_svc_{self.service.id}', 'cq_book_svc_1'),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['telegram_result']['status'], 'prompted_date_range')
+
+        # 2. Date range ("Next 7 Days") -> prompted for a time window
+        res = self.client.post(
+            '/api/v1/webhooks/telegram/inbound/',
+            tg_callback(100200309, f'tg_rng_{self.service.id}_7', 'cq_rng_7'),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['telegram_result']['status'], 'prompted_time_window')
+
+        # 3. Time window (morning) -> prompted for gender
+        res = self.client.post(
+            '/api/v1/webhooks/telegram/inbound/',
+            tg_callback(100200310, f'tg_win_{self.service.id}_7_morning', 'cq_win_morning'),
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['telegram_result']['status'], 'prompted_gender')
+
+        # 4. Gender -> BookingRequest created
+        res = self.client.post(
+            '/api/v1/webhooks/telegram/inbound/',
+            tg_callback(100200311, f'tg_gen_{self.service.id}_7_morning_male', 'cq_gen_male'),
+            format='json',
+        )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data['telegram_result']['status'], 'booking_request_created')
         req_code = res.data['telegram_result']['request_id']
@@ -2856,10 +3165,23 @@ class ComprehensiveBackendSyncSpecificationTests(APITestCase):
         self.assertEqual(blocked_res.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_verify_pin_and_lockout(self):
-        """POST /api/v1/auth/verify-pin/ verifies 4-digit PIN and locks out after 3 failures."""
-        # Valid PIN
-        res = self.client.post('/api/v1/auth/verify-pin/', {
+        """POST /api/v1/auth/verify-pin/ verifies 4-digit PIN and locks out after 3 failures.
+
+        Phase 2.5 (system review finding #3): an active staff session is
+        required. An anonymous email+PIN probe is rejected before any user
+        lookup — no staff-email enumeration signal, no unauthenticated
+        brute-force surface.
+        """
+        # Anonymous probe (existing email, correct PIN) must still be rejected.
+        anon_res = self.client.post('/api/v1/auth/verify-pin/', {
             'email': self.receptionist.email,
+            'pin': '1234',
+        }, format='json')
+        self.assertEqual(anon_res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        # Authenticated flow: valid PIN
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.post('/api/v1/auth/verify-pin/', {
             'pin': '1234',
         }, format='json')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
@@ -2868,14 +3190,12 @@ class ComprehensiveBackendSyncSpecificationTests(APITestCase):
         # 3 Failed attempts
         for attempt in range(2):
             fail_res = self.client.post('/api/v1/auth/verify-pin/', {
-                'email': self.receptionist.email,
                 'pin': '0000',
             }, format='json')
             self.assertEqual(fail_res.status_code, status.HTTP_400_BAD_REQUEST)
 
         # 3rd failed attempt triggers 60s lockout
         lock_res = self.client.post('/api/v1/auth/verify-pin/', {
-            'email': self.receptionist.email,
             'pin': '0000',
         }, format='json')
         self.assertEqual(lock_res.status_code, status.HTTP_423_LOCKED)

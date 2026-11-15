@@ -5,7 +5,14 @@ import { apiService } from '../services/apiService';
 import { useAppModeStore } from './appModeStore';
 
 /**
- * AUTHORIZED_STAFF_ACCOUNTS — Strictly Two Roles:
+ * AUTHORIZED_STAFF_ACCOUNTS — demo-mode personas ONLY (system review
+ * finding #2). These accounts exist so the demo experience has one-click
+ * logins; they are NEVER consulted in live mode (login() returns before
+ * reaching them) and the credentials are deliberately synthetic — .example
+ * emails and demo- passwords — so that nothing in the shipped bundle
+ * resembles a real staff credential.
+ *
+ * Strictly Two Roles:
  * 1. Receptionists (each with her own shift account)
  * 2. Clinic Administrator / Practice Manager (overall dashboard control)
  */
@@ -13,43 +20,43 @@ export const AUTHORIZED_STAFF_ACCOUNTS = [
   {
     id: 'staff-01',
     name: 'Sarah Aliyu',
-    email: 'sarah.aliyu@cedarcare.ng',
-    aliases: ['sarah.aliyu@cedarcare.ng', 'sarah@clinic.com', 'sarah@cedarcare.ng', 'sarah.aliyu@clinic.com'],
+    email: 'sarah.demo@cedarcare.example',
+    aliases: ['sarah.demo@cedarcare.example', 'sarah@demo.example'],
     role: 'receptionist',
     roleLabel: 'Lead Receptionist',
     shift: 'Morning Shift (08:00 – 16:00)',
     avatar: 'SA',
     pin: '1234',
-    password: 'password123',
-    passwords: ['password123', 'sarah2026'],
+    password: 'demo-password-1',
+    passwords: ['demo-password-1'],
     isActive: true,
   },
   {
     id: 'staff-02',
     name: 'Chioma Okeke',
-    email: 'chioma@clinic.com',
-    aliases: ['chioma@clinic.com', 'chioma@cedarcare.ng', 'chioma.okeke@cedarcare.ng'],
+    email: 'chioma.demo@cedarcare.example',
+    aliases: ['chioma.demo@cedarcare.example', 'chioma@demo.example'],
     role: 'receptionist',
     roleLabel: 'Front Desk Receptionist',
     shift: 'Afternoon / Evening Shift (12:00 – 18:00)',
     avatar: 'CO',
     pin: '5678',
-    password: 'password123',
-    passwords: ['password123', 'chioma2026'],
+    password: 'demo-password-2',
+    passwords: ['demo-password-2'],
     isActive: true,
   },
   {
     id: 'staff-03',
     name: 'Dr. Ibrahim Musa',
-    email: 'admin@cedarcare.ng',
-    aliases: ['admin@cedarcare.ng', 'admin@clinic.com', 'ibrahim@cedarcare.ng'],
+    email: 'admin.demo@cedarcare.example',
+    aliases: ['admin.demo@cedarcare.example', 'admin@demo.example'],
     role: 'clinic_admin',
     roleLabel: 'Practice Manager & Clinic Director',
     shift: 'General Practice Administration',
     avatar: 'IM',
     pin: '1234',
-    password: 'password123',
-    passwords: ['password123', 'adminpassword123', 'Admin1234', 'admin2026'],
+    password: 'demo-password-3',
+    passwords: ['demo-password-3'],
     isActive: true,
   },
 ];
@@ -139,7 +146,9 @@ export const useAuthStore = create(
               set({
                 isAuthenticated: true,
                 currentStaff: staffUser,
-                pin: staffUser.pin || '1234',
+                // No fabricated PIN in live mode: the server never sends one
+                // back, and unlockWorkstation asks the server anyway (Phase 2.5).
+                pin: staffUser.pin || '',
                 isLocked: false,
                 loginFailedAttempts: 0,
                 loginLockoutUntil: 0,
@@ -151,28 +160,48 @@ export const useAuthStore = create(
               return { success: true, staff: staffUser };
             }
           } catch (err) {
-            // Fall through to local check or error response
-            if (!err.isNetworkError) {
-              const nextAttempts = loginFailedAttempts + 1;
-              const willLock = nextAttempts >= 5;
-              const lockUntil = willLock ? Date.now() + 15 * 60 * 1000 : 0;
-
-              set({
-                loginFailedAttempts: nextAttempts,
-                loginLockoutUntil: lockUntil,
-              });
-
+            if (err.isNetworkError) {
+              // Live mode NEVER falls back to the local demo accounts: if the
+              // clinic server cannot be reached, authentication fails. A
+              // blocked or failed request (e.g. via DevTools) must not open a
+              // side door into the workstation UI.
               soundService.playAlert();
               return {
                 success: false,
-                message: err.message || 'Invalid email or password.',
-                attemptsRemaining: Math.max(0, 5 - nextAttempts),
+                message: 'Cannot reach the clinic server. Check your connection and try again.',
+                isNetworkError: true,
               };
             }
+
+            const nextAttempts = loginFailedAttempts + 1;
+            const willLock = nextAttempts >= 5;
+            const lockUntil = willLock ? Date.now() + 15 * 60 * 1000 : 0;
+
+            set({
+              loginFailedAttempts: nextAttempts,
+              loginLockoutUntil: lockUntil,
+            });
+
+            soundService.playAlert();
+            return {
+              success: false,
+              message: err.message || 'Invalid email or password.',
+              attemptsRemaining: Math.max(0, 5 - nextAttempts),
+            };
           }
         }
 
-        // Local Fallback & Demo Mode Matching
+        // Local Fallback & Demo Mode Matching — demo mode ONLY.
+        // In live mode the server's answer is final (an unreachable server is
+        // handled above); the local demo accounts can never authenticate a
+        // live session.
+        if (isLive) {
+          return {
+            success: false,
+            message: 'Invalid email or password.',
+          };
+        }
+
         const staff = AUTHORIZED_STAFF_ACCOUNTS.find(
           (a) =>
             a.email.toLowerCase() === normalizedEmail ||
@@ -231,6 +260,11 @@ export const useAuthStore = create(
 
       // 1-Click Quick Demo Login (Strictly Receptionists or Clinic Admin)
       quickDemoLogin: (staffId) => {
+        // Demo mode only: the 1-click presets must never authenticate a live
+        // workstation, even if a future view wires the button back up.
+        if (!useAppModeStore.getState().isDemoMode) {
+          return { success: false, message: 'Demo login is disabled in live mode.' };
+        }
         const staff = AUTHORIZED_STAFF_ACCOUNTS.find((a) => a.id === staffId) || AUTHORIZED_STAFF_ACCOUNTS[0];
         set({
           isAuthenticated: true,
@@ -294,42 +328,67 @@ export const useAuthStore = create(
       lockWorkstation: () => set({ isLocked: true }),
 
       // Verify 4-Digit Quick-PIN
-      unlockWorkstation: (pinAttempt) => {
+      unlockWorkstation: async (pinAttempt) => {
         const { pin, failedAttempts, lockoutRemaining, currentStaff } = get();
-        const correctPin = pin || currentStaff?.pin || '1234';
 
         if (lockoutRemaining > 0) {
           return { success: false, reason: 'LOCKED_OUT' };
         }
 
-        if (pinAttempt === correctPin) {
-          if (!useAppModeStore.getState().isDemoMode) {
-            apiService.unlockPin(pinAttempt, currentStaff?.email || '').catch(() => {});
+        // Demo mode: local persona check (there is no backend session).
+        if (useAppModeStore.getState().isDemoMode) {
+          const correctPin = pin || currentStaff?.pin || '1234';
+          if (pinAttempt === correctPin) {
+            set({
+              isLocked: false,
+              failedAttempts: 0,
+              lockoutRemaining: 0,
+            });
+            return { success: true };
           }
+          const nextAttempts = failedAttempts + 1;
+          if (nextAttempts >= 3) {
+            set({ failedAttempts: nextAttempts, lockoutRemaining: 60 });
+            return { success: false, reason: 'MAX_ATTEMPTS_EXCEEDED', cooldown: 60 };
+          }
+          set({ failedAttempts: nextAttempts });
+          return { success: false, reason: 'INVALID_PIN', attemptsLeft: 3 - nextAttempts };
+        }
+
+        // Live mode: the server is the ONLY PIN authority (Phase 2.5, system
+        // review finding #3). The client holds no PIN and no '1234' fallback —
+        // the old code unlocked on a locally guessed value and merely told the
+        // backend afterwards. The endpoint requires the staff session, so the
+        // PIN is verified against the same account the JWT belongs to.
+        try {
+          await apiService.unlockPin(pinAttempt);
           set({
             isLocked: false,
             failedAttempts: 0,
             lockoutRemaining: 0,
           });
           return { success: true };
+        } catch (err) {
+          // Session expired while locked: a full password re-login is required.
+          if (err.status === 401) {
+            get().logout();
+            return { success: false, reason: 'SESSION_EXPIRED' };
+          }
+          // Server-side 3-strike shield active: mirror its cooldown locally.
+          if (err.status === 423) {
+            const cooldown = (err.details && err.details.cooldown_seconds) || 60;
+            set({ failedAttempts: 3, lockoutRemaining: cooldown });
+            return { success: false, reason: 'MAX_ATTEMPTS_EXCEEDED', cooldown };
+          }
+          // 400 INVALID_PIN (or anything unexpected): count the attempt.
+          const nextAttempts = failedAttempts + 1;
+          if (nextAttempts >= 3) {
+            set({ failedAttempts: nextAttempts, lockoutRemaining: 60 });
+            return { success: false, reason: 'MAX_ATTEMPTS_EXCEEDED', cooldown: 60 };
+          }
+          set({ failedAttempts: nextAttempts });
+          return { success: false, reason: 'INVALID_PIN', attemptsLeft: 3 - nextAttempts };
         }
-
-        const nextAttempts = failedAttempts + 1;
-        if (nextAttempts >= 3) {
-          // 3 failed PIN attempts: enforce 60-second cooldown
-          set({
-            failedAttempts: nextAttempts,
-            lockoutRemaining: 60,
-          });
-          return { success: false, reason: 'MAX_ATTEMPTS_EXCEEDED', cooldown: 60 };
-        }
-
-        set({ failedAttempts: nextAttempts });
-        return {
-          success: false,
-          reason: 'INVALID_PIN',
-          attemptsLeft: 3 - nextAttempts,
-        };
       },
 
       // Tick PIN cooldown timer

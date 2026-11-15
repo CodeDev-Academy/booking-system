@@ -1186,3 +1186,97 @@ env vars). `06`/`07` re-exported byte-identical (frozen 1:1 holds).
 sends, `error.status` before the regex, header-only token, unknown channel -> ignore,
 `patient_phone` guard on callbacks, SMS grammar for <3 options, `voice_payload_missing`
 row, and the `update_or_create` link-clobber quirk noted in 2.1), then Workflow C.
+
+---
+
+## 2026-11-15 - Phase 2.5: production correctness & security (the verified system review)
+
+**Origin.** An external full-system review landed 12 findings. Every claim was verified
+against the actual code before anything was fixed - and that verification mattered: the
+review's two `05` items (unauthenticated dispatch-offers, missing wamid capture) were
+**stale** (fixed in Phases 0/1), its Telegram test name didn't exist, its PIN-lockout
+framing missed a server-side throttle that does exist, and its duplicate-methods finding
+was a maintenance trap rather than a runtime bug (the view accepts both payload keys).
+Grounding the plan also surfaced three things the review understated: the workstation
+PIN lock is validated **client-side with a '1234' fallback** in live mode, the app boots
+**permanently live** (so the login fallback was the default behavior, not an edge case),
+and the login screen **displayed** credentials on production. Four findings were
+genuine launch blockers; three were quick wins; two needed no code (n8n skeleton
+lessons -> written requirements for B/C; code-gen-under-lock noted and deferred).
+
+**2.5.1 - Double-booking side doors closed (review #4, the worst finding).**
+`HoldService.acquire_slot` is the gold standard; `RescheduleAppointmentView` and
+`DisruptionService.reassign_to_colleague` walked around it - no lock, no availability
+check, no overlap/buffer test. The conflict check was extracted into shared read-only
+helpers (`find_slot_conflict`, `purge_expired_holds`), `acquire_slot` refactored onto
+them behavior-identically (pinned by the existing hold suite), and both paths now:
+lock the target doctor row, re-validate active/leave, purge stale holds, conflict-check
+excluding the appointment being moved, and answer `409 SLOT_CONFLICT` (naming the
+conflicting block) leaving the appointment untouched. Three silent defects fixed on the
+way: moving only the start now preserves the visit duration (was stretched/shrunk
+silently - the failing-first test showed a negative duration), naive ISO datetimes are
+anchored to the server timezone (the overlap math previously would have crashed on
+naive input), and an unresolvable doctor is a 400 instead of a silent no-op.
+`RescheduleConflictTests` 9/9, written first and failing exactly as predicted.
+
+**2.5.2 - Live login fallback removed (review #2).** `login()` in live mode now returns
+a server-unreachable failure on a network error instead of falling through to the local
+demo array; the local matching runs in demo mode only; `quickDemoLogin` refuses outside
+demo mode; the login screen renders 1-click presets only in demo mode and no longer
+pre-fills credential fields. The demo array was scrubbed to synthetic identities
+(`.example` emails, `demo-` passwords) - it still ships in demo builds, but nothing in
+it resembles a real credential.
+
+**2.5.3 - Server-authoritative PIN unlock (review #3).** `PinUnlockView` (both
+`/auth/pin-unlock/` and `/auth/verify-pin/` aliases) now requires an active staff
+session; the email+PIN branch - a staff-email enumeration oracle plus an unauthenticated
+brute-force surface - is gone, and anonymous probes receive a uniform 401. The existing
+tests already authenticated, so nothing broke; `test_verify_pin_and_lockout` was updated
+and gained the anonymous-probe assertion. On the frontend, `unlockWorkstation` is async
+and server-gated in live mode: 200 unlocks, 400 counts the attempt, 423 mirrors the
+server's cooldown, 401 clears the session and routes to a full password re-login - and
+the client-side `'1234'` fallback is gone (the live login no longer fabricates a PIN).
+Demo mode keeps the local persona check. Stated honestly in the docs: the 20-minute
+lock is a privacy screen; the JWT remains the security boundary - this step makes the
+lock consistent instead of decorative.
+
+**2.5.4 - SSE-safe deploy config (review #1).** `render.yaml` and `backend/Procfile`
+both now run gunicorn with `--workers 1 --threads 8 --timeout 0`: one process means one
+in-memory SSE bus and one LocMemCache (the old `--workers 3` split both across
+processes - a webhook on worker 1 never reached a dashboard on worker 2), the thread
+pool serves concurrent dashboards, and no request timeout kills EventSource streams.
+Render's missing `$PORT` bind was fixed in the same line. Scaling past ~7 concurrent
+dashboards is the documented Phase 5 trigger (Postgres LISTEN/NOTIFY or Redis).
+
+**2.5.5 - SSE event names aligned (review #5).** Three backend events were dead on
+arrival: `request.reviewing` (registered as `presence.reviewing`),
+`appointment.status_changed` (registered as `appointment.updated`), and
+`request.re_requested` (not registered at all). The frontend now registers the backend's
+canonical names, the dead `calendar.slot_updated` listener is removed, and re-requests
+refresh the priority queue live. A new contract test (`test_sse_event_name_contract_phase25`)
+pins all three names per broadcaster by patching `broadcast_event` at each view module -
+neither side can drift silently again.
+
+**2.5.6 - Cleanups (reviews #7/#8).** The five staff-management methods defined twice in
+`apiService` (the first block silently dead) are now one block, with `resetStaffPin`
+standardized on the serializer's `new_pin`. The hardcoded `reviewingBy !== 'Sarah'`
+filter is replaced by identity comparison - email on the SSE path, current staff name on
+the local path - so presence badges show for every reviewer except one's own.
+
+**2.5.7 - The suite's one red test fixed (review #9, diagnosis correct, test name
+wrong).** The Telegram conversational intake gained date-range / time-window / gender
+steps after `test_telegram_interactive_service_booking_and_dispatch` was written; the
+test now walks the full chain (`book_svc_` -> `tg_rng_` -> `tg_win_` -> `tg_gen_`) with
+unique update ids and asserts each prompt status before `booking_request_created`.
+
+**2.5.8 - n8n skeleton lessons recorded (review #6, no code).** The audited flaws in
+`01`-`04` (JWT-only status endpoint called with a webhook secret, `/api/v1` prefix
+conflict, `re_request_slots_` prefix, 15x nudge spam, fail-open secret fallbacks) are
+now §6.1 "Hard requirements for the B and C rebuilds" in `N8N_BUILD_SHEET.md` - the
+skeletons are rebuilt, not patched, and the rebuilds must resolve every item,
+verified live.
+
+**State.** Full suite **197 tests / 197 pass - the first fully green run since Phase 0.**
+Frontend `npm run build` clean. The privacy-lock honesty note and the gunicorn scaling
+trigger are documented where they'll be looked for. Next: Phase 3 hardening as planned
+(now T-712), then Workflow C.

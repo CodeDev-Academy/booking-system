@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useQueueStore } from '../stores/useQueueStore';
 import { useStaffStore } from '../stores/useStaffStore';
 import { useAppModeStore } from '../stores/appModeStore';
+import { useAuthStore } from '../stores/useAuthStore';
 import {
   SERVICES,
   DOCTORS,
@@ -18,7 +19,14 @@ import {
   doctorsForService,
   slotEnd,
 } from '../services/slotEngine';
+// Current staff's display first name — the SAME shape `openRequest` stamps
+// into reviewingBy, so the queue hides MY OWN presence badge instead of every
+// staff member who happens to be called "Sarah" (system review finding #8).
+const myStaffFirstName = () =>
+  useAuthStore.getState().currentStaff?.name?.split(' ')[0] || null;
+
 import { normalizeE164, formatPhoneDisplay, matchesPhone } from '../services/phoneUtils';
+
 import { apiService } from '../services/apiService';
 import { soundService } from '../services/soundService';
 import {
@@ -166,7 +174,9 @@ export const useTriageQueue = () => {
         ageLabel: r.status === 'offer_expired' ? `Expired ${formatAge(age)}` : formatAge(age),
         agingLevel: level,
         agingLabel: r.status === 'offer_expired' ? 'Expired' : AGING_LABELS[level],
-        reviewingBy: r.reviewingBy && r.reviewingBy !== 'Sarah' ? r.reviewingBy : null,
+        // Phase 2.5 (finding #8): hide MY OWN badge by identity, not by a
+      // hardcoded "Sarah" — other staff must still see whoever is reviewing.
+      reviewingBy: r.reviewingBy && r.reviewingBy !== myStaffFirstName() ? r.reviewingBy : null,
         reRequested: r.reRequested,
       };
     },

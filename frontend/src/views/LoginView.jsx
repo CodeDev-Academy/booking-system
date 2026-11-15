@@ -12,12 +12,15 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { useAuthStore } from '../stores/useAuthStore';
+import { useAppModeStore } from '../stores/appModeStore';
 import '../styles/components/login.css';
 
 /**
  * LoginView — Dedicated Staff & Receptionist Authentication Portal
  * Strict RBAC: Access limited to Receptionists (shift accounts) and Clinic Administrator.
- * Includes multi-tier brute force defense, lockout reset, and 1-click demo presets.
+ * Includes multi-tier brute force defense, lockout reset, and (demo mode only)
+ * 1-click demo presets. In live mode no credential is ever pre-filled or
+ * displayed on this screen (system review finding #2).
  */
 export const LoginView = () => {
   const navigate = useNavigate();
@@ -26,11 +29,11 @@ export const LoginView = () => {
     login,
     loginLockoutUntil,
     clearLoginLockout,
-    quickDemoLogin,
   } = useAuthStore();
+  const isDemoMode = useAppModeStore((s) => s.isDemoMode);
 
-  const [email, setEmail] = useState('sarah.aliyu@cedarcare.ng');
-  const [password, setPassword] = useState('password123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [honeypot, setHoneypot] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -239,15 +242,17 @@ export const LoginView = () => {
           </button>
         </form>
 
-        {/* Quick 1-Click Demo Fill & Direct Login Strip */}
+        {/* Quick 1-Click Demo Credentials — demo mode ONLY. Never rendered on
+            a production login screen (system review finding #2). */}
+        {isDemoMode && (
         <div style={{ marginTop: '14px', paddingTop: '12px', borderTop: '1px solid var(--border)' }}>
           <div style={{ fontSize: '11px', color: 'var(--text-3)', marginBottom: '8px', fontWeight: 600 }}>
-            Quick 1-Click Credentials:
+            Quick 1-Click Demo Credentials:
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
             <button
               type="button"
-              onClick={() => handleQuickFill('sarah.aliyu@cedarcare.ng', 'password123')}
+              onClick={() => handleQuickFill('sarah.demo@cedarcare.example', 'demo-password-1')}
               className="btn-base btn-secondary btn-sm"
               style={{
                 fontSize: '11px',
@@ -261,12 +266,12 @@ export const LoginView = () => {
               title="Fill Sarah Aliyu (Reception Desk)"
             >
               <span style={{ fontWeight: 600, color: 'var(--text)' }}>👩‍💼 Sarah (Reception)</span>
-              <span style={{ fontSize: '10px', color: 'var(--text-3)' }}>password123</span>
+              <span style={{ fontSize: '10px', color: 'var(--text-3)' }}>demo-password-1</span>
             </button>
 
             <button
               type="button"
-              onClick={() => handleQuickFill('admin@cedarcare.ng', 'adminpassword123')}
+              onClick={() => handleQuickFill('admin.demo@cedarcare.example', 'demo-password-3')}
               className="btn-base btn-secondary btn-sm"
               style={{
                 fontSize: '11px',
@@ -280,10 +285,11 @@ export const LoginView = () => {
               title="Fill Dr. Ibrahim Musa (Clinic Admin)"
             >
               <span style={{ fontWeight: 600, color: 'var(--text)' }}>🩺 Dr. Ibrahim (Admin)</span>
-              <span style={{ fontSize: '10px', color: 'var(--text-3)' }}>adminpassword123</span>
+              <span style={{ fontSize: '10px', color: 'var(--text-3)' }}>demo-password-3</span>
             </button>
           </div>
         </div>
+        )}
 
         {/* Footer Security Notice */}
         <div className="login-footer-note" style={{ marginTop: '12px' }}>

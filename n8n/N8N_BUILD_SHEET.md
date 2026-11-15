@@ -567,7 +567,7 @@ row without a phone is still rejected `400`.
 | `02_hold_and_offer_expiry_cron.json` | Sweeper skeleton | Per §3 — add nudge branch + recovery sends + logging |
 | `03_reminder_flows.json` | Reminder skeleton | Per §2 — add SMS leg + logging + dedupe |
 | `04_patient_response_handler.json` | Response skeleton | Per §4 — add SMS "1/2/3" replies, re-request, channel neutralization, logging |
-| `05_slot_offer_dispatcher.json` | ✅ Fresh export of the live workflow | Re-export after any live edit (see §5.1). Graph = 14 nodes: adapter → switch → 3 live send nodes → 3 log nodes, plus the D-2 voice guard. |
+| `05_slot_offer_dispatcher.json` | ✅ Fresh export of the live workflow | Re-export after any live edit (see §5.1). Graph = 20 nodes: auth → format → adapter → switch (4 outputs, skip is wired) → 3 live send nodes → 3 log nodes + skip/probe-failure loggers, plus the D-2 voice guard. |
 | `06_provider_simulator.json` | ✅ Fresh export (dev only) | Stands in for VoiceBip/Meta while `PROVIDER_MOCK=true`. Deactivate + delete once real credentials are in. |
 | `07_provider_callback.json` | ✅ Fresh export of the live workflow | `POST /webhook/provider-callback` — authenticated, idempotent provider events (see §5.3). Point VoiceBip's delivery-report / call-outcome webhook here. |
 | `FLIP_LIVE_RUNBOOK.md` | ✅ Procedure | Preconditions → env → regression gate → SMS → voice → callbacks → retire simulator → smoke checklist → rollback. |
@@ -576,6 +576,36 @@ row without a phone is still rejected `400`.
 **Exports are frozen (Stage D-5).** The three JSON files above match the live graphs in the
 dev instance 1:1. If a workflow is edited in the n8n UI, re-export before committing or the
 repo and the running system silently diverge.
+
+### 6.1 Hard requirements for the B and C rebuilds (from the 2026-11 system review)
+
+The skeletons `01`–`04` were audited against the Django contract during the Phase 2.5
+review. Their flaws are **not to be patched** — the skeletons get rebuilt as Workflows B
+(`02`) and C (`04`) — but the rebuilds MUST resolve every one of these, verified live:
+
+1. **Auth model.** `04` PATCHes `/appointments/{id}/status/` with `X-Webhook-Secret`,
+   but that view is staff-JWT-only → every patient confirm/cancel would 401. Worse,
+   a patient-facing webhook must never PATCH arbitrary appointment ids. Workflow C
+   needs a **dedicated, webhook-auth'd, scoped endpoint** (e.g. "select offer N for
+   request R" validated server-side), mirroring what the Telegram path already does.
+2. **URL contract.** `01`–`04` append `/api/v1/...` to `DJANGO_API_BASE_URL`, while
+   `05`/`07` (and `.env.example`) expect the base to already include it. Canonical:
+   **`DJANGO_API_BASE_URL` includes `/api/v1`** — the rebuilds follow 05/07.
+3. **No fail-open secret fallbacks.** `01`–`04` embed `$env.DJANGO_WEBHOOK_SECRET ||
+   'clinic_dev_…'` — if the env var is ever unset, the secret silently becomes a known
+   string. This pattern is forbidden; 05's fail-closed pattern (`secret_not_configured`
+   → refuse) is the rule.
+4. **Callback prefix.** `02` sends `re_request_slots_{id}`; `telegram_service` parses
+   the `re_request_` prefix, producing id `slots_REQ-…` → 404. Use `re_request_{id}`
+   (exactly what Django's own Telegram formatter emits).
+5. **Nudge dedupe.** `SweepService.run_sweep()` returns every offer expiring within
+   15 minutes with no "already nudged" marker; a 60-second cron would text the patient
+   up to 15 times. Workflow B must only nudge once per offer (e.g. a `nudge_sent_at`
+   marker on the BookingRequest, or Django sends the nudge itself and the sweep stays
+   state-only).
+6. **Logging.** Both rebuilds write InteractionLog rows through `POST /interactions/`
+   exactly like 05's log nodes (same payload shape, `X-Webhook-Secret`, try/catch so
+   a Django outage never kills the patient flow).
 
 ## 7. Build & test order (recommended)
 

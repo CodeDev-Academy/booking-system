@@ -209,30 +209,21 @@ class PinUnlockView(views.APIView):
     """
     Validates 4-digit quick-PIN for the 20-minute privacy lock screen.
     Includes 3-Strike Brute-Force Shield (60s cooldown lockout & audit event).
-    Supports authenticated staff sessions or email+pin verification.
+
+    Phase 2.5 (system review finding #3): an active staff session is REQUIRED.
+    The lock overlay appears while the workstation still holds a valid JWT, so
+    the PIN is verified against the session's own staff account. An anonymous
+    caller can no longer enumerate staff emails (the old "not found" vs
+    "wrong PIN" split) or brute-force 4-digit PINs without a session; the
+    60-second throttle remains as a second layer.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsStaffAuthenticated]
 
     def post(self, request):
         serializer = PinUnlockSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        user = None
-        if request.user and getattr(request.user, 'is_authenticated', False) and getattr(request.user, 'is_active', False):
-            user = request.user
-        elif serializer.validated_data.get('email'):
-            email = serializer.validated_data['email'].lower().strip()
-            user = StaffUser.objects.filter(email=email).first()
-            if not user or not user.is_active:
-                return response.Response(
-                    {'error': 'UNAUTHORIZED', 'detail': 'Staff account not found or suspended.'},
-                    status=status.HTTP_401_UNAUTHORIZED
-                )
-        else:
-            return response.Response(
-                {'error': 'AUTHENTICATION_REQUIRED', 'detail': 'Active session or email required to unlock PIN.'},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+        user = request.user
 
         pin = serializer.validated_data['pin']
         lockout_key = f"pin_lockout_{user.id}"

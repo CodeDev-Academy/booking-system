@@ -1,6 +1,7 @@
 import csv
 import uuid
 import datetime
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
@@ -257,11 +258,26 @@ class ReassignLeaveView(APIView):
         if not new_doctor_id:
             return Response({'error': 'new_doctor_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        updated_appt = DisruptionService.reassign_to_colleague(
-            appointment_id=appointment.id,
-            new_doctor_id=new_doctor_id,
-            performed_by=request.user.email
-        )
+        updated_appt = None
+        try:
+            updated_appt = DisruptionService.reassign_to_colleague(
+                appointment_id=appointment.id,
+                new_doctor_id=new_doctor_id,
+                performed_by=request.user.email
+            )
+        except SlotConflictException as e:
+            # Phase 2.5: a colleague whose calendar clashes (or who is on
+            # leave) is a 409, not a silent double-booking on their calendar.
+            return Response({
+                'error': 'SLOT_CONFLICT',
+                'detail': str(e),
+                'conflicting_appointment': getattr(e.conflicting_appointment, 'appointment_code', None),
+            }, status=status.HTTP_409_CONFLICT)
+        except Doctor.DoesNotExist:
+            return Response(
+                {'error': 'DOCTOR_NOT_FOUND', 'detail': 'No doctor matches new_doctor_id.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response(AppointmentDetailSerializer(updated_appt).data, status=status.HTTP_200_OK)
 
@@ -270,6 +286,13 @@ class RescheduleAppointmentView(APIView):
     """
     POST /api/v1/appointments/{id}/reschedule/
     Reschedules appointment to a new safe slot and doctor.
+
+    Phase 2.5 (system review finding #4): a reschedule now carries the SAME
+    zero-double-booking guarantee as HoldService.acquire_slot — the target
+    doctor row is locked, availability is re-validated, and the two-way
+    overlap + sterilization-buffer conflict check runs before anything is
+    saved. A clash answers 409 SLOT_CONFLICT naming the conflicting block,
+    and the appointment is left exactly where it was.
     """
     permission_classes = [IsStaffAuthenticated]
 
@@ -279,26 +302,93 @@ class RescheduleAppointmentView(APIView):
         new_end = request.data.get('end_datetime') or request.data.get('end')
         new_doctor_id = request.data.get('doctor_id') or request.data.get('doctor')
 
-        if new_doctor_id:
+        def parse_dt(value, field):
+            if value is None or isinstance(value, datetime.datetime):
+                return value
             try:
-                appointment.doctor = Doctor.objects.get(id=new_doctor_id)
-            except (Doctor.DoesNotExist, ValueError):
-                doc = Doctor.objects.filter(name__icontains=str(new_doctor_id)).first()
-                if doc:
-                    appointment.doctor = doc
+                parsed = datetime.datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+            except (ValueError, TypeError):
+                raise ValueError(field)
+            if timezone.is_naive(parsed):
+                # A naive ISO string has no offset; anchor it to the server's
+                # timezone so the overlap math never compares naive vs aware.
+                parsed = timezone.make_aware(parsed)
+            return parsed
 
-        if new_start:
-            import datetime
-            if isinstance(new_start, str):
-                cleaned_start = new_start.replace('Z', '+00:00')
-                appointment.start_datetime = datetime.datetime.fromisoformat(cleaned_start)
-        if new_end:
-            import datetime
-            if isinstance(new_end, str):
-                cleaned_end = new_end.replace('Z', '+00:00')
-                appointment.end_datetime = datetime.datetime.fromisoformat(cleaned_end)
+        try:
+            new_start = parse_dt(new_start, 'start_datetime')
+            new_end = parse_dt(new_end, 'end_datetime')
+        except ValueError as field_err:
+            return Response(
+                {'error': 'INVALID_DATETIME', 'detail': f'Unparseable {field_err} value.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        appointment.save()
+        # Moving only the start keeps the original visit length instead of
+        # silently stretching or shrinking the appointment.
+        if new_start and not new_end:
+            new_end = new_start + (appointment.end_datetime - appointment.start_datetime)
+        if new_end and not new_start:
+            new_start = appointment.start_datetime
+        if (new_start or new_end) and new_end <= new_start:
+            return Response(
+                {'error': 'INVALID_TIME_BLOCK', 'detail': 'end must be after start.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            doctor = appointment.doctor
+            if new_doctor_id:
+                try:
+                    doctor = Doctor.objects.get(id=new_doctor_id)
+                except (Doctor.DoesNotExist, ValueError, TypeError):
+                    doctor = Doctor.objects.filter(name__icontains=str(new_doctor_id)).first()
+                    if doctor is None:
+                        return Response(
+                            {'error': 'DOCTOR_NOT_FOUND', 'detail': 'No doctor matches the given id or name.'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+
+            # Same guarantees as a fresh booking: lock the target doctor row,
+            # re-validate availability, purge stale holds, then conflict-check.
+            doctor = Doctor.objects.select_for_update().get(id=doctor.id)
+            if not doctor.is_active or doctor.is_on_leave:
+                return Response(
+                    {
+                        'error': 'SLOT_CONFLICT',
+                        'detail': f"Doctor {doctor.name} is currently unavailable or on leave.",
+                        'conflicting_appointment': None,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            HoldService.purge_expired_holds(doctor)
+            start = new_start or appointment.start_datetime
+            end = new_end or appointment.end_datetime
+            conflict = HoldService.find_slot_conflict(
+                doctor, start, end,
+                service=appointment.service,
+                exclude_appointment_id=appointment.id,
+            )
+            if conflict is not None:
+                return Response(
+                    {
+                        'error': 'SLOT_CONFLICT',
+                        'detail': (
+                            f"Slot conflict: the new time block overlaps active appointment "
+                            f"({conflict.appointment_code}) or its sterilization buffer."
+                        ),
+                        'conflicting_appointment': conflict.appointment_code,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            appointment.doctor = doctor
+            if new_start:
+                appointment.start_datetime = start
+            if new_end:
+                appointment.end_datetime = end
+            appointment.save()
 
         AuditLog.objects.create(
             entity_name='Appointment',

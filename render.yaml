@@ -5,7 +5,11 @@ services:
     rootDir: backend
     plan: free
     buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
-    startCommand: bash -c "python manage.py migrate && python manage.py seed_clinic && gunicorn core.wsgi:application"
+    # SSE deployment contract (system review finding #1): one process (the
+    # in-memory SSE bus and LocMemCache are per-process) with a thread pool
+    # for concurrent dashboard streams, and no request timeout so long-lived
+    # EventSource connections are never killed. Render requires binding $PORT.
+    startCommand: bash -c "python manage.py migrate && python manage.py seed_clinic && gunicorn core.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 0"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9

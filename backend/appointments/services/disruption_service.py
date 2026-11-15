@@ -8,6 +8,7 @@ from appointments.models import (
     AuditLog,
 )
 from .availability import AvailabilityEngine
+from .hold_service import HoldService, SlotConflictException
 
 
 class DisruptionService:
@@ -148,10 +149,40 @@ class DisruptionService:
     def reassign_to_colleague(cls, appointment_id, new_doctor_id, performed_by="receptionist"):
         """
         1-Click Reassignment of an impacted appointment to an available qualified colleague.
+
+        Phase 2.5 (system review finding #4): the move now carries the same
+        zero-double-booking guarantee as a fresh booking — the TARGET doctor
+        row is locked, availability is re-validated, and the colleague's
+        calendar is conflict-checked (overlap + sterilization buffer) at the
+        appointment's existing time before anything is saved. A clash raises
+        SlotConflictException, which the view maps to 409.
         """
         appointment = Appointment.objects.select_for_update().get(id=appointment_id)
-        new_doctor = Doctor.objects.get(id=new_doctor_id)
         old_doctor_name = appointment.doctor.name
+
+        # Lock the target doctor row (same serialization as HoldService.acquire_slot).
+        new_doctor = Doctor.objects.select_for_update().get(id=new_doctor_id)
+
+        if not new_doctor.is_active or new_doctor.is_on_leave:
+            raise SlotConflictException(
+                f"Doctor {new_doctor.name} is currently unavailable or on leave."
+            )
+
+        HoldService.purge_expired_holds(new_doctor)
+        conflict = HoldService.find_slot_conflict(
+            new_doctor,
+            appointment.start_datetime,
+            appointment.end_datetime,
+            service=appointment.service,
+            exclude_appointment_id=appointment.id,
+        )
+        if conflict is not None:
+            raise SlotConflictException(
+                f"Colleague {new_doctor.name} already has an appointment "
+                f"({conflict.appointment_code}) or its sterilization buffer overlapping "
+                f"this time block.",
+                conflicting_appointment=conflict,
+            )
 
         appointment.doctor = new_doctor
         appointment.save(update_fields=['doctor', 'updated_at'])
