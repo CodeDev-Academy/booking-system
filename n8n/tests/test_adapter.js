@@ -28,12 +28,16 @@ const BASE_SRC = {
   want_voice: false,
 };
 
-function run(envVars, overrides) {
+function run(envVars, overrides, staticData) {
   const src = Object.assign({}, BASE_SRC, overrides || {});
+  // One object stands in for n8n's workflow static data. Pass the SAME object to two
+  // runs to simulate two dispatches inside the 10-minute dedupe window; omit it and
+  // every run starts with an empty window (the default for tests that don't care).
+  const store = staticData || {};
   const sandbox = {
     $env: envVars,
     $input: { all: () => [{ json: src }] },
-    $getWorkflowStaticData: () => ({}),
+    $getWorkflowStaticData: () => store,
     console,
   };
   return vm.runInNewContext('(function () {\n' + CODE + '\n})()', sandbox);
@@ -138,6 +142,56 @@ out = run({ PROVIDER_MOCK: 'true' }, {
 });
 check('route whatsapp', out[0].json.provider_request.route === 'whatsapp', out[0].json.provider_request.route);
 check('one quick reply', out[0].json.provider_request.body.template.components.length === 2, out[0].json.provider_request.body.template.components.length);
+
+// --- Pattern M: the dedupe window is stamped by SENDS, not by attempts (3.4) -----
+// A leg that is skipped never reached a provider, so it must leave the window open:
+// otherwise the operator fixes the cause, re-dispatches two minutes later, and the
+// patient silently gets nothing (duplicate_dispatch is deliberately unlogged).
+const ONE = { slots_count: 1, options: [{ number: 1, label: '1) Sat 9:30' }], whatsapp_params: ['1) Sat 9:30'] };
+const NONE = { slots_count: 0, options: [], whatsapp_params: [] };
+const SMS_ONLY = { want_whatsapp: false, want_sms: true };
+
+console.log('M. zero options must not burn the dedupe window');
+let win = {};
+out = run({ PROVIDER_MOCK: 'true' }, Object.assign({}, NONE, SMS_ONLY), win);
+check('M1 zero options -> no_slots', out[0].json.provider_request.skip_reason === 'no_slots', out[0].json.provider_request.skip_reason);
+check('M2 a skipped leg stamps nothing', Object.keys(win.seen || {}).length === 0, JSON.stringify(win.seen));
+
+out = run({ PROVIDER_MOCK: 'true' }, Object.assign({}, ONE, SMS_ONLY), win);
+check('M3 re-dispatch after a skip still sends', out[0].json.provider_request.route === 'sms', out[0].json.provider_request.route + '/' + out[0].json.provider_request.skip_reason);
+check('M4 and is not called a duplicate', out[0].json.adapter_meta.duplicate === false, String(out[0].json.adapter_meta.duplicate));
+check('M5 the real send stamps the window', Boolean(win.seen && win.seen['REQ-2026-0099:sms']), JSON.stringify(win.seen));
+
+out = run({ PROVIDER_MOCK: 'true' }, Object.assign({}, ONE, SMS_ONLY), win);
+check('M6 a repeat of a real send is still duplicate_dispatch', out[0].json.provider_request.skip_reason === 'duplicate_dispatch', out[0].json.provider_request.skip_reason);
+check('M7 and reports itself as a duplicate', out[0].json.adapter_meta.duplicate === true, String(out[0].json.adapter_meta.duplicate));
+
+console.log('M8. fixing the provider config unblocks an immediate re-dispatch');
+win = {};
+out = run({ PROVIDER_MOCK: 'false' }, {}, win);
+check('M8 unconfigured skips', out[0].json.provider_request.skip_reason === 'provider_not_configured', out[0].json.provider_request.skip_reason);
+check('M9 unconfigured stamps nothing', Object.keys(win.seen || {}).length === 0, JSON.stringify(win.seen));
+out = run({
+  PROVIDER_MOCK: 'false', WHATSAPP_PHONE_NUMBER_ID: '123', WHATSAPP_ACCESS_TOKEN: 'tok',
+  WHATSAPP_TEMPLATE_NAME: 'clinic_slot_offer', WHATSAPP_TEMPLATE_LANG: 'en',
+}, {}, win);
+check('M10 creds pasted -> re-dispatch sends', out[0].json.provider_request.route === 'whatsapp', out[0].json.provider_request.route + '/' + out[0].json.provider_request.skip_reason);
+
+console.log('M11. adding the missing phone unblocks an immediate re-dispatch');
+win = {};
+out = run({ PROVIDER_MOCK: 'true' }, { patient_phone: '' }, win);
+check('M11 phoneless skips', out[0].json.provider_request.skip_reason === 'missing_phone', out[0].json.provider_request.skip_reason);
+check('M12 phoneless stamps nothing', Object.keys(win.seen || {}).length === 0, JSON.stringify(win.seen));
+out = run({ PROVIDER_MOCK: 'true' }, {}, win);
+check('M13 phone added -> re-dispatch sends', out[0].json.provider_request.route === 'whatsapp', out[0].json.provider_request.route + '/' + out[0].json.provider_request.skip_reason);
+
+console.log('M14. pruning and the empty case still behave');
+win = { seen: { 'REQ-2026-0099:sms': Date.now() - 11 * 60 * 1000 } };
+out = run({ PROVIDER_MOCK: 'true' }, Object.assign({}, ONE, SMS_ONLY), win);
+check('M14 an 11-minute-old stamp is pruned, not honoured', out[0].json.provider_request.route === 'sms', out[0].json.provider_request.route + '/' + out[0].json.provider_request.skip_reason);
+win = {};
+out = run({ PROVIDER_MOCK: 'true' }, { chat_id: '12345' }, win);
+check('M15 no_active_channel stamps nothing', Object.keys(win.seen || {}).length === 0, JSON.stringify(win.seen));
 
 console.log(failures ? '\nFAILED: ' + failures : '\nALL PASS');
 process.exit(failures ? 1 : 0);
