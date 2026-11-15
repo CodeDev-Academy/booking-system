@@ -547,6 +547,25 @@ Layer 4 contract — enforcement (opt-in, default OFF):
     reception approves no explicit slots and the engine can legitimately find none, so
     this is a real path. `no_slots` is row-worthy: it lands in Needs Attention as a
     `queued` row. Verified live with 1-, 2- and 0-option dispatches; see `TEST.md` T-712b.
+11. **Readable provider failures** — a failed send is a record reception can act on, not
+    n8n's error wrapper. ✅ Done (Phase 3 / 3.3). Grounded on two live failure probes:
+    n8n's error object is only `{ message, name, stack }` (plus `code` on transport
+    failures) — there is **no** `error.status`/`httpCode`, the HTTP status exists *only*
+    as the message prefix, and the response body arrives as a **JSON string literal**, so
+    it needs two real `JSON.parse` steps. The previous `.replace(/\\"/g, '"')` was not a
+    valid decode: it corrupts nested escaped quotes, the parse throws, and reception read
+    `404 - "{\"code\":404,...\"hint\":\"The workflow must be active..."` cut at 300 chars.
+    The three `Log * Interaction` nodes now share one canonical classifier (byte-identical,
+    asserted by the harness — n8n has no shared module, so the block is duplicated by
+    design): **status prefix → class label** (`Provider authentication failed`,
+    `endpoint not found`, `rate limit reached`, `server error` for 5xx, …), **transport
+    `code` → plain words** (`ECONNREFUSED`/`ENOTFOUND`/`ETIMEDOUT`/`ECONNABORTED`/
+    `ECONNRESET`), then **the provider's own sentence** out of the parsed body
+    (`detail` → `message` → `error_description`/`description`/`hint` →
+    `error.message`/`error.title`/`error.error_data.details` → `errors[]`), flattened to
+    one line and capped at 300 chars. An `ok:false` answer without an exception keeps the
+    provider's `error_message` verbatim. `06`/`07` need no equivalent (they never format a
+    provider HTTP failure). See `TEST.md` T-712c.
 
 ### 5.8 Edge cases owned by this integration
 
@@ -558,7 +577,9 @@ Layer 4 contract — enforcement (opt-in, default OFF):
 - DND / invalid number → `failed` (not `no_answer`).
 - Duplicate or out-of-order callbacks → upsert by `external_ref`, status rank enforced.
 - Provider key missing/invalid → the branch logs `failed` and the request appears in Needs
-  Attention; never silently succeeds.
+  Attention; never silently succeeds. Since 3.3 the class leads the sentence
+  (`Provider authentication failed: Invalid API key`), so a bad key is distinguishable at
+  a glance from a 429, a 5xx or a dead endpoint.
 - NDPR: recordings/transcripts are sensitive; consent line in the agent script, retention policy
   before storing them in InteractionLog.
 

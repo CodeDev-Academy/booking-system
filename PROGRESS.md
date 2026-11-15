@@ -1328,6 +1328,50 @@ node's `sms_body` out of the executions - exact texts confirmed, the 0-option ru
 to `skip/no_slots` and wrote a `queued` row in Django. Workflow `valid: true`, 20 nodes,
 0 errors / 0 warnings.
 
-**State.** Full suite **200 tests / 200 pass** (3.1). Live dispatcher in sync with the repo
-export; test rows cleaned up. Next: 3.3 (`error.status` before the regex in the log nodes),
-then 3.4-3.8.
+**3.3 - Provider failures read like sentences.** The three `Log * Interaction` nodes are
+what puts a failed send in front of reception, so their `error_detail` is a piece of UI,
+not a log line. Grounding this against real failures changed the fix twice, so the
+evidence comes first: n8n's failed-HTTP error object is only `{ message, name, stack }` -
+plus `code` for transport failures - with **no** `error.status`, no `httpCode`, and no
+`description`. The status exists *only* as the message prefix, and the response body is
+embedded as a **JSON string literal**. Two live probes (a 404 and a closed port, executed
+through the real dispatcher and then removed) showed exactly that.
+
+That kills the two assumptions the old code was built on. First, there is no status field
+to read, so every failure looked alike: a bad key (the partner fixes it), a 429 (retry
+later), a dead endpoint and a DNS failure all produced the same blob. Second, the
+hand-rolled `.replace(/\\"/g, '"')` is not a valid decode of a JSON string literal - it
+mangles nested escaped quotes, so `JSON.parse` throws (`Expected ',' or '}' after property
+value in JSON at position 46` against a body that quotes `"GET dispatch-offers"`) and the
+`catch` returned the raw wrapper: `404 - "{\"code\":404,...\"hint\":\"The workflow must be
+active..."`, cut mid-word at 300 chars. Worse, the SMS and Voice variants read
+`parsed.error` directly, so a provider nesting `error` as an object gave reception
+`[object Object]`.
+
+All three nodes now share one canonical classifier: status prefix -> class label
+(`authentication failed`, `endpoint not found`, `rate limit reached`, `server error` for
+5xx, ...), transport `code` -> plain words (`ECONNREFUSED`, `ENOTFOUND`, `ETIMEDOUT`), then
+the provider's own sentence out of a genuine two-step parse, flattened to one line and
+capped at 300 chars. An `ok:false` answer with no exception keeps the provider's
+`error_message` verbatim. n8n has no shared module, so the block is duplicated by design -
+and the harness asserts it is byte-identical in all three, which is the only thing that
+stops the copies drifting. The `parse` also had to move *before* any tidying: an early
+build tidied the message first, which unescaped the nested quotes and broke the literal
+again.
+
+**Verification.** `test_lognodes.js` runs the shipped code from the workflow JSON with
+stubbed `$input`/`$`/`$env`/`helpers.httpRequest`: 121 assertions (39 per log node + 4
+drift guards), 57 of them red against the shipped code - including the probe-147 body
+verbatim, `[object Object]`, and the plain-text 500. Then live: both failure classes
+re-run through the real dispatcher and read back from Django, `error_detail` =
+`Provider endpoint not found: The requested webhook "POST definitely-not-registered" is
+not registered.` (102 chars) and `Provider endpoint refused the connection` (40 chars),
+17/17; SMS send URL restored byte-exact afterwards; workflow `valid: true`, 20 nodes,
+0 errors / 0 warnings. No Django change was needed - and none was possible: the write
+serializer is an explicit field list, so a new `error_status` key would have been silently
+dropped, which is why the class lives inside the sentence instead of beside it.
+
+**State.** Full suite **200 tests / 200 pass** (3.3 touches n8n only, so this was a
+regression guard; `python manage.py test --parallel 1` exits 0). Live dispatcher in sync
+with the repo export; test rows cleaned up. Next: 3.4 (dedupe stamping only on real
+sends), then 3.5-3.8.
