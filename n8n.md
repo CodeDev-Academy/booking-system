@@ -556,8 +556,8 @@ Layer 4 contract — enforcement (opt-in, default OFF):
     valid decode: it corrupts nested escaped quotes, the parse throws, and reception read
     `404 - "{\"code\":404,...\"hint\":\"The workflow must be active..."` cut at 300 chars.
     The three `Log * Interaction` nodes now share one canonical classifier (byte-identical,
-    asserted by the harness — n8n has no shared module, so the block is duplicated by
-    design): **status prefix → class label** (`Provider authentication failed`,
+    asserted by the harness — `n8n/tests/test_lognodes.js`; n8n has no shared module, so the
+    block is duplicated by design): **status prefix → class label** (`Provider authentication failed`,
     `endpoint not found`, `rate limit reached`, `server error` for 5xx, …), **transport
     `code` → plain words** (`ECONNREFUSED`/`ENOTFOUND`/`ETIMEDOUT`/`ECONNABORTED`/
     `ECONNRESET`), then **the provider's own sentence** out of the parsed body

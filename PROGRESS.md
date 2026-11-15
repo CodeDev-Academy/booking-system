@@ -1371,6 +1371,16 @@ not registered.` (102 chars) and `Provider endpoint refused the connection` (40 
 serializer is an explicit field list, so a new `error_status` key would have been silently
 dropped, which is why the class lives inside the sentence instead of beside it.
 
+**Harnesses are now in the repo.** The three node-level harnesses existed only in `%TEMP%`,
+which made the drift guard a promise nobody could keep: `TEST.md` and the build sheet
+reference them by name, and the B/C rebuilds are supposed to fail on a stale copy. They now
+live in `n8n/tests/` with repo-relative paths and a `README.md` stating the rules. Two
+things surfaced while moving them: `test_adapter.js` was reading a dumped `adapter_v2.js`
+(byte-identical today by luck, and exactly the pattern that makes a harness lie), so it now
+reads the adapter node out of the workflow export like the others; and the assertion counts
+recorded for 3.2 (24 / 51) never matched the files — re-measured from their own output they
+are 22 / 47 / 121, and `TEST.md` T-712b is corrected.
+
 **State.** Full suite **200 tests / 200 pass** (3.3 touches n8n only, so this was a
 regression guard; `python manage.py test --parallel 1` exits 0). Live dispatcher in sync
 with the repo export; test rows cleaned up. Next: 3.4 (dedupe stamping only on real

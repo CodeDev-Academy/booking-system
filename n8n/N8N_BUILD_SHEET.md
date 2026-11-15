@@ -69,8 +69,8 @@ Responses: `201` created · `200` re-delivery (updated existing row) · `401` ba
 `error_detail` is composed on the n8n side, and only n8n sees the provider's failure
 shape. **Do not re-derive it**: copy the canonical `provider-error-classification` block
 from `05`'s `Log * Interaction` nodes verbatim (markers `// >>> provider-error-classification`
-… `// <<< provider-error-classification`). See §6.1 item 7 for why the obvious
-`.replace(/\\"/g, '"')` is wrong.
+… `// <<< provider-error-classification`). `n8n/tests/test_lognodes.js` fails on a drifted
+copy. See §6.1 item 7 for why the obvious `.replace(/\\"/g, '"')` is wrong.
 
 Full read API (for debugging what you logged): `GET /api/v1/interactions/?patient_phone=+234...&limit=50`
 (staff JWT, not secret — use the dashboard instead).
@@ -622,8 +622,8 @@ review. Their flaws are **not to be patched** — the skeletons get rebuilt as W
    is embedded as a **JSON string literal**, so it needs two real `JSON.parse` steps.
    Never reintroduce `.replace(/\\"/g, '"')` before `JSON.parse`: it corrupts nested
    escaped quotes, the parse throws, and the raw wrapper (`404 - "{\"code\":404,…`)
-   reaches reception. `test_lognodes.js` asserts the block is byte-identical across every
-   copy, so a drifted paste fails the harness.
+   reaches reception. `n8n/tests/test_lognodes.js` asserts the block is byte-identical
+   across every copy, so a drifted paste fails the harness.
 
 ## 7. Build & test order (recommended)
 

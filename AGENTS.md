@@ -120,7 +120,9 @@ clinic-booking-system/
     ├── intake_webhook.json
     ├── hold_and_offer_expiry_cron.json
     ├── reminder_dispatcher.json
-    └── patient_response_handler.json
+    ├── patient_response_handler.json
+    └── tests/                 # Node-only harnesses that run the shipped node sources
+                               # (`node n8n/tests/test_lognodes.js`; never a dumped copy)
 ```
 
 ---

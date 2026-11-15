@@ -1,0 +1,48 @@
+# n8n workflow harnesses
+
+Node-only harnesses that run the **shipped** JavaScript from `n8n/*.json` against stubbed
+n8n globals. No n8n instance, no restart, no browser, no database.
+
+## Run
+
+```
+node n8n/tests/test_format.js
+node n8n/tests/test_adapter.js
+node n8n/tests/test_lognodes.js
+```
+
+Exit code `0` = every assertion passed, `1` = at least one failed. Each assertion prints
+`ok` or `FAIL`; failures never stop the run, so one pass shows every break at once.
+
+| Harness | Node under test | Assertions |
+|---|---|---|
+| `test_format.js` | `Format Offers & Telegram Buttons` — patient-facing grammar per option count | 22 |
+| `test_adapter.js` | `Provider Config & Adapter` — routing, guards, skip reasons, request body | 47 |
+| `test_lognodes.js` | the three `Log * Interaction` nodes — provider error classification | 121 |
+
+Counts are the harness's own output (`ok` lines), not an estimate.
+
+## Golden rules
+
+1. **Never test a copy.** Every harness reads the node's `jsCode` straight out of
+   `n8n/05_slot_offer_dispatcher.json`. `test_adapter.js` used to read a dumped
+   `adapter_v2.js` instead — and it happened to be byte-identical, which is luck, not a
+   guarantee. A dump drifts the moment the node changes, and a harness that reads a stale
+   dump reports success for code that no longer exists.
+2. **Red first.** When a node changes, add the assertion *before* the fix and watch it
+   fail. The recorded deltas live in `TEST.md` (step 3.3: 57 red before the fix, 0 after).
+3. **The drift guard is load-bearing.** `test_lognodes.js` asserts the
+   `provider-error-classification` block is byte-identical in all three log nodes. Workflows
+   B and C must copy that block verbatim (`N8N_BUILD_SHEET.md` §6.1 item 7); a stale paste
+   fails F2 rather than silently degrading the dashboard.
+
+## Adding a harness
+
+Read the workflow JSON, run the node's source with `vm.runInNewContext` and the globals it
+actually uses (`$input`, `$`, `$env`, and `this.helpers.httpRequest` as the context), stub
+the outbound call so you can assert on the body it *would* post, then print `ok`/`FAIL` per
+assertion and `process.exit(failures ? 1 : 0)`.
+
+Fixtures must be built the way n8n builds them, not the way you imagine them: for HTTP
+failures that means `{ message: '<status> - ' + JSON.stringify(body), name, stack }`, since
+the status only exists as a prefix and the body is a JSON string literal.
