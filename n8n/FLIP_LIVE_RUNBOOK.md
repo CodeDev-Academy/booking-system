@@ -264,9 +264,9 @@ Once SMS, voice and callbacks are green:
 attempted"* — the receptionist asked for the channel, the system refused to fire it, and
 the row says why in plain language (`summary`) plus a machine code (`error_detail`:
 `outside_call_window` / `provider_not_configured` / `whatsapp_template_not_configured` /
-`missing_phone`). They are deliberately **not** failures: nothing was sent, nothing was
-billed. A later real send for the same channel creates its own row, so the history stays
-honest ("first attempt held, second sent").
+`missing_phone` / `no_slots`). They are deliberately **not** failures: nothing was sent,
+nothing was billed. A later real send for the same channel creates its own row, so the
+history stays honest ("first attempt held, second sent").
 
 ---
 

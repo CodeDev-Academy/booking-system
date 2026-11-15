@@ -4174,6 +4174,85 @@ class InteractionLogAPITests(APITestCase):
         self.assertEqual(log.booking_request, self.booking)
         self.assertEqual(InteractionLog.objects.count(), 1)
 
+    def test_id_only_advancing_event_preserves_links(self):
+        # Phase 3 (hardening, link-clobber quirk from 2.1): a provider callback
+        # that identifies the message by external_ref alone (typical VoiceBip
+        # call outcome: id + status + duration, no request/appointment codes)
+        # must not UNLINK a row that already carries its BookingRequest.
+        self._post_with_secret({
+            'provider': 'voicebip',
+            'channel': 'voice',
+            'status': 'sent',
+            'request_code': 'REQ-2026-0042',
+            'patient_phone': '+2348030001122',
+            'external_ref': 'VB-LINKKEEP-1',
+        })
+
+        # Same ref advances the row — carried codes: none.
+        res = self._post_with_secret({
+            'provider': 'voicebip',
+            'channel': 'voice',
+            'status': 'answered',
+            'external_ref': 'VB-LINKKEEP-1',
+            'call_duration_seconds': 62,
+        })
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        log = InteractionLog.objects.get(external_ref='VB-LINKKEEP-1')
+        self.assertEqual(log.status, 'answered')
+        self.assertEqual(log.call_duration_seconds, 62)
+        self.assertEqual(log.patient_phone, '+2348030001122')  # reused, unchanged behavior
+        self.assertEqual(log.booking_request, self.booking)    # <-- the fix under test
+
+    def test_new_row_without_codes_stays_unlinked(self):
+        # Pinned unchanged behavior: a genuinely unlinked event still creates
+        # an unlinked row (preservation only applies to rows that had a link).
+        res = self._post_with_secret({
+            'provider': 'voicebip',
+            'channel': 'sms',
+            'status': 'delivered',
+            'patient_phone': '+2348030001122',
+            'external_ref': 'VB-NOLINK-1',
+        })
+
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        log = InteractionLog.objects.get(external_ref='VB-NOLINK-1')
+        self.assertIsNone(log.booking_request)
+
+    def test_event_with_code_relinks_existing_row(self):
+        # Preservation must never block legitimate re-linking: an advancing
+        # event that carries a resolvable request_code wins, even over a link
+        # the row already had.
+        self._post_with_secret({
+            'provider': 'voicebip',
+            'channel': 'voice',
+            'status': 'sent',
+            'request_code': 'REQ-2026-0042',
+            'patient_phone': '+2348030001122',
+            'external_ref': 'VB-RELINK-1',
+        })
+        other = BookingRequest.objects.create(
+            request_code='REQ-2026-0099',
+            patient_name='Relink Target',
+            patient_phone='+2348099990099',
+            service=self.service,
+            status='awaiting_review',
+        )
+
+        res = self._post_with_secret({
+            'provider': 'voicebip',
+            'channel': 'voice',
+            'status': 'answered',
+            'request_code': other.request_code,
+            'external_ref': 'VB-RELINK-1',
+            'call_duration_seconds': 30,
+        })
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        log = InteractionLog.objects.get(external_ref='VB-RELINK-1')
+        self.assertEqual(log.status, 'answered')
+        self.assertEqual(log.booking_request, other)
+
     def test_post_invalid_channel_rejected(self):
         bad = dict(self.valid_payload)
         bad['channel'] = 'carrier_pigeon'

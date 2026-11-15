@@ -525,7 +525,8 @@ Layer 4 contract — enforcement (opt-in, default OFF):
    `status: queued` InteractionLog row (`external_ref: skip-<channel>-<request_code>`,
    plain-language summary, reason code in `error_detail`) for the actionable reasons
    (`outside_call_window`, `provider_not_configured`, `whatsapp_template_not_configured`,
-   `missing_phone`); `duplicate_dispatch` and `no_active_channel` stay unlogged by decision.
+   `missing_phone`, and since Phase 3 `no_slots`); `duplicate_dispatch` and
+   `no_active_channel` stay unlogged by decision.
    The voice probe's error output feeds `Log Voice Probe Failure` — a `failed` row ("voice
    call suppressed, fail closed") that lands in Needs Attention and closed the workflow's
    last validation warning. Supporting Django changes: `POST /interactions/` accepts a
@@ -533,6 +534,19 @@ Layer 4 contract — enforcement (opt-in, default OFF):
    `resolve_channel_availability` marks phone-dependent channels unreachable ("No phone
    number on file for this patient.") so reception learns it *before* dispatch. Verified
    live (all four reasons + the probe failure); see `TEST.md` T-710.
+10. **Patient-facing copy correctness** — the SMS text is ours (VoiceBip is only the
+    delivery pipe; the voice leg is the opposite, where the VoiceBip agent speaks its own
+    script). ✅ Done (Phase 3 / 3.2). `Format Offers & Telegram Buttons` now builds the
+    reply sentence from the actual option count — `Reply 1`, `Reply 1 or 2`,
+    `Reply 1, 2, or 3`, `Reply 1, 2, 3, or 4` — instead of hardcoding the first two
+    numbers (which read "Reply 1, 2, or 1" for a single option and "Reply 1, 2, or 2" for
+    two). Singular/plural is honoured for the slot count and the expiry
+    ("1 minute" / "60 minutes"). With **zero** options the text never claims options
+    exist, and the adapter's `no_slots` guard (most fundamental skip reason) stops every
+    channel from firing at all — Django falls back to the availability engine when
+    reception approves no explicit slots and the engine can legitimately find none, so
+    this is a real path. `no_slots` is row-worthy: it lands in Needs Attention as a
+    `queued` row. Verified live with 1-, 2- and 0-option dispatches; see `TEST.md` T-712b.
 
 ### 5.8 Edge cases owned by this integration
 
@@ -632,6 +646,14 @@ number). Since Phase 2, a brand-new row may also omit the phone **only** when
 `status=queued` **and** it links a request (`request_code`) — that is the skip-visibility
 contract: a "held back, not attempted" row has no destination number because nothing was
 sent. Any other new row without a phone is still rejected `400`.
+
+**Links survive id-only events** (Phase 3 / 3.1). A rank-advancing event that identifies the
+message by `external_ref` alone — the typical VoiceBip call outcome (id + status +
+duration, no request/appointment code) — no longer unlinks a row from its
+`BookingRequest`/`Appointment`. `null` in the event means "said nothing about the link";
+a non-`null` value still wins, including deliberate re-linking. Without this, the
+dashboard lost the request timeline for exactly the callbacks our own normalizer is least
+likely to enrich.
 
 **Vocabulary tables** live in the `Verify & Normalize Provider Event` Code node
 (`STATUS_ALIASES`, `CHANNEL_ALIASES`). Only those two tables need editing when the partner's

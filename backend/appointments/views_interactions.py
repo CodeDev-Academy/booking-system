@@ -111,6 +111,16 @@ class InteractionListCreateView(APIView):
                 # concurrent n8n re-deliveries both pass the .first() check and the second
                 # create() crash with IntegrityError. update_or_create handles both outcomes.
                 defaults = {k: v for k, v in validated.items() if k != 'external_ref'}
+                # Phase 3 (hardening): a rank-advancing event that identifies the
+                # message only by external_ref (a typical VoiceBip call outcome:
+                # id + status + duration, no codes) must not UNLINK a row that
+                # already carries a request/appointment link. None in the event
+                # means "said nothing about the link", not "clear it" — a
+                # non-None value still wins, including re-linking.
+                if existing is not None:
+                    for link_field in ('booking_request', 'appointment'):
+                        if defaults.get(link_field) is None and getattr(existing, link_field, None):
+                            defaults[link_field] = getattr(existing, link_field)
                 instance, created = InteractionLog.objects.update_or_create(
                     external_ref=external_ref,
                     defaults=defaults,

@@ -1280,3 +1280,54 @@ verified live.
 Frontend `npm run build` clean. The privacy-lock honesty note and the gunicorn scaling
 trigger are documented where they'll be looked for. Next: Phase 3 hardening as planned
 (now T-712), then Workflow C.
+
+---
+
+## 2026-11-15 - Phase 3: hardening (in progress)
+
+**3.1 - Callback upsert link preservation.** The link-clobber quirk found during Phase 2.1
+is closed. `POST /interactions/` resolves `request_code`/`appointment_code` into FK links
+before the upsert, so an event carrying no codes set them to `None` - and because the
+rank-advancing path passes everything through `update_or_create(defaults=...)`, a
+legitimate id-only callback (VoiceBip call outcome: id + status + duration, no metadata)
+silently unlinked the row from its BookingRequest. The dashboard then lost the row from
+the request timeline. The fill-blanks path already skipped `None`, which is why only the
+advancing path was affected; phone was already protected. Now `None` in an incoming event
+means "said nothing about the link" and the existing link is preserved, while a non-`None`
+value still wins - deliberate re-linking is pinned by its own test so the fix cannot
+over-reach. Three tests were written first (detector failed with the link clobbered to
+`None`), then the one-block fix; `InteractionLogAPITests` 25/25 and the full suite
+**200 tests / 200 pass**.
+
+**3.2 - Patient-facing SMS grammar, and no-slots fail-closed.** Worth restating the
+ownership split, because it decides where this fix belongs: for the **voice** leg the
+VoiceBip agent speaks its own script and we only pass variables; for **WhatsApp** Meta
+forces an approved template; for **SMS** we compose the text ourselves and VoiceBip is
+only the delivery pipe. So the wording is ours to correct. `Format Offers & Telegram
+Buttons` now derives the reply sentence from the real option count - `Reply 1`,
+`Reply 1 or 2`, `Reply 1, 2, or 3`, `Reply 1, 2, 3, or 4` - instead of hardcoding the
+first two numbers, which produced "Reply 1, 2, or 1" for a single option and
+"Reply 1, 2, or 2" for two. Singular/plural is honoured for both the slot count ("slot is
+ready" vs "slots are ready") and the expiry ("1 minute" vs "60 minutes").
+
+Grounding the grammar surfaced a reachable empty-dispatch path: when the receptionist
+approves no explicit slots Django falls back to the availability engine, which can
+legitimately find none - and every channel would then have texted/called the patient with
+an empty option list ("Reply 1, 2, or 0"). The adapter gained a `no_slots` skip reason as
+the most fundamental check (ahead of `duplicate_dispatch`, because with nothing to offer
+nothing should fire), the zero-option text never claims options exist, and `no_slots` is
+row-worthy in `Log Skipped Channel`, so reception sees a `queued` row instead of silence.
+The deeper Django question - a request marked `slots_offered` with zero offers - is
+recorded for a decision rather than silently changed here.
+
+**Verification.** Format harness 24/24 (12 failed against the shipped text first),
+adapter harness 51/51 (13 new assertions: `no_slots` on every channel, precedence over
+`missing_phone`/`provider_not_configured`, and one-option dispatch still normal), then
+live: 1-, 2- and 0-option dispatches through the real webhook, reading the shipped Format
+node's `sms_body` out of the executions - exact texts confirmed, the 0-option run routed
+to `skip/no_slots` and wrote a `queued` row in Django. Workflow `valid: true`, 20 nodes,
+0 errors / 0 warnings.
+
+**State.** Full suite **200 tests / 200 pass** (3.1). Live dispatcher in sync with the repo
+export; test rows cleaned up. Next: 3.3 (`error.status` before the regex in the log nodes),
+then 3.4-3.8.

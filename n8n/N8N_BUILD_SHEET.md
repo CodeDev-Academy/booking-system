@@ -297,7 +297,7 @@ hardcodes a URL, key or sender id; everything comes from `$env`):
 |---|---|
 | `provider_channel` | `whatsapp` \| `sms` \| `voice` (the item's channel) |
 | `provider_request.route` | same value, or `skip` |
-| `provider_request.skip_reason` | `duplicate_dispatch` \| `missing_phone` \| `outside_call_window` \| `provider_not_configured` \| `whatsapp_template_not_configured` \| `no_active_channel` \| `patient_already_engaged` \| `voice_payload_missing` |
+| `provider_request.skip_reason` | `no_slots` \| `duplicate_dispatch` \| `missing_phone` \| `outside_call_window` \| `provider_not_configured` \| `whatsapp_template_not_configured` \| `no_active_channel` \| `patient_already_engaged` \| `voice_payload_missing` |
 | `provider_request.{method,url,headers,body}` | the exact HTTP call the send node makes (live since D-3) |
 | `adapter_meta` | `channel, provider_mock, provider_mock_fail, configured, voice_in_window, duplicate, request_id, external_ref_hint, missing_env[]` |
 | `voice_guard` (voice branch only) | `checked, checked_at, wait_seconds, should_skip, request_status, has_active_hold, has_confirmed_booking, appointment_code` |
@@ -386,7 +386,7 @@ Django**, and the suppressed voice call is a **Needs Attention** row:
 
 - **`Log Skipped Channel`** (switch `skip` output) writes one `status: queued` InteractionLog
   row per actionable reason — `outside_call_window`, `provider_not_configured`,
-  `whatsapp_template_not_configured`, `missing_phone` — with `summary: "Held back: <plain
+  `whatsapp_template_not_configured`, `missing_phone`, `no_slots` — with `summary: "Held back: <plain
   language>"`, `error_detail: <reason code>` and a deterministic `external_ref`
   (`skip-<channel>-<request_code>`, so repeats upsert instead of piling up). By decision,
   `duplicate_dispatch` (the original send row exists) and `no_active_channel` (the Telegram
@@ -395,9 +395,11 @@ Django**, and the suppressed voice call is a **Needs Attention** row:
   `external_ref: probe-<request_code>`, plain-language `error_detail` ("Status probe
   failed — voice call suppressed (fail closed): …") — so a suppressed call surfaces in
   Needs Attention instead of disappearing. This is what closed the last validation warning.
-- **`missing_phone` guard** in the adapter: precedence `duplicate_dispatch` →
+- **`missing_phone` guard** in the adapter: precedence `no_slots` → `duplicate_dispatch` →
   `missing_phone` → `outside_call_window` → `provider_not_configured` →
-  `whatsapp_template_not_configured`; a skipped leg builds no URL/body.
+  `whatsapp_template_not_configured`; a skipped leg builds no URL/body. `no_slots` leads
+  because with zero candidate options there is nothing to say on any channel (Django's
+  engine fallback can legitimately find none).
 - **Django side:** `POST /interactions/` accepts a phoneless row **only** when
   `status=queued` AND it links a request (skip rows are internal bookkeeping; a `sent`
   row without a phone is still 400), and `resolve_channel_availability` marks sms/voice
@@ -417,7 +419,7 @@ normal dispatch → sends + `sent` rows, no queued rows. Adapter harness 38/38.
 
 | Step | Node | Detail |
 |---|---|---|
-| 1 | Code | ✅ Done — `Format Offers & Telegram Buttons` builds labels, `options[]`, `options_text`, `sms_body`, `whatsapp_params`, `want_*`. |
+| 1 | Code | ✅ Done — `Format Offers & Telegram Buttons` builds labels, `options[]`, `options_text`, `sms_body`, `whatsapp_params`, `want_*`. Since Phase 3 the reply sentence is derived from the real option count (`Reply 1` / `Reply 1 or 2` / `Reply 1, 2, or 3`) with singular/plural for the slot count and expiry. |
 | 2 | Adapter + routing | ✅ Done (D-1) — `Provider Config & Adapter` (one item per active channel, mock, dedupe, quiet hours, `configured` gate) → `Route Provider Request` switch. The three `IF Want *` nodes were removed (see §5.1). |
 | 3 | WhatsApp send | ✅ Done (D-3) — enabled, driven by `provider_request`; against the simulator today, Meta Cloud API template once creds land. |
 | 4 | SMS send | ✅ Done (D-3) — enabled; VoiceBip SMS body already composed as `sms_body`; sender ID `Cedarcare`. |
