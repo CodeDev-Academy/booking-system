@@ -1615,9 +1615,10 @@ handler), then Workflow B (sweeper), then Phase 5.
 
 ---
 
-## Next up - Workflow C / C.1 (planned, NOT started)
+## Next up - Workflow C / C.1 (approved, NOT started)
 
-**Status: plan only. No code written. Awaiting explicit approval in the next session.**
+**Status: approved by the user on 2026-11-16 - "build it as planned". No code written yet.
+The next session starts at step 1 of the build order below.**
 
 ### What is broken
 
@@ -1707,4 +1708,20 @@ assert the appointment row; replay the same `provider_message_id`; then `"9"`, `
   the endpoint takes a neutral `{phone, text, channel, provider_message_id}` shape.
 - Forwarding Meta inbound messages from `07` (WhatsApp is dormant).
 
+### Build order (small steps, verify between each)
 
+1. **Tests red first.** New `PatientReplyWebhookTests` in `backend/appointments/tests.py`
+   covering R1-R12. Run them; every one fails because the route does not exist. Record the
+   red count.
+2. **The resolver only.** Add the phone -> open-request lookup as a small helper, plus the
+   endpoint skeleton returning the auth refusal and `unmatched`. Get R3, R8, R9 green
+   (resolution and auth need no booking logic).
+3. **The select intent.** Wire `1..4` through `SlotHoldRequestSerializer` and the existing
+   hold path, return `reply_text`. Get R1, R4, R5, R11 green.
+4. **Idempotency.** Key on `provider_message_id`. Get R2, R12 green.
+5. **`cancel` / `reschedule`.** Reuse the Telegram handler effects. Get R6, R7 green.
+6. **Inbound row.** One `InteractionLog` row, `direction='inbound'`. Get R10 green.
+7. **Full suite** - must stay at 206 + 12 (218), exit 0.
+8. **Live proof** against the running server, then clean up the data.
+9. **Docs**, then two commits (code, docs) on `partner-readiness/phase-1-2`, then push.
+   `origin/main` must still be `7f8bcd9`.
