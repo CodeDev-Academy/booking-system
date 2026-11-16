@@ -19,7 +19,7 @@ edits, no graph rebuild, no Django deploy.
 | 3 | `VOICEBIP_VOICE_AGENT_ID` (outbound agent) | voice leg |
 | 4 | `VOICEBIP_CALLER_ID` (DID shown to the patient) | voice leg |
 | 5 | `VOICEBIP_SMS_SENDER_ID` (default `Cedarcare`) | SMS leg |
-| 6 | VoiceBip **delivery-report / call-outcome webhook** format + how to register it | callback receiver |
+| 6 | VoiceBip **delivery-report / call-outcome webhook** format + how to register it, **and whether it can send a custom header** (the token is a header; a URL-only dashboard needs `PROVIDER_CALLBACK_ALLOW_QUERY_TOKEN=true`) | callback receiver |
 | 7 | A **sandbox/test phone number** you control | live test |
 | 8 | Public **HTTPS** URL for n8n (Railway / reverse proxy) | partner webhook |
 | 9 | `PROVIDER_CALLBACK_TOKEN` — a long random string you generate | callback auth |
@@ -65,6 +65,9 @@ VOICEBIP_CALLER_ID=<caller id>
 VOICEBIP_SMS_SENDER_ID=Cedarcare
 
 PROVIDER_CALLBACK_TOKEN=<long random string>
+# Leave unset unless the partner confirms it can only paste a callback URL
+# (no custom header support). Only the literal 'true' opens it.
+PROVIDER_CALLBACK_ALLOW_QUERY_TOKEN=false
 
 # WhatsApp is dormant until these are filled; Telegram ships first.
 WHATSAPP_PHONE_NUMBER_ID=
@@ -197,18 +200,34 @@ If the template name is still empty the leg is safe: it routes to
 Give the partner:
 
 ```
-POST https://n8n.yourclinic.com/webhook/provider-callback?token=<PROVIDER_CALLBACK_TOKEN>
+POST https://n8n.yourclinic.com/webhook/provider-callback
 Content-Type: application/json
+X-Provider-Token: <PROVIDER_CALLBACK_TOKEN>
 ```
 
-For **Meta**, register the same URL in the app's WhatsApp → Configuration → Webhook and
-enter `WHATSAPP_VERIFY_TOKEN` as the verify token. The receiver answers Meta's
-`GET ?hub.mode=subscribe&hub.challenge=…` handshake automatically.
+The token goes in a **header**, not the URL. n8n records the webhook's query string in
+every execution, so a `?token=` callback URL writes the secret into the log of every
+callback. (`X-Callback-Token` and `X-Webhook-Token` are accepted aliases.) **Ask the
+partner whether their dashboard can set a custom header.** If it can only paste a URL, set
+`PROVIDER_CALLBACK_ALLOW_QUERY_TOKEN=true` and restart — that is the documented escape
+hatch; without it a `?token=` callback on a VoiceBip-shaped body is refused `401`.
+
+For **Meta**, register this URL in the app's WhatsApp → Configuration → Webhook and
+enter `WHATSAPP_VERIFY_TOKEN` as the verify token — Meta is the one caller that keeps the
+query token:
+
+```
+https://n8n.yourclinic.com/webhook/provider-callback?token=<PROVIDER_CALLBACK_TOKEN>
+```
+
+The receiver answers Meta's `GET ?hub.mode=subscribe&hub.challenge=…` handshake
+automatically.
 
 > **No HMAC check.** Meta signs POSTs with `X-Hub-Signature-256` over the raw body, but
 > n8n's webhook node parses JSON before the workflow runs and exposes no raw bytes
 > (`rawBody: true` still returns an object, `binaryData` returns nothing — verified). The
-> query-string token is therefore the authentication for Meta. Treat
+> query-string token is therefore the authentication for Meta, and a Meta-shaped envelope
+> (`entry[]`) is the only body that may carry it by default. Treat
 > `PROVIDER_CALLBACK_TOKEN` as a production secret and rotate it in both places together.
 
 The receiver is tolerant of field names (`call_id`, `message_id`, `external_ref`,
@@ -221,8 +240,9 @@ status vocabulary.
 
 ```powershell
 curl.exe -s -X POST -H "Content-Type: application/json" `
+  -H "X-Provider-Token: <PROVIDER_CALLBACK_TOKEN>" `
   -d '{\"status\":\"delivered\",\"message_id\":\"<real external_ref>\"}' `
-  "https://n8n.yourclinic.com/webhook/provider-callback?token=<PROVIDER_CALLBACK_TOKEN>"
+  "https://n8n.yourclinic.com/webhook/provider-callback"
 ```
 
 Expected: `200 {"ok":true,"accepted":true,...}` and the row advances. Then send a late
@@ -252,7 +272,7 @@ Once SMS, voice and callbacks are green:
 | 4 | Voice call unanswered | row → `no_answer`, appears in Needs Attention |
 | 5 | Bad provider key | row `failed` with readable `error_detail`, Needs Attention |
 | 6 | Late/duplicate callback | `200`, status never downgraded |
-| 7 | Callback without token | `401` |
+| 7 | Callback with no token, and a `?token=` on a non-Meta body | `401` both times; only the header (or a Meta envelope) authenticates |
 | 8 | Patient already holds a slot before the voice leg | no call placed (30s guard) |
 | 9 | Voice dispatch at 20:00 Lagos | skipped (`outside_call_window`) **+ a `queued` "Held back" row in the interactions feed** |
 | 10 | Repeat dispatch within 10 min | `duplicate_dispatch` for every channel **that actually sent** (no extra rows). A repeat of a *skipped* leg is expected to send — the window is only stamped by real sends (3.4) |
@@ -292,7 +312,10 @@ already happened in Django, and interactions are additive log rows.
 ## 9. Security notes
 
 - `PROVIDER_CALLBACK_TOKEN` must be long and random; rotate it by changing the env var,
-  restarting n8n and updating the partner's webhook URL. No deploy required.
+  restarting n8n and updating the partner's configured header. No deploy required.
+- The token belongs in a **header**. A query token is only honoured on a Meta envelope or
+  with `PROVIDER_CALLBACK_ALLOW_QUERY_TOKEN=true`, and every use of it puts the secret in
+  that execution's log.
 - `DJANGO_WEBHOOK_SECRET` protects the **inbound** dispatch webhook too. Rotating it means
   updating both sides (backend `.env` / `ClinicSetting.webhook_secret` **and** n8n's env)
   before restarting, or dispatch is refused with `401` until they match again.

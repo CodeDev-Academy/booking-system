@@ -213,7 +213,7 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
    | Workflow | Path | Auth | Failure mode |
    |---|---|---|---|
    | `05` Slot Offer Dispatcher | `/webhook/dispatch-offers` | `X-Webhook-Secret` checked **before** the graph runs (`Verify Dispatch Secret` → `IF Dispatch Authorized`) | **401** `{ok:false,error:"unauthorized",reason}` — nothing is sent |
-   | `07` Provider Callback | `/webhook/provider-callback` (**GET + POST**, one output per method) | POST: `PROVIDER_CALLBACK_TOKEN` (header preferred, query accepted). GET: `hub.verify_token` vs `WHATSAPP_VERIFY_TOKEN` (Meta handshake only) | POST **401**; GET **403** — both fail closed when the env var is unset |
+   | `07` Provider Callback | `/webhook/provider-callback` (**GET + POST**, one output per method) | POST: `PROVIDER_CALLBACK_TOKEN` in a **header** (`X-Provider-Token` / `X-Callback-Token` / `X-Webhook-Token`); a query token only for a Meta envelope or with `PROVIDER_CALLBACK_ALLOW_QUERY_TOKEN=true`. GET: `hub.verify_token` vs `WHATSAPP_VERIFY_TOKEN` (Meta handshake only) | POST **401**; GET **403** — both fail closed when the env var is unset |
    | `06` Provider Simulator | `/webhook/provider-sim/*` | none — dev-only, deactivated before launch | n/a |
    | `01` Intake / `04` Patient Response | `/webhook/intake`, `/webhook/messaging/inbound` | **none yet** — scheduled with Workflow C (Telegram `secret_token` header check) | n/a |
 
@@ -230,6 +230,18 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
    `https://<n8n-host>/webhook/provider-callback?token=<PROVIDER_CALLBACK_TOKEN>`; Meta
    preserves the query string on every POST. Adding true HMAC later requires a proxy that
    retains the raw body.
+
+   **Why a header everywhere else (Phase 3 / 3.5).** A query token is a secret in a URL,
+   and n8n records the webhook's `query` object in every execution — so `?token=` writes
+   the secret into the log of every callback, readable by anyone with n8n UI access. The
+   rule is therefore: header first, always. A query token is honoured **only** (a) on a
+   Meta envelope (`body.entry[]` present), because Meta has no alternative, or (b) with
+   `PROVIDER_CALLBACK_ALLOW_QUERY_TOKEN=true`, an explicit escape hatch for a partner
+   whose dashboard can only paste a URL — unset means closed, and only the literal `true`
+   opens it. `body.token` is never accepted (a secret in the payload is logged twice), and
+   `query.access_token` was dropped as an undocumented alias. The carve-out cannot
+   downgrade authentication: both paths require the same secret, so it only decides *where
+   the secret may travel*.
 
 3. **Idempotency & Deduplication**:
    - Each dispatch carries `request_id`; `Provider Config & Adapter` keeps a 10-minute

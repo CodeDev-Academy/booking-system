@@ -9,6 +9,7 @@ n8n globals. No n8n instance, no restart, no browser, no database.
 node n8n/tests/test_format.js
 node n8n/tests/test_adapter.js
 node n8n/tests/test_lognodes.js
+node n8n/tests/test_callback_auth.js
 ```
 
 Exit code `0` = every assertion passed, `1` = at least one failed. Each assertion prints
@@ -19,16 +20,18 @@ Exit code `0` = every assertion passed, `1` = at least one failed. Each assertio
 | `test_format.js` | `Format Offers & Telegram Buttons` — patient-facing grammar per option count | 22 |
 | `test_adapter.js` | `Provider Config & Adapter` — routing, guards, skip reasons, dedupe stamping, request body | 62 |
 | `test_lognodes.js` | the three `Log * Interaction` nodes — provider error classification | 121 |
+| `test_callback_auth.js` | `07` › `Verify & Normalize Provider Event` — which token carriers authenticate, and the refusal contract | 30 |
 
 Counts are the harness's own output (`ok` lines), not an estimate.
 
 ## Golden rules
 
-1. **Never test a copy.** Every harness reads the node's `jsCode` straight out of
-   `n8n/05_slot_offer_dispatcher.json`. `test_adapter.js` used to read a dumped
-   `adapter_v2.js` instead — and it happened to be byte-identical, which is luck, not a
-   guarantee. A dump drifts the moment the node changes, and a harness that reads a stale
-   dump reports success for code that no longer exists.
+1. **Never test a copy.** Every harness reads the node's `jsCode` straight out of the
+   workflow export it covers (`n8n/05_slot_offer_dispatcher.json`, or
+   `n8n/07_provider_callback.json` for the callback auth harness). `test_adapter.js` used to
+   read a dumped `adapter_v2.js` instead — and it happened to be byte-identical, which is
+   luck, not a guarantee. A dump drifts the moment the node changes, and a harness that
+   reads a stale dump reports success for code that no longer exists.
 2. **Red first.** When a node changes, add the assertion *before* the fix and watch it
    fail. The recorded deltas live in `TEST.md` (step 3.3: 57 red before the fix, 0 after).
 3. **The drift guard is load-bearing.** `test_lognodes.js` asserts the

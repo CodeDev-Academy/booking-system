@@ -1428,7 +1428,44 @@ had already delivered before the connection dropped. A failure keeps its stamp; 
 operator decides. Concurrency is unchanged and still best-effort (static data is
 per-execution; Django's `PATIENT_ALREADY_BOOKED` and offer state remain authoritative).
 
+**3.5 - the callback token travels in a header, not a URL.** `07`'s verify node accepted
+the shared secret from five carriers: `query.token`, `query.access_token`, three header
+names and `body.token`. All five were compared against the same secret, so this was never
+an authentication bypass - it was a **leak**. n8n records the webhook's `query` object in
+every execution, so registering the callback URL as `...?token=<secret>` writes the secret
+into the log of every callback that ever arrives, permanently, readable by anyone with n8n
+UI access. `body.token` was worse: a secret inside the payload, logged twice.
+
+Two constraints shaped the fix rather than being designed away. **Meta cannot send custom
+headers**, and its `X-Hub-Signature-256` cannot be verified in-graph (both `rawBody` and
+`binaryData` were probed on 2026-11-14 and neither exposes raw bytes), so the Meta leg must
+keep a URL token or never authenticate at all. And **VoiceBip's header support is an open
+partner question** - their delivery-report format is still on the blocked list - so strict
+header-only could kill the launch on a detail nobody had confirmed.
+
+The rule is therefore header-first with two forced exceptions. Headers
+(`X-Provider-Token` / `X-Callback-Token` / `X-Webhook-Token`) are the only carrier for a
+VoiceBip event, and win when both are present. A query token is honoured on a **Meta
+envelope** (`body.entry[]`) because there is no alternative, or on any body when
+`PROVIDER_CALLBACK_ALLOW_QUERY_TOKEN` is exactly `'true'` - an escape hatch for a partner
+that can only paste a URL, closed unless someone opens it. `body.token` is gone outright,
+`query.access_token` with it. Neither exception weakens authentication: both paths require
+the same secret, so the rule only decides *where the secret may travel*.
+
+**Verification.** `07` had never had a harness (T-704 was live-only), so
+`n8n/tests/test_callback_auth.js` was written first: 30 assertions, 11 red (query token
+accepted, payload token accepted, `access_token` accepted, the flag ignored in both
+directions, plus the entire refusal-contract block that only runs on a rejection). Live on
+`REQ-2026-9501`: header + VoiceBip -> `200` accepted and a row written; `?token=` +
+VoiceBip -> `401 invalid_callback_token` and no row; `?token=` + Meta envelope -> `200` and
+a `whatsapp` row; wrong header -> `401`; payload token -> `401` - 11/11. Then n8n was
+restarted with the flag `true` and the identical query request returned `200` with a row,
+and restarted again without it to confirm `401` and leave the launch default in place.
+That restart pair matters: the hatch is configuration, so it has to be proven through the
+env, not just in the harness. Workflow `valid: true`, 13 nodes, 0 errors.
+
 **State.** Full suite **200 tests / 200 pass** (`python manage.py test --parallel 1`,
-exit 0). Adapter live and in sync with `n8n/05_slot_offer_dispatcher.json`; dispatch
-workflow `valid: true`. Next: 3.5 (header-only callback token), 3.6 (unknown channel =
-ignore), 3.7 (`patient_phone` guard on callbacks), 3.8 (`voice_payload_missing` row).
+exit 0). `07` live and in sync with `n8n/07_provider_callback.json`; both live workflows
+`valid: true`. Next: 3.6 (unknown channel = ignore), 3.7 (`patient_phone` guard on
+callbacks - note the forwarder currently reads `n.patientName`, which `normalize()` never
+returns, so `patient_name` never reaches Django), 3.8 (`voice_payload_missing` row).

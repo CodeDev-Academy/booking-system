@@ -502,10 +502,15 @@ shared token is therefore the authentication for Meta: register the callback URL
 `https://<n8n>/webhook/provider-callback?token=<PROVIDER_CALLBACK_TOKEN>` — Meta preserves
 the query string on every POST. Add HMAC later via a proxy that keeps the raw body.
 
-**Auth — fail closed.** A shared token (`PROVIDER_CALLBACK_TOKEN`) must appear as
-`?token=` / `?access_token=` or in `X-Provider-Token` / `X-Callback-Token` /
-`X-Webhook-Token`. If the env var is **unset**, every callback is rejected 401
-(`receiver_not_configured`) — an unconfigured receiver never accepts traffic.
+**Auth — fail closed.** The shared token (`PROVIDER_CALLBACK_TOKEN`) must arrive in a
+**header** — `X-Provider-Token` / `X-Callback-Token` / `X-Webhook-Token` — because n8n
+records the webhook's `query` in every execution, so a `?token=` URL writes the secret into
+the log of every callback. Two forced exceptions (Phase 3 / 3.5): a query token is honoured
+on a **Meta envelope** (`body.entry[]`) because Meta cannot send custom headers, and on any
+body when `PROVIDER_CALLBACK_ALLOW_QUERY_TOKEN=true` (escape hatch for a URL-only partner;
+unset = closed, only the literal `true` opens it). `body.token` is never accepted. If the
+env var is **unset**, every callback is rejected 401 (`receiver_not_configured`) — an
+unconfigured receiver never accepts traffic.
 
 **Status mapping.** Only two tables change when the partner contract lands:
 `STATUS_ALIASES` and `CHANNEL_ALIASES` in `Verify & Normalize Provider Event`.
