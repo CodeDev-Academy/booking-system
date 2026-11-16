@@ -1557,3 +1557,59 @@ form that collapses to the stored `+234…`.
 exit 0). `07` live and in sync with `n8n/07_provider_callback.json`; both live workflows
 `valid: true`. Next: 3.8 (`voice_payload_missing` row).
 
+---
+
+## 2026-11-16 - Phase 3 / 3.8: a fail-safe records, it does not vanish
+
+**Origin.** `Merge Voice Guard` synthesises a `voice_payload_missing` skip when it cannot find
+the adapter's voice item. That is a defensive branch - it only fires when the graph is
+inconsistent - and it was the least observable thing in the whole workflow, for three
+independent reasons found by following the wire rather than reading the node:
+
+- It is created *after* `Route Provider Request`, so it could never reach `Log Skipped
+  Channel`, which is the only place a skip becomes a row. Its only route was the voice branch.
+- `IF Voice Still Needed` tested `voice_guard.should_skip`, a value that comes from the
+  probe. A missing payload did not set it, so the item passed the gate and went to
+  `Send Voice Call` with `provider_request.url === undefined`. The comment said "if the
+  adapter payload is missing, do NOT place a call" - and no call was placed, but the outcome
+  was a node error that aborted the run, not a record.
+- Even if it had reached the logger it would have been dropped: no `REASON_TEXT` entry, and
+  no `request_id` for the deterministic `external_ref`.
+
+So the rarer and more alarming the cause, the quieter the system got - backwards for a feed
+reception is supposed to trust.
+
+**The fix.** The guard now treats a missing payload as a skip reason rather than as a
+synthetic payload: `shouldSkip = probe.should_skip_voice_call || payloadMissing`, the reason
+switches to `voice_payload_missing`, and the synthetic item inherits `request_id` from the
+probe (the probe still knows the request; the adapter is the thing that is gone). `Log Skipped
+Channel` gained one `REASON_TEXT` entry, and `IF Voice Still Needed`'s **false** output - which
+was wired to nothing - now goes to the logger.
+
+Wiring the false output had a second-order risk worth naming: `patient_already_engaged` now
+reaches the logger too. It stays unlogged because `REASON_TEXT` has no entry for it, so the
+Phase 2 decision is preserved *by the same mechanism* that makes the new reason row-worthy -
+the harness pins both directions (G4 posts, G5 does not).
+
+**Tests first.** New `n8n/tests/test_voice_guard.js`, covering `Merge Voice Guard` and
+`Log Skipped Channel` from the shipped export with stubbed `$`, `$input`, `$env` and a
+recording `httpRequest`: 31 assertions, **13 red** first (G3a fail-closed, G3e request-code
+inheritance, G9a/G9b the missing wire, G4a-G4h the row, G7b the captured error). It also
+asserts one **graph edge** - the first harness here to test topology, because this bug was a
+missing wire rather than bad code.
+
+**Verified live** in three phases on `REQ-2026-9801..9803`. To reach the branch at all the
+adapter has to fail, so `Provider Config & Adapter` was temporarily pushed with only
+`provider_channel` renamed (`route` is built from the channel name inside the adapter, so the
+switch still routed it down the voice path and the guard is what discovered the payload was
+gone): one `queued` row, `error_detail: voice_payload_missing`, linked to the request, **no**
+call row (8/8). The adapter was then restored and re-asserted in sync, an already-booked
+patient produced **no** row (2/2), and a clean dispatch still called and logged
+`mock-voice-REQ-2026-9803` (4/4) - which is the assertion that the new wire did not break the
+happy path.
+
+**State.** Full suite **206 tests / 206 pass** (`python manage.py test --parallel 1`,
+exit 0). `05` live and in sync with `n8n/05_slot_offer_dispatcher.json` (20 nodes, 23
+connections) and `07` with its export; both `valid: true`. Next: Workflow C (patient response
+handler), then Workflow B (sweeper), then Phase 5.
+

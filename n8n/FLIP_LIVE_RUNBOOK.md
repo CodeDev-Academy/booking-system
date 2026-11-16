@@ -296,17 +296,26 @@ Once SMS, voice and callbacks are green:
 | 11 | `POST /webhook/dispatch-offers` without `X-Webhook-Secret` | `401`, no message sent |
 | 12 | Dispatch while a provider is unconfigured | `queued` row with `error_detail: provider_not_configured` — reception sees it without digging through n8n |
 | 13 | Django briefly down when the voice guard probes | `failed` voice row "Status probe failed — voice call suppressed (fail closed)" in Needs Attention; no call placed |
+| 14 | (defensive) call payload unbuildable after the 30s check | `queued` row `error_detail: voice_payload_missing`, **no** call attempt, no workflow error (3.8) |
 
 **Reading `queued` rows (Phase 2):** a `queued` interaction row means *"held back, not
 attempted"* — the receptionist asked for the channel, the system refused to fire it, and
 the row says why in plain language (`summary`) plus a machine code (`error_detail`:
 `outside_call_window` / `provider_not_configured` / `whatsapp_template_not_configured` /
-`missing_phone` / `no_slots`). They are deliberately **not** failures: nothing was sent,
-nothing was billed. A later real send for the same channel creates its own row, so the
-history stays honest ("first attempt held, second sent"). A held-back leg also does **not**
-consume the 10-minute dedupe window (Phase 3 / 3.4), so after fixing the cause — adding a
-slot, pasting the provider credentials, adding a phone number — the very next dispatch
-sends. If it answers `duplicate_dispatch` instead, a previous attempt really did go out.
+`missing_phone` / `no_slots` / `voice_payload_missing`). They are deliberately **not**
+failures: nothing was sent, nothing was billed. A later real send for the same channel
+creates its own row, so the history stays honest ("first attempt held, second sent"). A
+held-back leg also does **not** consume the 10-minute dedupe window (Phase 3 / 3.4), so after
+fixing the cause — adding a slot, pasting the provider credentials, adding a phone number —
+the very next dispatch sends. If it answers `duplicate_dispatch` instead, a previous attempt
+really did go out.
+
+`voice_payload_missing` (Phase 3 / 3.8) is the odd one and worth knowing before you see it:
+it means the 30-second "has the patient replied?" check ran but the call payload could not be
+rebuilt afterwards — the adapter step did not produce its voice item, which in practice means
+the dispatch was triggered twice or the graph was edited mid-flight. Nothing was called. Fix
+the cause and dispatch again; the skip row uses a deterministic `external_ref`
+(`skip-voice-<request>`), so the retry updates that row instead of adding a second one.
 
 ---
 

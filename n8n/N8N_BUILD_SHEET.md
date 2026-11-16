@@ -397,13 +397,22 @@ could not fire vanished into the execution log — the switch's skip output and 
 probe's error output were both dead ends. Now every actionable skip is a **record in
 Django**, and the suppressed voice call is a **Needs Attention** row:
 
-- **`Log Skipped Channel`** (switch `skip` output) writes one `status: queued` InteractionLog
+- **`Log Skipped Channel`** (switch `skip` output, and since 3.8 the voice guard's `false`
+  output) writes one `status: queued` InteractionLog
   row per actionable reason — `outside_call_window`, `provider_not_configured`,
-  `whatsapp_template_not_configured`, `missing_phone`, `no_slots` — with `summary: "Held back: <plain
+  `whatsapp_template_not_configured`, `missing_phone`, `no_slots`, `voice_payload_missing` — with `summary: "Held back: <plain
   language>"`, `error_detail: <reason code>` and a deterministic `external_ref`
   (`skip-<channel>-<request_code>`, so repeats upsert instead of piling up). By decision,
   `duplicate_dispatch` (the original send row exists) and `no_active_channel` (the Telegram
   card Django sent is already logged) write **no** row.
+- **`voice_payload_missing`** is the guard's own fail-safe and only fires when the graph is
+  inconsistent (the adapter produced no voice item). Since 3.8 the guard sets
+  `should_skip = true` for it and inherits `request_id` from the probe, because the old
+  behaviour passed the gate and reached the send node with `provider_request.url ===
+  undefined` — an aborted workflow instead of a record. The IF's `false` output was wired to
+  nothing and now goes to `Log Skipped Channel`; `patient_already_engaged` rides the same
+  wire but stays unlogged because `REASON_TEXT` has no entry for it (the decision above is
+  unchanged).
 - **`Log Voice Probe Failure`** (probe error output) writes a `status: failed` voice row —
   `external_ref: probe-<request_code>`, plain-language `error_detail` ("Status probe
   failed — voice call suppressed (fail closed): …") — so a suppressed call surfaces in
@@ -427,6 +436,13 @@ queued row (`outside_call_window`); live mode no creds → queued row
 (`whatsapp_template_not_configured`); dead-port probe → **failed** row, no call placed;
 repeat dispatch inside the 10-min dedupe window → no rows (duplicate is not row-worthy);
 normal dispatch → sends + `sent` rows, no queued rows. Adapter harness 38/38.
+
+Since 3.8, verified live on `REQ-2026-9801..9803`: with the adapter's voice item
+deliberately hidden, the dispatch produced **one** `queued` row
+(`external_ref: skip-voice-…`, `error_detail: voice_payload_missing`) and **no** call
+attempt; with the adapter restored, an already-booked patient produced **no** row
+(`patient_already_engaged`), and a clean dispatch still called and logged
+`mock-voice-…`. `n8n/tests/test_voice_guard.js` pins both nodes (31 assertions).
 
 ### 5.2 Remaining D steps
 

@@ -604,6 +604,17 @@ Layer 4 contract — enforcement (opt-in, default OFF):
     Also fixed the forwarder reading `n.patientName` (undefined) instead of
     `n.patient_name`, which meant no callback had ever carried a patient name to Django.
     See `TEST.md` T-712g.
+15. **A fail-safe records, it does not vanish** — ✅ Done (Phase 3 / 3.8). The voice guard's
+    `voice_payload_missing` path only fires when the graph is inconsistent (the adapter
+    produced no voice item), and it was the least observable thing in the workflow: it was
+    synthesised *after* the switch so it could never reach `Log Skipped Channel`, it was not
+    in `REASON_TEXT`, it carried no `request_id`, and `IF Voice Still Needed`'s `false`
+    output was wired to nothing — so when the patient had not replied the item went to the
+    send node with `provider_request.url === undefined` and aborted the run. Now the guard
+    forces `should_skip` for a missing payload, inherits the request code from the probe, and
+    the `false` output goes to `Log Skipped Channel`, which writes a `queued` row
+    (`skip-voice-…`, `error_detail: voice_payload_missing`). `patient_already_engaged` takes
+    the same wire and stays unlogged, by the decision in item 9. See `TEST.md` T-712h.
 
 ### 5.8 Edge cases owned by this integration
 
@@ -618,6 +629,9 @@ Layer 4 contract — enforcement (opt-in, default OFF):
 - Duplicate or out-of-order callbacks → upsert by `external_ref`, status rank enforced; a
   callback can fill a blank phone but never rewrite a stored one (3.7) — the mismatch is
   flagged in the row's summary instead of being rejected.
+- Adapter produced no voice item after the 30s probe → `voice_payload_missing`: the call is
+  never placed, and the request gets one `queued` row saying so (3.8). Visible in the skipped
+  list, not Needs Attention, because nothing failed — the dispatch was held back.
 - Provider key missing/invalid → the branch logs `failed` and the request appears in Needs
   Attention; never silently succeeds. Since 3.3 the class leads the sentence
   (`Provider authentication failed: Invalid API key`), so a bad key is distinguishable at
