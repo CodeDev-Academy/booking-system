@@ -1847,8 +1847,56 @@ No backend change, no schema change, no new dependency, no frontend change.
 
 ---
 
-## Next up - Workflow B (the expiry sweeper), then Phase 5
+## Workflow B - complete end to end (2026-11-16)
 
-**Status: ready to start.** Workflow C is complete end to end (C.1 endpoint + C.2 workflow).
-Next per the build order: `02_hold_and_offer_expiry_cron.json` (the nudge branch + recovery
-sends + logging), then Phase 5 partner handover.
+**Status: done.** The 60-second expiry sweeper is a real, active, proven workflow: Django decides
+everything (who, which app, which words), n8n only delivers, and every message is single-shot.
+
+- **B.0 (Django owns the message contract).** `sweep_service.py` rewritten: every sweep item carries
+  `channel` + `message` + `claim_ref` (Telegram adds `telegram_chat_id` + `reply_markup`); Django
+  pre-writes one claim row per message (`nudge-<REQ>-<channel>` / `recovery-<REQ>-<channel>`,
+  `status="queued"`), so no matter how many times the cron fires, the `/interactions/` upsert on
+  `external_ref` keeps each message at exactly one row. Reminders **mirror the offer's channels**
+  (same app the offer went out on, plain-SMS fallback, never voice). Recovery copy says
+  **RESCHEDULE** - the word C.1's endpoint accepts, not the blueprint's "Reply NEW". One
+  `status="expired"` system row (`sweep-expiry-<REQ>`) + `OFFER_EXPIRED_SWEEP` audit per swept
+  offer; **hold expiry stays silent**. `ExpirySweepWebhookView` bad/missing secret now answers
+  **401** (was 403), same body as every endpoint. `SweeperMessagingTests` 10 red first, then green;
+  full suite **228/228, exit 0**.
+- **B.1 (harness first).** `n8n/tests/test_sweeper.js`: **29/40 red** against the skeleton - which
+  also failed A8 (the literal dev secret was embedded in the file) and G2 (hardcoded "expire in"
+  copy, exactly the n8n-writes-words defect the plan forbids). After the rebuild: **78 green**
+  (A cron POST env-resolved + fail-closed, B parse guards, C adapter gates, D switch wiring,
+  E onError wiring, F claim-ref upserts + canonical-block drift guard, G no patient-facing words).
+- **B.2 (rebuild + upload).** 12 nodes: cron → `Trigger Django Expiry Sweeper` → `Parse Sweep
+  Response` → `Build Provider Requests` → `Route by Channel` → 3 send nodes (`onError:
+  continueErrorOutput`) + `Log Skipped Leg` → 3 `Log * Outcome` nodes. Instance
+  `WgdycXudLDdqskEQ` **active**, `valid: true` 0 errors / 0 warnings, repo JSON byte-identical.
+- **B.3 (live proof, 18/18 exit 0).** Wrong secret → 401 with zero writes; the **real active cron**
+  swept, emitted and delivered the SMS + WhatsApp nudges and the recovery message (`queued → sent`),
+  each claimed exactly once across every fire; Telegram with a fake chat id ends **failed with a
+  readable reason**; B → `offer_expired` + one system expired row + audit; hold expiry silent;
+  extra sweeps re-emit nothing; "reschedule" → `re_requested` + `PATIENT_RE_REQUESTED_TIMES`;
+  all proof rows deleted and verified.
+  **Two real defects caught and pinned by the harness:** (1) the trigger URL doubled `/api/v1`
+  (the instance's `DJANGO_API_BASE_URL` already ends in `/api/v1`) → 404 every minute; A1/A2 now
+  *resolve the URL expression* against a mock env instead of string-grepping. (2) The log nodes ran
+  **once per run** (n8n Code default mode) but paired contexts with `$itemIndex` (per-item
+  semantics): with two SMS items in one run only the first was processed and the second claim stayed
+  `queued` forever. Rewritten as true all-items zipping by position + a no-context guard; F12 pins
+  one-run-two-responses pairing, F13b pins that an unpaired response posts nothing.
+  Emission rule pinned for future work: **nudge claims regenerate** while the request stays
+  `slots_offered`; a **recovery emission is one-time** (tied to the `offer_expired` transition).
+- **Files:** `backend/appointments/services/sweep_service.py`, `backend/appointments/views_realtime.py`,
+  `backend/appointments/tests.py`, `n8n/02_hold_and_offer_expiry_cron.json`,
+  `n8n/tests/test_sweeper.js` (new). Docs: `PROGRESS.md`, `TEST.md` (T-714, T-714b),
+  `n8n.md` (Workflow 2 + §6 matrix), `n8n/N8N_BUILD_SHEET.md` §3 (Reply NEW superseded by
+  RESCHEDULE), `n8n/tests/README.md`.
+
+---
+
+## Next up - Phase 5 (partner handover)
+
+**Status: ready to start.** All message-carrying workflows are now real and proven: `05` (dispatch),
+`04` (replies), `02` (expiry sweeper). Remaining per the roadmap: partner handover (env checklist,
+`FLIP_LIVE_RUNBOOK.md`, credentials, deployment).

@@ -103,6 +103,16 @@ Full read API (for debugging what you logged): `GET /api/v1/interactions/?patien
 
 ## 3. Workflow B — `02_hold_and_offer_expiry_cron.json` (build SECOND)
 
+> **B is built (2026-11-16).** Live workflow ID `WgdycXudLDdqskEQ` (`02_Hold_And_Offer_Expiry_Sweeper`)
+> — active, 12 nodes, `valid: true` (0 errors / 0 warnings). Django composes every word and chooses
+> every channel (B.0: items carry `channel`+`message`+`claim_ref`; claim rows pre-written as `queued`
+> make every message single-shot). Harness `n8n/tests/test_sweeper.js` 78 assertions; live proof
+> `b3_live_proof.py` 18/18. Two spec deviations, both deliberate:
+> (1) the recovery message says **RESCHEDULE** — the word `04`/C.1's reply endpoint actually accepts —
+> not this sheet's "Reply NEW" (the table below is the original spec, kept for the record);
+> (2) n8n holds no copy at all, so the "45-min nudge text" line below is Django's job now
+> (`telegram_service.format_pre_expiry_nudge` / `format_graceful_expiry`).
+
 **Purpose:** 60-second expiry sweeper + 45-min soft nudge + 60-min recovery message.
 
 | Step | Node | Detail |

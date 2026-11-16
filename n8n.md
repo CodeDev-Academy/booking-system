@@ -74,38 +74,55 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
 
 ### Workflow 2: 60-Second Temporary Hold & Offer Expiry Sweeper
 - **Template File**: `n8n/02_hold_and_offer_expiry_cron.json`
-- **Purpose**: Runs every 60 seconds as a high-reliability cron sweeper. It triggers backend expiration routines, re-engages unresponsive patients, and releases abandoned slot locks.
+- **Purpose**: Runs every 60 seconds as a high-reliability cron sweeper. It asks Django who expired, then **delivers the message Django composed, on the app Django chose**. n8n writes no patient-facing words and makes no channel decision (built 2026-11-16, Workflow B).
 
-#### Node Pipeline & Data Flow:
+> **Built & live.** Workflow ID `WgdycXudLDdqskEQ` (`02_Hold_And_Offer_Expiry_Sweeper`) — active, 12 nodes,
+> `valid: true` (0 errors / 0 warnings). Harness `n8n/tests/test_sweeper.js` (78 assertions); live proof
+> `b3_live_proof.py` 18/18. Contract: every sweep item carries `channel` + `message` + `claim_ref`;
+> Django pre-writes one claim row per message (`nudge-<REQ>-<channel>` / `recovery-<REQ>-<channel>`,
+> `status="queued"`) and the log nodes **upsert that same ref** — a message can never go out twice no
+> matter how many times the cron fires. Hold expiry stays silent (backend frees the slot; no message).
+> Telegram needs a real `TELEGRAM_BOT_TOKEN` even in mock mode (the simulator has no Telegram leg).
+
+#### Node Pipeline & Data Flow (as built):
 ```
-[Schedule Trigger Node] (Cron: */1 * * * * — Every 60s)
+[60-Second Sweeper Schedule] (Cron: */1 * * * * — Every 60s)
        │
        ▼
-[HTTP Request Node: Sweep Endpoint]
-  • POST to http://backend:8000/api/v1/webhooks/expiry-sweep/
+[Trigger Django Expiry Sweeper]
+  • POST $env.DJANGO_API_BASE_URL + '/webhooks/expiry-sweep/'   (env already ends in /api/v1)
+  • X-Webhook-Secret from $env — fail closed, no fallbacks; body {"triggered_by":"n8n_cron_sweeper"}
        │
        ▼
-[Code Node: Response Processor]
-  • Output contains:
-    - expired_offers: Array of requests whose 60m offer window elapsed
-    - expired_holds: Array of appointments whose 15m hold elapsed
-    - pre_expiry_nudges: Array of requests at minute 45 (15m left)
+[Parse Sweep Response]
+  • expired_offers → recovery items; pre_expiry_nudges → nudge items
+  • drops any item missing channel / message / claim_ref (fail-safe); an empty sweep is a clean no-op
        │
        ▼
-[Split In Batches / Switch Node]
-       ├── Branch A: Pre-Expiry Nudges (Minute 45)
-       │     └─► [Telegram / WhatsApp Node]
-       │           Send Template 2: "Friendly reminder: Your slots expire in 15 minutes. Tap to confirm."
+[Build Provider Requests]
+  • mock (PROVIDER_MOCK unset/true): SMS/WhatsApp → Provider Simulator (/provider-sim/{sms|whatsapp})
+  • Telegram → real Bot API sendMessage (chat_id + inline keyboard from the item)
+  • live gates: VoiceBip creds / Meta creds + WHATSAPP_TEMPLATE_NAME → else route:"skip" with a named reason
        │
-       ├── Branch B: Expired Offers (Minute 60)
-       │     └─► [Telegram / WhatsApp Node]
-       │           Send Graceful Expiry Recovery Message:
-       │           "The previous times expired to keep our calendar open. We'd still love to see you!"
-       │           Buttons: [🔄 See New Times]  [💬 Chat with Reception]
-       │
-       └── Branch C: Expired Holds (15m unconfirmed)
-             └─► Backend automatically freed slot; logs event in AuditLog.
+       ▼
+[Route by Channel]  (switch on provider_request.route)
+  ├── telegram  → [Send Telegram Message]   → [Log Telegram Outcome]
+  ├── sms       → [Send SMS (VoiceBip)]     → [Log SMS Outcome]
+  ├── whatsapp  → [Send WhatsApp Message]   → [Log WhatsApp Outcome]
+  └── skip      → [Log Skipped Leg]         (upserts the claim row as failed with the reason)
+                    All three send nodes: onError → continueErrorOutput (failures reach the same log).
+                    Log nodes: one POST /interactions/ per response, zipped to its claim_ref BY POSITION
+                    (a run can carry several messages for one app); canonical error block byte-identical to 05.
+
+  Expired holds never appear here: Django frees the slot silently (AuditLog only).
 ```
+
+#### Emission & dedupe rules (discovered and pinned by the live proof):
+- A **nudge** claim regenerates while the request stays `slots_offered` (the offer window is still open).
+- A **recovery** emission is a **one-time event** — it happens in the same sweep that moves the request
+  to `offer_expired`, so a released recovery claim never regenerates.
+- A skipped leg (no credentials in live mode, no approved WhatsApp template, no Telegram chat id) is
+  **visible**: `Log Skipped Leg` upserts the claim row to `failed` with the reason.
 
 ---
 
@@ -915,7 +932,7 @@ has no "unknown" value, so a row would require lying in the other direction.
 | Workflow Name | File Path | Trigger | Primary Action |
 | :--- | :--- | :--- | :--- |
 | **Intake Webhook** | `n8n/01_intake_webhook.json` | Webhook (`/webhook/intake`) | Ingest, sanitize, post to Django queue |
-| **Hold & Expiry Sweeper** | `n8n/02_hold_and_offer_expiry_cron.json` | Cron (`*/1 * * * *`) | Check 60m offer and 15m hold expiries |
+| **Hold & Expiry Sweeper** | `n8n/02_hold_and_offer_expiry_cron.json` | Cron (`*/1 * * * *`) | B: asks Django who expired (`POST /webhooks/expiry-sweep/`) and delivers Django's words on Django's channel; claim-ref upserts keep every message single-shot |
 | **Reminder Flows** | `n8n/03_reminder_flows.json` | Cron (Twice daily) | Dispatch 24h & 2h pre-visit interactive buttons |
 | **Patient Response Handler** | `n8n/04_patient_response_handler.json` | Webhook (`/webhook/whatsapp-inbound`, `/webhook/sms-inbound`) | C.2: asks Django what an SMS/WhatsApp reply means (`/webhooks/patient-reply/`) and delivers `reply_text` verbatim |
 | **Slot Offer Dispatcher** | `n8n/05_slot_offer_dispatcher.json` | Webhook (`/webhook/dispatch-offers`) | Format & send approved 1h slot buttons to patient |

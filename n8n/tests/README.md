@@ -13,6 +13,7 @@ node n8n/tests/test_callback_auth.js
 node n8n/tests/test_voice_guard.js
 node n8n/tests/test_reply_handler.js
 node n8n/tests/test_simulator_ids.js
+node n8n/tests/test_sweeper.js
 ```
 
 Exit code `0` = every assertion passed, `1` = at least one failed. Each assertion prints
@@ -27,6 +28,7 @@ Exit code `0` = every assertion passed, `1` = at least one failed. Each assertio
 | `test_voice_guard.js` | `Merge Voice Guard` + `Log Skipped Channel` — fail closed on a missing payload, the held-back row, and the graph wire that carries it | 31 |
 | `test_reply_handler.js` | `04` (C.2) › `Verify Reply Secret`, `Normalize Patient Reply`, `Prepare Reply Delivery`, `Log Reply Outcome`, plus graph drift guards — fail-closed auth, Meta + VoiceBip payload shapes, the one-call rule, the duplicate skip, delivery routing, the outbound row | 91 |
 | `test_simulator_ids.js` | `06` › the three `Build * Response` nodes — one provider id per message, readable ids that keep the `REQ-` code, Meta's real shape, the 500 switch | 19 |
+| `test_sweeper.js` | `02` (B) › the cron POST (env-resolved URL, fail-closed secret, no literal secrets), parse guards (malformed items dropped, empty sweep is a no-op), adapter mock/live gates + skip reasons, switch + onError wiring, claim-ref upserts (**one run, many responses, zipped by position** — F12 pins the live-proof defect; F13b an unpaired response posts nothing), canonical block drift guard, and that n8n writes no patient-facing words | 78 |
 
 Counts are the harness's own output (`ok` lines), not an estimate.
 
