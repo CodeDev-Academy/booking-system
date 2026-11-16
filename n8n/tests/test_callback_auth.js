@@ -153,5 +153,46 @@ check('I3 error unauthorized', refused.response.error === 'unauthorized', refuse
 check('I4 reason names the token', refused.response.reason === 'invalid_callback_token', refused.response.reason);
 check('I5 no payload leaks into a refusal', refused.payload === undefined, JSON.stringify(refused.payload));
 
+console.log('J. an unrecognised channel is ignored, not relabelled as SMS (3.6)');
+// A channel the receiver cannot map is a contract mismatch. Filing it as 'sms' would put
+// a row in the patient timeline for a message that was never an SMS, and the provider's
+// 200 means it never retries and never surfaces.
+const noChannel = function (body, headers) {
+  return run(ENV, req(body, { headers: headers || { 'x-provider-token': TOKEN } }));
+};
+const isUnknownChannel = function (out) {
+  const j = out[0].json;
+  return j.skip === true && j.reason === 'unknown_channel' && j.payload === undefined;
+};
+
+out = noChannel(Object.assign({}, voiceBody, { id: 'x-9001', channel: 'email' }));
+check('J1 explicit "email" is ignored', isUnknownChannel(out), JSON.stringify(out[0].json).slice(0, 160));
+out = noChannel(Object.assign({}, voiceBody, { id: 'x-9002', channel: undefined, channel_type: 'push' }));
+check('J2 channel_type "push" is ignored', isUnknownChannel(out), JSON.stringify(out[0].json).slice(0, 160));
+out = noChannel(Object.assign({}, voiceBody, { id: 'x-9003', channel: { name: 'sms' } }));
+check('J3 an object channel is not stringified into sms', isUnknownChannel(out), JSON.stringify(out[0].json).slice(0, 160));
+check('J10 an ignored callback still answers 200', out[0].json.http_code === 200, out[0].json.http_code);
+
+console.log('J4. but an ABSENT channel keeps the documented inference chain');
+out = noChannel(Object.assign({}, voiceBody, { id: 'sms-ext-9004', channel: undefined }));
+check('J4 ref hint -> sms', out[0].json.payload && out[0].json.payload.channel === 'sms', JSON.stringify(out[0].json).slice(0, 160));
+out = noChannel({ id: 'x-9005', status: 'answered', to: '+2348030000001', request_code: 'REQ-2026-9581' });
+check('J5 answered -> voice', out[0].json.payload && out[0].json.payload.channel === 'voice', JSON.stringify(out[0].json).slice(0, 160));
+out = noChannel({ id: 'voice-9006', status: 'delivered', to: '+2348030000001', request_code: 'REQ-2026-9581' });
+check('J6 ref hint -> voice', out[0].json.payload && out[0].json.payload.channel === 'voice', JSON.stringify(out[0].json).slice(0, 160));
+out = noChannel({ id: 'x-9007', status: 'delivered', to: '+2348030000001', request_code: 'REQ-2026-9581' });
+check('J7 no hint at all -> sms (documented VoiceBip default)', out[0].json.payload && out[0].json.payload.channel === 'sms', JSON.stringify(out[0].json).slice(0, 160));
+
+console.log('J8. a mappable spelling still maps');
+out = noChannel(Object.assign({}, voiceBody, { id: 'x-9008', channel: 'Voice' }));
+check('J8 "Voice" -> voice', out[0].json.payload && out[0].json.payload.channel === 'voice', JSON.stringify(out[0].json).slice(0, 160));
+
+console.log('J9. a Meta envelope is WhatsApp whatever it claims');
+out = run(ENV, req(metaBody, { query: { token: TOKEN } }));
+const metaWithChannel = JSON.parse(JSON.stringify(metaBody));
+metaWithChannel.entry[0].changes[0].value.statuses[0].channel = 'email';
+out = run(ENV, req(metaWithChannel, { headers: { 'x-provider-token': TOKEN } }));
+check('J9 Meta + channel:"email" -> whatsapp', out[0].json.payload && out[0].json.payload.channel === 'whatsapp', JSON.stringify(out[0].json).slice(0, 160));
+
 console.log(failures ? '\nFAILED: ' + failures + ' of ' + total : '\nALL PASS (' + total + ' assertions)');
 process.exit(failures ? 1 : 0);
