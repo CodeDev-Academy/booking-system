@@ -1464,8 +1464,40 @@ and restarted again without it to confirm `401` and leave the launch default in 
 That restart pair matters: the hatch is configuration, so it has to be proven through the
 env, not just in the harness. Workflow `valid: true`, 13 nodes, 0 errors.
 
+**3.6 - an unknown channel is ignored, not relabelled as SMS.** The channel chain ended in
+`if (!channel) channel = 'sms'` - justified once, because VoiceBip's remaining product is
+SMS, but it was not a fallback, it was an assumption. A callback that explicitly said
+`channel: "email"` (or `"push"`, or a typo, or an object stringifying to `[object Object]`)
+fell through every rung and was stored as an SMS delivery report: a row in the patient
+timeline for a message that was never an SMS, with a `200` to the provider, so it never
+retried and never surfaced anywhere. Inventing plausible data is the worst failure mode for
+a feed reception is supposed to trust.
+
+The fix keeps `rawChannel` - what the provider actually said - so the code can tell
+*"you named a channel I don't know"* from *"you didn't name one"*. An explicit but unmappable
+channel becomes `200 {ignored:true, reason:"unknown_channel"}` with no row; an absent channel
+keeps the ref/event/status inference and the documented SMS last resort, because VoiceBip
+delivery reports may legitimately omit the field and dropping them would lose real delivery
+updates. `isMeta` still sits above the fallback, so a Meta envelope is WhatsApp whatever it
+claims. When the partner contract lands, a genuinely new spelling is one `CHANNEL_ALIASES`
+entry - the fix here is stopping the invention, not adding aliases.
+
+**Verification.** Section J in `test_callback_auth.js`: 40 assertions, 3 red first (J1
+`email`, J2 `channel_type: push`, J3 an object channel). J9 (`Meta + channel:"email"` →
+`whatsapp`) was already green — the Meta override sits above the fallback — and stays as a
+guard so a future reordering cannot break it. Live on `REQ-2026-9601`: `channel:"email"` and
+`channel_type:"push"` both answered `200 ignored/unknown_channel` and wrote nothing; a
+no-channel `answered` event produced a `voice/answered` row; a no-channel `sms-ext-…` ref
+produced `sms/delivered`; `channel:"sms"` still worked; exactly three rows at the end, which
+is the assertion that matters — nothing was invented. Workflow `valid: true`, 13 nodes.
+
+Deliberately not a Django row: `InteractionLog.channel` has no "unknown" value, so logging
+an ignored callback would mean lying in the other direction. The reason is in the execution,
+and the runbook now lists `unknown_status` and `unknown_channel` as the two `200` answers
+that are not failures.
+
 **State.** Full suite **200 tests / 200 pass** (`python manage.py test --parallel 1`,
 exit 0). `07` live and in sync with `n8n/07_provider_callback.json`; both live workflows
-`valid: true`. Next: 3.6 (unknown channel = ignore), 3.7 (`patient_phone` guard on
-callbacks - note the forwarder currently reads `n.patientName`, which `normalize()` never
-returns, so `patient_name` never reaches Django), 3.8 (`voice_payload_missing` row).
+`valid: true`. Next: 3.7 (`patient_phone` guard on callbacks - and the forwarder reads
+`n.patientName`, which `normalize()` never returns, so `patient_name` never reaches Django),
+3.8 (`voice_payload_missing` row).

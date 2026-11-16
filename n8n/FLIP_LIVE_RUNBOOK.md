@@ -248,6 +248,15 @@ curl.exe -s -X POST -H "Content-Type: application/json" `
 Expected: `200 {"ok":true,"accepted":true,...}` and the row advances. Then send a late
 `sent` for the same ref — expected: `200` but the stored status **does not go backwards**.
 
+Two other `200` answers are not failures:
+
+| Response | Meaning |
+|---|---|
+| `{"ok":true,"ignored":true,"reason":"unknown_status"}` | the provider's status word is not in `STATUS_ALIASES` — add it from the partner contract |
+| `{"ok":true,"ignored":true,"reason":"unknown_channel"}` | the callback named a channel this receiver cannot map (`email`, `push`, …). Nothing was written, by design — a row here would be invented data. Check the payload against `CHANNEL_ALIASES`; a genuinely new spelling is one table entry, not a code change |
+
+Both are visible in the n8n execution and absent from the dashboard feed on purpose.
+
 ---
 
 ## 6. Retire the simulator

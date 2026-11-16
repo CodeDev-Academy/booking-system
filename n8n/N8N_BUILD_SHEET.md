@@ -526,10 +526,14 @@ unconfigured receiver never accepts traffic.
 | `expired`, `timeout`, `timed_out` | `expired` |
 | anything else | **ignored, HTTP 200** (`unknown_status`) |
 
-Channel is taken from `channel` / `medium`, else inferred from the `external_ref`
-(`mock-voice-…`), the event name (`sms.delivered`), or the status (`answered` →
-voice). Provider: `voicebip` for voice/SMS, `meta_whatsapp` for WhatsApp,
-`telegram` for Telegram.
+Channel is taken from `channel` / `medium` / `channel_type`, else inferred from the
+`external_ref` (`mock-voice-…`), the event name (`sms.delivered`), or the status
+(`answered` → voice). A channel that is **named but unrecognised** is a contract mismatch,
+not an SMS: it is ignored (`200 {ignored:true, reason:"unknown_channel"}`) and writes no
+row, so a misconfigured partner cannot inject plausible-looking SMS rows into the patient
+timeline. Only when no channel is claimed at all does the documented SMS last resort apply
+(VoiceBip's remaining product). Provider: `voicebip` for voice/SMS, `meta_whatsapp` for
+WhatsApp, `telegram` for Telegram; a Meta envelope is WhatsApp whatever it claims.
 
 **Ignore, don't fail.** An event with an unknown status or no `external_ref` is
 answered `200 {ok:true, ignored:true, reason}`. Retrying cannot fix it, and a 5xx

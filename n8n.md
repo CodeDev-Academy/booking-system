@@ -591,6 +591,13 @@ Layer 4 contract — enforcement (opt-in, default OFF):
     actually fired". A leg that **fails** still stamps — the adapter cannot see the HTTP
     outcome, so un-stamping could duplicate a message that was already delivered. Verified
     live with a skip → send → repeat sequence on one request; see `TEST.md` T-712d.
+13. **Unknown channel ignored** — ✅ Done (Phase 3 / 3.6). An **explicit** channel the
+    receiver cannot map (`email`, `push`, an object) is a contract mismatch and returns
+    `200 {ignored:true, reason:"unknown_channel"}` with no row; an **absent** channel keeps
+    the ref/event/status inference and the documented SMS last resort. Before this, the
+    blind `channel = 'sms'` default filed every such event as an SMS delivery report — wrong
+    data in the patient timeline, with a `200` that stopped the provider retrying. See
+    `TEST.md` T-712f.
 
 ### 5.8 Edge cases owned by this integration
 
@@ -607,6 +614,9 @@ Layer 4 contract — enforcement (opt-in, default OFF):
   Attention; never silently succeeds. Since 3.3 the class leads the sentence
   (`Provider authentication failed: Invalid API key`), so a bad key is distinguishable at
   a glance from a 429, a 5xx or a dead endpoint.
+- Unknown channel in a callback → `200 ignored:unknown_channel`, no row (3.6). It is a
+  contract mismatch, not an SMS, and it is visible in the execution rather than invented in
+  the timeline.
 - NDPR: recordings/transcripts are sensitive; consent line in the agent script, retention policy
   before storing them in InteractionLog.
 
@@ -707,6 +717,18 @@ likely to enrich.
 **Vocabulary tables** live in the `Verify & Normalize Provider Event` Code node
 (`STATUS_ALIASES`, `CHANNEL_ALIASES`). Only those two tables need editing when the partner's
 real payload format arrives.
+
+**An unknown channel is ignored, not relabelled** (Phase 3 / 3.6). The channel chain used to
+end in a blind `channel = 'sms'`, so a callback that explicitly said `channel: "email"` (or
+`"push"`, or an object that stringifies to `[object Object]`) was filed as an SMS delivery
+report — a row in the patient timeline for a message that was never an SMS, with a `200` to
+the provider so it never retried and never surfaced. Now an **explicit but unmappable**
+channel returns `200 {ignored:true, reason:"unknown_channel"}` and writes nothing; an
+**absent** channel keeps the ref/event/status inference chain and the documented SMS last
+resort. The distinction is the point: *"you named a channel I don't know"* is a contract
+mismatch, *"you didn't name one"* is the expected VoiceBip shape. Ignored callbacks are
+visible in the n8n execution (`reason`), deliberately not in Django — `InteractionLog.channel`
+has no "unknown" value, so a row would require lying in the other direction.
 
 ---
 
