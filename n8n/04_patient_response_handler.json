@@ -1,29 +1,116 @@
 {
-  "name": "04_Patient_Response_Interactive_Router",
+  "name": "04_Patient_Response_Handler",
   "nodes": [
     {
       "parameters": {
         "httpMethod": "POST",
-        "path": "messaging/inbound",
+        "path": "whatsapp-inbound",
         "responseMode": "responseNode",
         "options": {}
       },
-      "id": "node-inbound-webhook",
-      "name": "Inbound Patient Response Webhook",
+      "id": "node-wa-inbound",
+      "name": "WhatsApp Inbound Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [160, 360],
-      "webhookId": "medpulse-messaging-inbound"
+      "position": [
+        -260,
+        220
+      ],
+      "webhookId": "medpulse-whatsapp-inbound"
     },
     {
       "parameters": {
-        "jsCode": "// Parse incoming Telegram callback_query or text message\nconst item = $input.item.json;\nconst body = item.body || item;\n\nlet action = 'unknown';\nlet entityId = '';\nlet chatId = null;\nlet messageId = null;\nlet callbackQueryId = null;\nlet rawData = '';\n\nif (body.callback_query) {\n  const cq = body.callback_query;\n  callbackQueryId = cq.id;\n  chatId = (cq.message && cq.message.chat) ? cq.message.chat.id : cq.from.id;\n  messageId = cq.message ? cq.message.message_id : null;\n  rawData = cq.data || '';\n\n  if (rawData.startsWith('select_slot_')) {\n    action = 'select_slot';\n    entityId = rawData.replace('select_slot_', '');\n  } else if (rawData.startsWith('confirm_attend_')) {\n    action = 'confirm_attendance';\n    entityId = rawData.replace('confirm_attend_', '');\n  } else if (rawData.startsWith('cancel_')) {\n    action = 'cancel_booking';\n    entityId = rawData.replace('cancel_', '');\n  } else if (rawData.startsWith('re_request_slots_') || rawData.startsWith('re_request_')) {\n    action = 're_request_slots';\n    entityId = rawData.replace('re_request_slots_', '').replace('re_request_', '');\n  } else if (rawData.startsWith('reschedule_')) {\n    action = 'reschedule_request';\n    entityId = rawData.replace('reschedule_', '');\n  }\n} else if (body.message) {\n  // Regular text message or /start\n  const msg = body.message;\n  chatId = msg.chat ? msg.chat.id : msg.from.id;\n  const text = (msg.text || '').trim();\n  if (text.startsWith('/start')) {\n    action = 'start_command';\n  } else {\n    action = 'text_message';\n    entityId = text;\n  }\n}\n\nreturn {\n  json: {\n    action: action,\n    entity_id: entityId,\n    raw_data: rawData,\n    chat_id: chatId,\n    message_id: messageId,\n    callback_query_id: callbackQueryId\n  }\n};"
+        "httpMethod": "POST",
+        "path": "sms-inbound",
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "id": "node-parse-callback",
-      "name": "Parse Callback & Intent",
+      "id": "node-sms-inbound",
+      "name": "SMS Inbound Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -260,
+        440
+      ],
+      "webhookId": "medpulse-sms-inbound"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Workflow C / C.2 - the patient-facing webhook is authenticated before anything\n// else runs. Fail closed: an unset DJANGO_WEBHOOK_SECRET rejects every request,\n// exactly like 05's dispatcher. No `|| 'clinic_dev_...'` fallback is allowed.\nconst src = $input.first().json || {};\nconst headers = src.headers || {};\n\nconst env = (name) => { try { const v = $env[name]; return v == null ? '' : String(v); } catch (e) { return ''; } };\n\nconst expected = env('DJANGO_WEBHOOK_SECRET');\nconst provided = String(headers['x-webhook-secret'] || '').trim();\nconst authorized = Boolean(expected) && provided === expected;\n\nreturn [{ json: {\n  ...src,\n  reply_auth: {\n    authorized: authorized,\n    reason: authorized ? null : (expected ? 'bad_secret' : 'secret_not_configured'),\n  },\n} }];"
+      },
+      "id": "node-verify-secret",
+      "name": "Verify Reply Secret",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [380, 360]
+      "position": [
+        -20,
+        330
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-reply-auth",
+              "leftValue": "={{ $json.reply_auth.authorized }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-if-authorized",
+      "name": "IF Reply Authorized",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        330
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: false, error: 'unauthorized', reason: $json.reply_auth.reason } }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "node-respond-unauthorized",
+      "name": "Respond Unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        460,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turn either provider payload into the one neutral shape Django accepts:\n// {phone, text, channel, provider_message_id}. Nothing is interpreted here -\n// \"2\" stays \"2\"; Django decides what it means.\nconst src = $input.first().json || {};\nconst body = (src.body && typeof src.body === 'object') ? src.body : {};\n\nconst str = (v) => (v === undefined || v === null) ? '' : String(v);\nconst trimmed = (v, max) => str(v).trim().slice(0, max);\n\n// ---- Meta WhatsApp Cloud API envelope -------------------------------------\nconst metaValue = body.object === 'whatsapp_business_account'\n  ? ((((body.entry || [])[0] || {}).changes || [])[0] || {}).value || {}\n  : null;\n\nif (metaValue) {\n  const messages = Array.isArray(metaValue.messages) ? metaValue.messages : [];\n  if (!messages.length) {\n    // A status callback (sent/delivered/read) is not a reply. 07 owns those;\n    // this workflow answers 200 and does nothing, so Meta never retries here.\n    return [{ json: { action: 'ignore', reason: 'not_a_message' } }];\n  }\n  const msg = messages[0] || {};\n  let text = '';\n  if (msg.type === 'text') text = (msg.text || {}).body || '';\n  else if (msg.type === 'button') text = (msg.button || {}).payload || (msg.button || {}).text || '';\n  else if (msg.type === 'interactive') {\n    const pick = (msg.interactive || {}).button_reply || (msg.interactive || {}).list_reply || {};\n    text = pick.id || pick.title || '';\n  } else if (msg.image && msg.image.caption) text = msg.image.caption;\n  else if (msg.document && msg.document.caption) text = msg.document.caption;\n  else if (msg.video && msg.video.caption) text = msg.video.caption;\n\n  const phone = trimmed(msg.from, 32);\n  if (!phone) return [{ json: { action: 'bad_request', reason: 'missing_phone' } }];\n  return [{ json: {\n    action: 'reply',\n    phone: phone,\n    text: trimmed(text, 500),\n    channel: 'whatsapp',\n    provider_message_id: trimmed(msg.id, 255),\n  } }];\n}\n\n// ---- VoiceBip SMS (flat payload; field names still being confirmed) --------\nconst phone = trimmed(body.phone || body.from || body.sender || body.msisdn || body.to, 32);\nif (!phone) return [{ json: { action: 'bad_request', reason: 'missing_phone' } }];\n\nconst rawText = (body.text !== undefined && body.text !== null) ? body.text\n  : ((body.message !== undefined && body.message !== null) ? body.message : body.body);\nconst text = (typeof rawText === 'string' || typeof rawText === 'number') ? trimmed(rawText, 500) : '';\n\nconst claimed = str(body.channel).toLowerCase();\nconst channel = (claimed === 'sms' || claimed === 'whatsapp') ? claimed : 'sms';\n\nreturn [{ json: {\n  action: 'reply',\n  phone: phone,\n  text: text,\n  channel: channel,\n  provider_message_id: trimmed(body.id || body.message_id || body.sms_id || body.external_ref, 255),\n} }];"
+      },
+      "id": "node-normalize",
+      "name": "Normalize Patient Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        220
+      ]
     },
     {
       "parameters": {
@@ -34,13 +121,14 @@
                 "options": {
                   "caseSensitive": true,
                   "leftValue": "",
-                  "typeValidation": "strict"
+                  "typeValidation": "strict",
+                  "version": 2
                 },
                 "conditions": [
                   {
-                    "id": "c-select",
+                    "id": "cond-action-reply",
                     "leftValue": "={{ $json.action }}",
-                    "rightValue": "select_slot",
+                    "rightValue": "reply",
                     "operator": {
                       "type": "string",
                       "operation": "equals"
@@ -48,20 +136,23 @@
                   }
                 ],
                 "combinator": "and"
-              }
+              },
+              "renameOutput": true,
+              "outputKey": "reply"
             },
             {
               "conditions": {
                 "options": {
                   "caseSensitive": true,
                   "leftValue": "",
-                  "typeValidation": "strict"
+                  "typeValidation": "strict",
+                  "version": 2
                 },
                 "conditions": [
                   {
-                    "id": "c-confirm",
+                    "id": "cond-action-ignore",
                     "leftValue": "={{ $json.action }}",
-                    "rightValue": "confirm_attendance",
+                    "rightValue": "ignore",
                     "operator": {
                       "type": "string",
                       "operation": "equals"
@@ -69,20 +160,23 @@
                   }
                 ],
                 "combinator": "and"
-              }
+              },
+              "renameOutput": true,
+              "outputKey": "ignore"
             },
             {
               "conditions": {
                 "options": {
                   "caseSensitive": true,
                   "leftValue": "",
-                  "typeValidation": "strict"
+                  "typeValidation": "strict",
+                  "version": 2
                 },
                 "conditions": [
                   {
-                    "id": "c-cancel",
+                    "id": "cond-action-bad",
                     "leftValue": "={{ $json.action }}",
-                    "rightValue": "cancel_booking",
+                    "rightValue": "bad_request",
                     "operator": {
                       "type": "string",
                       "operation": "equals"
@@ -90,400 +184,561 @@
                   }
                 ],
                 "combinator": "and"
-              }
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "strict"
-                },
-                "conditions": [
-                  {
-                    "id": "c-rereq",
-                    "leftValue": "={{ $json.action }}",
-                    "rightValue": "re_request_slots",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              }
+              },
+              "renameOutput": true,
+              "outputKey": "bad_request"
             }
           ]
-        }
+        },
+        "options": {}
       },
-      "id": "node-switch-action-router",
-      "name": "Route by Action Intent",
+      "id": "node-switch-action",
+      "name": "Switch Reply Action",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
-      "position": [600, 360]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ ($env.DJANGO_API_BASE_URL || 'http://backend:8000') + '/api/v1/slots/hold/' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            },
-            {
-              "name": "X-Webhook-Secret",
-              "value": "={{ $env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026' }}"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"slot_offer_id\": \"{{ $json.entity_id }}\",\n  \"patient_phone\": \"{{ $json.chat_id }}\",\n  \"channel\": \"telegram\"\n}",
-        "options": {
-          "timeout": 10000
-        }
-      },
-      "id": "node-hold-slot-django",
-      "name": "Acquire Slot Hold in Django",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [880, 140]
-    },
-    {
-      "parameters": {
-        "method": "PATCH",
-        "url": "={{ ($env.DJANGO_API_BASE_URL || 'http://backend:8000') + '/api/v1/appointments/' + $json.entity_id + '/status/' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            },
-            {
-              "name": "X-Webhook-Secret",
-              "value": "={{ $env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026' }}"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"status\": \"confirmed\",\n  \"updated_by\": \"patient_telegram_bot\"\n}",
-        "options": {}
-      },
-      "id": "node-patch-confirm-status",
-      "name": "Update Appointment to Confirmed",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [880, 300]
-    },
-    {
-      "parameters": {
-        "method": "PATCH",
-        "url": "={{ ($env.DJANGO_API_BASE_URL || 'http://backend:8000') + '/api/v1/appointments/' + $json.entity_id + '/status/' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            },
-            {
-              "name": "X-Webhook-Secret",
-              "value": "={{ $env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026' }}"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"status\": \"cancelled\",\n  \"cancellation_reason\": \"Cancelled by patient via Telegram\",\n  \"updated_by\": \"patient_telegram_bot\"\n}",
-        "options": {}
-      },
-      "id": "node-patch-cancel-status",
-      "name": "Update Appointment to Cancelled",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [880, 460]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ ($env.DJANGO_API_BASE_URL || 'http://backend:8000') + '/api/v1/booking-requests/' + $json.entity_id + '/re-request/' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            },
-            {
-              "name": "X-Webhook-Secret",
-              "value": "={{ $env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026' }}"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"re_requested_by\": \"patient_telegram_button\"\n}",
-        "options": {}
-      },
-      "id": "node-post-re-request",
-      "name": "Move Request to Priority Re-Request Tab",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [880, 620]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ 'https://api.telegram.org/bot' + ($env.TELEGRAM_BOT_TOKEN || '') + '/sendMessage' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"chat_id\": \"{{ $('Parse Callback & Intent').item.json.chat_id }}\",\n  \"text\": \"✅ <b>Booking Confirmed!</b>\\n\\nYour appointment has been locked in:\\n\\n🔖 <b>Reference ID:</b> <code>{{ $json.appointment_id || $json.id }}</code>\\n📅 <b>Time:</b> {{ $json.start_datetime ? new Date($json.start_datetime).toLocaleString() : 'Scheduled Time' }}\\n\\nWe look forward to seeing you at MedPulse Clinic!\",\n  \"parse_mode\": \"HTML\"\n}",
-        "options": {}
-      },
-      "id": "node-send-confirmation-card",
-      "name": "Send Confirmation Card",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1140, 140]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ 'https://api.telegram.org/bot' + ($env.TELEGRAM_BOT_TOKEN || '') + '/sendMessage' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"chat_id\": \"{{ $('Parse Callback & Intent').item.json.chat_id }}\",\n  \"text\": \"✅ <b>Attendance Confirmed!</b>\\n\\nThank you for letting us know! We have confirmed your attendance with front desk.\\n\\nPlease arrive 10 minutes before your scheduled appointment time.\",\n  \"parse_mode\": \"HTML\"\n}",
-        "options": {}
-      },
-      "id": "node-send-attend-ack",
-      "name": "Send Attendance Confirmed Reply",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1140, 300]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ 'https://api.telegram.org/bot' + ($env.TELEGRAM_BOT_TOKEN || '') + '/sendMessage' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"chat_id\": \"{{ $('Parse Callback & Intent').item.json.chat_id }}\",\n  \"text\": \"❌ <b>Appointment Cancelled</b>\\n\\nYour appointment has been cancelled. If you wish to schedule a new time in the future, simply tap /start or submit a new inquiry.\",\n  \"parse_mode\": \"HTML\"\n}",
-        "options": {}
-      },
-      "id": "node-send-cancel-ack",
-      "name": "Send Cancelled Reply",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1140, 460]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ 'https://api.telegram.org/bot' + ($env.TELEGRAM_BOT_TOKEN || '') + '/sendMessage' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"chat_id\": \"{{ $('Parse Callback & Intent').item.json.chat_id }}\",\n  \"text\": \"⚡ <b>Front Desk Notified</b>\\n\\nWe received your request for fresh available times! Our receptionist has prioritized your card and will send new available slot options shortly.\",\n  \"parse_mode\": \"HTML\"\n}",
-        "options": {}
-      },
-      "id": "node-send-rereq-ack",
-      "name": "Send Re-Request Priority Reply",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1140, 620]
+      "position": [
+        700,
+        220
+      ]
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={\n  \"status\": \"processed\",\n  \"action\": \"{{ $('Parse Callback & Intent').item.json.action }}\"\n}",
+        "responseBody": "={{ { ok: true, ignored: $json.reason || 'not_a_message' } }}",
         "options": {
           "responseCode": 200
         }
       },
-      "id": "node-respond-200-ok",
-      "name": "Respond 200 OK to Inbound Webhook",
+      "id": "node-respond-ignored",
+      "name": "Respond Ignored",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1400, 360]
+      "position": [
+        960,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: false, error: $json.reason || 'missing_phone' } }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "node-respond-bad",
+      "name": "Respond Bad Request",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        960,
+        470
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DJANGO_API_BASE_URL + '/webhooks/patient-reply/' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.DJANGO_WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: $json.phone, text: $json.text, channel: $json.channel, provider_message_id: $json.provider_message_id }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "node-ask-django",
+      "name": "Ask Django Patient Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        180
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: false, error: 'django_unavailable', detail: String(($json.error && $json.error.message) || 'patient-reply call failed').slice(0, 200) } }}",
+        "options": {
+          "responseCode": 500
+        }
+      },
+      "id": "node-respond-django-down",
+      "name": "Respond Django Unavailable",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1220,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-reply-text",
+              "leftValue": "={{ $json.reply_text }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-if-reply-text",
+      "name": "IF Reply Text Present",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1220,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, status: $json.status, sent: false, reason: 'empty_reply' } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "node-respond-nothing",
+      "name": "Respond Nothing To Send",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1470,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the outbound reply in the channel the patient used. Copy comes from\n// Django (`reply_text`) and is sent verbatim - this node only wraps it in the\n// provider's shape. Mock mode points at 06's simulator, like 05's adapter.\nconst answer = $input.first().json || {};\nconst inbound = $('Normalize Patient Reply').first().json || {};\n\nconst env = (name, fallback = '') => {\n  try { const v = $env[name]; return (v === undefined || v === null) ? fallback : String(v); }\n  catch (e) { return fallback; }\n};\nconst truthy = (v) => ['1', 'true', 'yes', 'on'].includes(String(v).trim().toLowerCase());\n\nconst providerMock = env('PROVIDER_MOCK') === '' ? true : truthy(env('PROVIDER_MOCK'));\n\nconst cfg = {\n  voicebipApiUrl: env('VOICEBIP_API_URL'),\n  voicebipApiKey: env('VOICEBIP_API_KEY'),\n  smsSenderId: env('VOICEBIP_SMS_SENDER_ID', 'Cedarcare'),\n  whatsappApiUrl: env('WHATSAPP_API_URL', 'https://graph.facebook.com/v19.0/'),\n  whatsappPhoneId: env('WHATSAPP_PHONE_NUMBER_ID'),\n  whatsappToken: env('WHATSAPP_ACCESS_TOKEN'),\n  simulatorUrl: env('PROVIDER_SIMULATOR_URL', 'http://127.0.0.1:5678/webhook/provider-sim'),\n};\n\nconst channel = String(answer.channel || inbound.channel || '').toLowerCase();\nconst replyText = String(answer.reply_text || '');\nconst requestCode = answer.request_id || '';\nconst phone = inbound.phone || '';\nconst waTo = phone.replace(new RegExp('[^0-9]', 'g'), '');\n\nconst skip = (reason) => ({\n  reply: answer,\n  phone: phone,\n  provider_message_id: inbound.provider_message_id || '',\n  provider_request: { route: 'skip', skip_reason: reason },\n});\n\n// An empty reply_text is Django's duplicate signal: nothing to deliver.\nif (!replyText.trim()) return [{ json: skip('empty_reply') }];\n// This endpoint owns SMS and WhatsApp. Telegram is Django's own conversation.\nif (channel !== 'sms' && channel !== 'whatsapp') return [{ json: skip('channel_not_supported') }];\n// Live mode without credentials must not guess: refuse and be visible.\nif (channel === 'whatsapp' && !providerMock && !(cfg.whatsappPhoneId && cfg.whatsappToken)) return [{ json: skip('provider_not_configured') }];\nif (channel === 'sms' && !providerMock && !(cfg.voicebipApiUrl && cfg.voicebipApiKey)) return [{ json: skip('provider_not_configured') }];\n\nconst body = channel === 'whatsapp'\n  ? {\n      messaging_product: 'whatsapp',\n      to: waTo,\n      type: 'text',\n      // Free-form text is allowed here: the patient just messaged us, so the\n      // 24-hour customer-service window is open.\n      text: { body: replyText },\n      biz_opaque_callback_data: requestCode,\n    }\n  : {\n      to: phone,\n      message: replyText,\n      sender_id: cfg.smsSenderId,\n      metadata: { request_code: requestCode, channel: 'sms' },\n    };\n\nconst url = channel === 'whatsapp'\n  ? (providerMock ? cfg.simulatorUrl + '/whatsapp' : cfg.whatsappApiUrl + cfg.whatsappPhoneId + '/messages')\n  : (providerMock ? cfg.simulatorUrl + '/sms' : cfg.voicebipApiUrl + '/sms');\n\nconst headers = channel === 'whatsapp'\n  ? { Authorization: 'Bearer ' + (providerMock ? 'mock' : cfg.whatsappToken) }\n  : { Authorization: 'Bearer ' + (providerMock ? 'mock' : cfg.voicebipApiKey) };\n\nreturn [{ json: {\n  reply: answer,\n  phone: phone,\n  provider_message_id: inbound.provider_message_id || '',\n  provider_request: { route: channel, url: url, headers: headers, body: body },\n} }];"
+      },
+      "id": "node-prepare-delivery",
+      "name": "Prepare Reply Delivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1470,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "cond-route-wa",
+                    "leftValue": "={{ $json.provider_request.route }}",
+                    "rightValue": "whatsapp",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "whatsapp"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "cond-route-sms",
+                    "leftValue": "={{ $json.provider_request.route }}",
+                    "rightValue": "sms",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "sms"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "cond-route-skip",
+                    "leftValue": "={{ $json.provider_request.route }}",
+                    "rightValue": "skip",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "skip"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-route-delivery",
+      "name": "Route Reply Channel",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1710,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.provider_request.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ $json.provider_request.headers.Authorization }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.provider_request.body) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "node-send-wa",
+      "name": "Send Reply WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1960,
+        -40
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.provider_request.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ $json.provider_request.headers.Authorization }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.provider_request.body) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "node-send-sms",
+      "name": "Send Reply SMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1960,
+        120
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Workflow C / C.2 - record the outbound reply as one `direction=outbound` row.\n// Django already wrote the INBOUND row (C.1) and owns the copy and the state;\n// this row is the other half of the conversation. Best-effort by design: a\n// Django outage while logging must never take the patient flow down.\n//\n// Do NOT post the inbound message here: that would duplicate the patient's own\n// row and contradict the fill-only rule for callbacks.\nconst incoming = $input.first().json || {};\nconst prepared = $('Prepare Reply Delivery').first().json || {};\nconst reply = prepared.reply || {};\nconst req = prepared.provider_request || {};\n\nconst isError = Boolean(incoming.error);\nconst resp = isError ? {} : incoming;\nconst skipped = req.route === 'skip';\n\n// >>> provider-error-classification (canonical copy — byte-identical in all three\n// Log * Interaction nodes; test_lognodes.js asserts that) >>>\n// n8n hands a failed HTTP call to this node as { message, name, stack } — plus a\n// `code` for transport errors. There is NO error.status: the status only exists as\n// the message prefix, and the response body is embedded as a JSON *string literal*:\n//   404 - \"{\\\"code\\\":404,\\\"message\\\":\\\"...\\\"}\"\n// So the status must be read from the prefix and the body needs a real two-step parse.\nconst STATUS_LABEL = {\n  400: 'Provider rejected the request',\n  401: 'Provider authentication failed',\n  403: 'Provider refused access',\n  404: 'Provider endpoint not found',\n  409: 'Provider reported a conflict',\n  422: 'Provider rejected the request',\n  429: 'Provider rate limit reached',\n};\nconst TRANSPORT_LABEL = {\n  ECONNREFUSED: 'Provider endpoint refused the connection',\n  ENOTFOUND: 'Provider host could not be resolved',\n  ETIMEDOUT: 'Provider did not respond in time',\n  ECONNABORTED: 'Provider did not respond in time',\n  ECONNRESET: 'Provider closed the connection',\n};\n\n// Display-only clean-up: one line, no escape residue, no wrapping quotes.\nconst tidy = (value) => {\n  if (typeof value === 'number') return String(value);\n  if (typeof value !== 'string') return '';\n  return value\n    .replace(/\\\\[nrt]/g, ' ')\n    .replace(/\\\\\"/g, '\"')\n    .replace(/^[\"']|[\"']$/g, '')\n    .replace(/\\s+/g, ' ')\n    .trim();\n};\n\n// Decode the embedded body: JSON string literal -> JSON payload. A hand-rolled\n// .replace(/\\\\\"/g, '\"') is NOT equivalent: it corrupts nested escaped quotes and\n// the parse then throws, which is how the raw wrapper used to reach reception.\nconst asObject = (body) => {\n  let value = String(body == null ? '' : body).trim();\n  for (let i = 0; i < 3; i += 1) {\n    if (value[0] === '{') {\n      try { return JSON.parse(value); } catch (e) { return null; }\n    }\n    if (value[0] !== '\"') return null;\n    const end = value.lastIndexOf('\"');\n    if (end <= 0) return null;\n    try { value = JSON.parse(value.slice(0, end + 1)); } catch (e) { return null; }\n  }\n  return null;\n};\n\nconst firstText = (list) => {\n  if (!Array.isArray(list)) return '';\n  for (const item of list) {\n    const text = tidy(typeof item === 'string' ? item : (item && (item.message || item.detail || item.msg)));\n    if (text) return text;\n  }\n  return '';\n};\n\n// The provider's own sentence, in the order providers actually use it.\nconst providerSentence = (body) => {\n  const parsed = asObject(body);\n  if (!parsed) return tidy(body);\n  const err = parsed.error;\n  const candidates = [\n    parsed.detail, parsed.message, parsed.error_description, parsed.description, parsed.hint,\n    typeof err === 'string' ? err : '',\n    err && err.message, err && err.title,\n    err && err.error_data && err.error_data.details,\n    firstText(parsed.errors),\n  ];\n  for (const candidate of candidates) {\n    const text = tidy(candidate);\n    if (text) return text;\n  }\n  return tidy(body);\n};\n\n// -> { status: number|null, detail: string (<=300) } — one sentence reception can act on.\nconst classifyProviderError = (err) => {\n  // Parse from the RAW message: tidy() unescapes quotes and must never run first,\n  // or the JSON string literal stops being a valid literal.\n  const message = (err && typeof err.message === 'string') ? err.message : '';\n  const explicit = Number(err && (err.status || err.httpCode || err.statusCode));\n  const prefixed = message.match(/^\\s*(\\d{3})\\s*-\\s*([\\s\\S]*)$/);\n  const status = (Number.isFinite(explicit) && explicit >= 400) ? explicit\n    : (prefixed ? Number(prefixed[1]) : null);\n  if (status) {\n    const label = STATUS_LABEL[status] || (status >= 500 ? 'Provider server error' : 'Provider returned an error');\n    const sentence = providerSentence(prefixed ? prefixed[2] : '');\n    return { status, detail: (label + (sentence ? ': ' + sentence : '')).slice(0, 300) };\n  }\n  const code = tidy(err && err.code).toUpperCase();\n  if (TRANSPORT_LABEL[code]) return { status: null, detail: TRANSPORT_LABEL[code].slice(0, 300) };\n  return { status: null, detail: (tidy(message) || tidy(err) || 'Provider call failed').slice(0, 300) };\n};\n// <<< provider-error-classification\nconst channel = String(reply.channel || 'sms').toLowerCase();\nconst provider = channel === 'whatsapp' ? 'meta_whatsapp' : 'voicebip';\n\nconst providerStatus = String(resp.status || '').toLowerCase();\nconst failed = isError || skipped || providerStatus === 'failed' || resp.ok === false;\n\n// One actionable sentence for reception. A held-back reply is recorded too:\n// the patient is waiting and silence would be invisible.\nconst SKIP_TEXT = {\n  provider_not_configured: 'Provider is not configured yet, so the reply was not sent.',\n  channel_not_supported: 'This channel is not handled by the patient-reply workflow, so nothing was sent.',\n  empty_reply: 'Django returned an empty reply (a duplicate message), so nothing was sent.',\n};\n\nconst classified = isError ? classifyProviderError(incoming.error) : null;\nconst errorDetail = isError\n  ? classified.detail\n  : (skipped\n    ? (SKIP_TEXT[req.skip_reason] || 'The reply was not delivered.')\n    : (failed ? String(resp.error_message || resp.error || resp.detail || 'Provider reported a failure').slice(0, 300) : ''));\n\n// Provider message ids, in the order providers actually use them.\nconst messageId = String(\n  (((resp.messages || [])[0] || {}).id) || resp.external_ref || resp.message_id || resp.id || resp.call_id || ''\n);\n\nconst payload = {\n  provider: provider,\n  channel: channel,\n  direction: 'outbound',\n  status: failed ? 'failed' : 'sent',\n  patient_phone: prepared.phone || '',\n  request_code: reply.request_id || '',\n  appointment_code: reply.appointment_code || '',\n  external_ref: failed ? '' : messageId,\n  summary: failed\n    ? 'Reply could not be delivered to the patient.'\n    : ('Reply delivered to patient via ' + (channel === 'whatsapp' ? 'WhatsApp' : 'SMS') + '.'),\n  error_detail: errorDetail,\n};\n\nlet logged = { ok: false };\ntry {\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: $env.DJANGO_API_BASE_URL + '/interactions/',\n    headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': $env.DJANGO_WEBHOOK_SECRET || '' },\n    body: payload,\n    json: true,\n  });\n  logged = { ok: true, id: res.id, status: res.status };\n} catch (e) {\n  logged = { ok: false, error: (e.message || String(e)).slice(0, 300) };\n}\n\nreturn [{ json: { ...prepared, provider_response: resp, reply_result: { ...logged, payload } } }];"
+      },
+      "id": "node-log-outcome",
+      "name": "Log Reply Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, status: $('Ask Django Patient Reply').first().json.status, intent: $('Ask Django Patient Reply').first().json.intent, request_id: $('Ask Django Patient Reply').first().json.request_id, appointment_code: $('Ask Django Patient Reply').first().json.appointment_code, reply_delivered: $json.reply_result.payload.status === 'sent', logged: $json.reply_result.ok } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "node-respond-handled",
+      "name": "Respond Reply Handled",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2480,
+        40
+      ]
     }
   ],
   "connections": {
-    "Inbound Patient Response Webhook": {
+    "WhatsApp Inbound Webhook": {
       "main": [
         [
           {
-            "node": "Parse Callback & Intent",
+            "node": "Verify Reply Secret",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Parse Callback & Intent": {
+    "SMS Inbound Webhook": {
       "main": [
         [
           {
-            "node": "Route by Action Intent",
+            "node": "Verify Reply Secret",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Route by Action Intent": {
+    "Verify Reply Secret": {
       "main": [
         [
           {
-            "node": "Acquire Slot Hold in Django",
+            "node": "IF Reply Authorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Reply Authorized": {
+      "main": [
+        [
+          {
+            "node": "Normalize Patient Reply",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Update Appointment to Confirmed",
+            "node": "Respond Unauthorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Patient Reply": {
+      "main": [
+        [
+          {
+            "node": "Switch Reply Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Reply Action": {
+      "main": [
+        [
+          {
+            "node": "Ask Django Patient Reply",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Update Appointment to Cancelled",
+            "node": "Respond Ignored",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Move Request to Priority Re-Request Tab",
+            "node": "Respond Bad Request",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Acquire Slot Hold in Django": {
+    "Ask Django Patient Reply": {
       "main": [
         [
           {
-            "node": "Send Confirmation Card",
+            "node": "IF Reply Text Present",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Django Unavailable",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Update Appointment to Confirmed": {
+    "IF Reply Text Present": {
       "main": [
         [
           {
-            "node": "Send Attendance Confirmed Reply",
+            "node": "Prepare Reply Delivery",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Nothing To Send",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Update Appointment to Cancelled": {
+    "Prepare Reply Delivery": {
       "main": [
         [
           {
-            "node": "Send Cancelled Reply",
+            "node": "Route Reply Channel",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Move Request to Priority Re-Request Tab": {
+    "Route Reply Channel": {
       "main": [
         [
           {
-            "node": "Send Re-Request Priority Reply",
+            "node": "Send Reply WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Reply SMS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Reply Outcome",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Send Confirmation Card": {
+    "Send Reply WhatsApp": {
       "main": [
         [
           {
-            "node": "Respond 200 OK to Inbound Webhook",
+            "node": "Log Reply Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Reply Outcome",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Send Attendance Confirmed Reply": {
+    "Send Reply SMS": {
       "main": [
         [
           {
-            "node": "Respond 200 OK to Inbound Webhook",
+            "node": "Log Reply Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Reply Outcome",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Send Cancelled Reply": {
+    "Log Reply Outcome": {
       "main": [
         [
           {
-            "node": "Respond 200 OK to Inbound Webhook",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send Re-Request Priority Reply": {
-      "main": [
-        [
-          {
-            "node": "Respond 200 OK to Inbound Webhook",
+            "node": "Respond Reply Handled",
             "type": "main",
             "index": 0
           }
@@ -495,9 +750,9 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "versionId": "medpulse-v1-04",
+  "versionId": "medpulse-v2-04",
   "meta": {
-    "templateCredsSetupCompleted": true,
+    "templateCredsSetupCompleted": false,
     "instanceId": "medpulse-clinic-booking"
   },
   "id": "medpulse-04-response-handler",
@@ -506,10 +761,7 @@
       "name": "Clinic Booking"
     },
     {
-      "name": "Router"
-    },
-    {
-      "name": "Interactive"
+      "name": "Workflow C"
     }
   ]
 }
