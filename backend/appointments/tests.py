@@ -3499,15 +3499,17 @@ class WebhookSecurityHardeningTests(APITestCase):
     # --- POST /api/v1/webhooks/expiry-sweep/ ---------------------------------
 
     def test_expiry_sweep_rejects_missing_and_wrong_secret(self):
+        """House auth contract: 401 + INVALID_WEBHOOK_SECRET, same as C.1/C.2 endpoints."""
         res_missing = self.client.post('/api/v1/webhooks/expiry-sweep/', {}, format='json')
-        self.assertEqual(res_missing.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(res_missing.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(res_missing.data['error'], 'INVALID_WEBHOOK_SECRET')
 
         res_wrong = self.client.post(
             '/api/v1/webhooks/expiry-sweep/', {}, format='json',
             HTTP_X_WEBHOOK_SECRET='wrong-secret'
         )
-        self.assertEqual(res_wrong.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(res_wrong.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(res_wrong.data['error'], 'INVALID_WEBHOOK_SECRET')
 
     def test_expiry_sweep_accepts_valid_secret(self):
         res = self.client.post(
@@ -3569,6 +3571,224 @@ class WebhookSecurityHardeningTests(APITestCase):
             HTTP_X_WEBHOOK_SECRET='日本語ガベージヘッダー'
         )
         self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class SweeperMessagingTests(APITestCase):
+    """
+    Workflow B / B.0 - the sweep endpoint tells n8n who to remind, on which app,
+    with the exact words. Django counts, dedupes and writes the copy; n8n only
+    delivers (same split as C.1/C.2).
+
+    Contract:
+    - Nudge/recovery items mirror the channels the offer actually went out on
+      (the request's own outbound InteractionLog rows). No record -> plain SMS.
+      Voice is never a reminder channel.
+    - Each item carries `channel`, `message` (copy composed here), a
+      `claim_ref` and, for Telegram, `telegram_chat_id` + `reply_markup`.
+    - The claim row IS the dedupe: one outbound InteractionLog row per item is
+      created at emit time (status 'queued'); n8n's outcome POST upserts the
+      same external_ref to sent/failed. A request inside the 15-minute nudge
+      window would otherwise be emitted by every 60-second sweep.
+    - Every swept offer also gets ONE system row (status 'expired') so the
+      dossier shows the expiry event even if delivery later fails.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+
+        self.service = Service.objects.create(
+            name='Sweep Consultation',
+            category='General',
+            duration_minutes=30,
+            buffer_minutes=5,
+            price=5000.00,
+        )
+        self.doctor = Doctor.objects.create(
+            name='Dr. Sweep Test',
+            specialty='General Medicine',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(17, 0),
+            is_active=True,
+        )
+
+    def make_request(self, phone='+2348099977777', minutes_left=10, notes=''):
+        req = BookingRequest.objects.create(
+            patient_name='Sweep Test Patient',
+            patient_phone=phone,
+            service=self.service,
+            status='slots_offered',
+            patient_notes=notes,
+            offer_expires_at=timezone.now() + datetime.timedelta(minutes=minutes_left),
+        )
+        base = timezone.now() + datetime.timedelta(hours=2)
+        for offset in (0, 60):
+            start = base + datetime.timedelta(minutes=offset)
+            SlotOffer.objects.create(
+                request=req,
+                doctor=self.doctor,
+                start_datetime=start,
+                end_datetime=start + datetime.timedelta(minutes=30),
+                expires_at=req.offer_expires_at,
+                offered_at=timezone.now(),
+            )
+        return req
+
+    def log_offer_row(self, req, channel):
+        """Simulate the offer having gone out on one channel (Workflow D's log)."""
+        return InteractionLog.objects.create(
+            provider='voicebip' if channel in ('sms', 'voice') else ('meta_whatsapp' if channel == 'whatsapp' else 'telegram'),
+            channel=channel,
+            direction='outbound',
+            status='sent',
+            patient_name=req.patient_name,
+            patient_phone=req.patient_phone,
+            booking_request=req,
+            external_ref=f'mock-{channel}-offer-{req.request_code}',
+            summary='Slot options dispatched',
+        )
+
+    def sweep(self, secret='clinic_dev_secret_2026'):
+        return self.client.post(
+            '/api/v1/webhooks/expiry-sweep/',
+            {'triggered_by': 'n8n_cron'}, format='json',
+            HTTP_X_WEBHOOK_SECRET=secret,
+        )
+
+    # --- nudge items ---------------------------------------------------------
+
+    def test_nudge_mirrors_the_channels_the_offer_went_out_on(self):
+        req = self.make_request()
+        self.log_offer_row(req, 'sms')
+        self.log_offer_row(req, 'whatsapp')
+
+        res = self.sweep()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        nudges = res.data['pre_expiry_nudges']
+        self.assertEqual(sorted(n['channel'] for n in nudges), ['sms', 'whatsapp'])
+        for nudge in nudges:
+            self.assertEqual(nudge['request_id'], req.request_code)
+            self.assertEqual(nudge['patient_phone'], req.patient_phone)
+            self.assertIn('message', nudge)
+            self.assertTrue(nudge['message'].strip())
+            self.assertIn('claim_ref', nudge)
+            self.assertIn('Sweep Consultation', nudge['message'])
+        self.assertEqual(
+            sorted(n['claim_ref'] for n in nudges),
+            sorted([f"nudge-{req.request_code}-sms", f"nudge-{req.request_code}-whatsapp"]),
+        )
+
+    def test_nudge_falls_back_to_sms_when_no_dispatch_record_exists(self):
+        req = self.make_request()
+        res = self.sweep()
+        nudges = res.data['pre_expiry_nudges']
+        self.assertEqual([n['channel'] for n in nudges], ['sms'])
+        self.assertTrue(nudges[0]['message'].strip())
+
+    def test_nudge_never_uses_voice_and_falls_back_to_sms(self):
+        req = self.make_request()
+        self.log_offer_row(req, 'voice')
+        res = self.sweep()
+        self.assertEqual([n['channel'] for n in res.data['pre_expiry_nudges']], ['sms'])
+
+    def test_telegram_nudge_carries_chat_id_and_keyboard(self):
+        req = self.make_request(notes='telegram_chat_id: 55882')
+        self.log_offer_row(req, 'telegram')
+        res = self.sweep()
+        nudges = [n for n in res.data['pre_expiry_nudges'] if n['channel'] == 'telegram']
+        self.assertEqual(len(nudges), 1)
+        nudge = nudges[0]
+        self.assertEqual(nudge['telegram_chat_id'], '55882')
+        self.assertIn('inline_keyboard', nudge['reply_markup'])
+        self.assertIn('Sweep Consultation', nudge['message'])
+
+    def test_nudge_is_emitted_only_once_across_sweeps(self):
+        req = self.make_request()
+        first = self.sweep()
+        self.assertEqual(len(first.data['pre_expiry_nudges']), 1)
+
+        second = self.sweep()
+        self.assertEqual(
+            [n for n in second.data['pre_expiry_nudges'] if n['request_id'] == req.request_code],
+            [],
+        )
+        claim = InteractionLog.objects.get(external_ref=f'nudge-{req.request_code}-sms')
+        self.assertEqual(claim.status, 'queued')
+        self.assertEqual(claim.direction, 'outbound')
+
+    # --- recovery items ------------------------------------------------------
+
+    def test_recovery_item_names_the_real_grammar_word(self):
+        """The patient must be told to reply RESCHEDULE - the word C.1 actually accepts."""
+        req = self.make_request(minutes_left=-1)
+        self.log_offer_row(req, 'sms')
+
+        res = self.sweep()
+        self.assertEqual(res.data['expired_offers_count'], 1)
+        recovery = res.data['expired_offers'][0]
+        self.assertEqual(recovery['channel'], 'sms')
+        self.assertIn('RESCHEDULE', recovery['message'].upper())
+        self.assertEqual(recovery['claim_ref'], f"recovery-{req.request_code}-sms")
+
+        req.refresh_from_db()
+        self.assertEqual(req.status, 'offer_expired')
+        self.assertTrue(AuditLog.objects.filter(entity_id=req.id, action='OFFER_EXPIRED_SWEEP').exists())
+
+    def test_recovery_claims_are_separate_per_channel(self):
+        req = self.make_request(minutes_left=-1)
+        self.log_offer_row(req, 'sms')
+        self.log_offer_row(req, 'whatsapp')
+
+        res = self.sweep()
+        refs = sorted(item['claim_ref'] for item in res.data['expired_offers'])
+        self.assertEqual(refs, sorted([f"recovery-{req.request_code}-sms", f"recovery-{req.request_code}-whatsapp"]))
+        for ref in refs:
+            self.assertTrue(InteractionLog.objects.filter(external_ref=ref, status='queued').exists())
+
+    def test_recovery_does_not_repeat_on_a_second_sweep(self):
+        req = self.make_request(minutes_left=-1)
+        self.log_offer_row(req, 'sms')
+        self.sweep()
+        second = self.sweep()
+        self.assertEqual(
+            [e for e in second.data['expired_offers'] if e['request_id'] == req.request_code],
+            [],
+        )
+
+    def test_swept_offer_writes_one_expired_system_row(self):
+        req = self.make_request(minutes_left=-1)
+        self.log_offer_row(req, 'sms')
+        self.sweep()
+
+        row = InteractionLog.objects.get(external_ref=f'sweep-expiry-{req.request_code}')
+        self.assertEqual(row.status, 'expired')
+        self.assertEqual(row.direction, 'outbound')
+        self.assertEqual(row.provider, 'system')
+        self.assertEqual(row.booking_request_id, req.id)
+
+    # --- untouched contract --------------------------------------------------
+
+    def test_hold_expiry_sweep_is_still_reported_without_messaging(self):
+        """15-minute hold expiry stays a silent state transition (no patient message)."""
+        req = self.make_request()
+        appt = Appointment.objects.create(
+            patient_name=req.patient_name,
+            patient_phone=req.patient_phone,
+            doctor=self.doctor,
+            service=req.service,
+            booking_request=req,
+            start_datetime=timezone.now() + datetime.timedelta(hours=2),
+            end_datetime=timezone.now() + datetime.timedelta(hours=2, minutes=30),
+            status='held',
+            hold_expires_at=timezone.now() - datetime.timedelta(minutes=1),
+        )
+        res = self.sweep()
+        self.assertEqual(res.data['expired_holds_count'], 1)
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, 'hold_expired')
 
 
 class RBACTighteningTests(APITestCase):

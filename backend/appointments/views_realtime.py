@@ -227,7 +227,7 @@ class ExpirySweepWebhookView(APIView):
         # Phase 1 / Task 1.1: constant-time X-Webhook-Secret verification
         # (resolution: ClinicSetting.webhook_secret -> custom_config -> env -> DEBUG-only dev fallback).
         if not verify_webhook_secret(request):
-            return Response({'error': 'INVALID_WEBHOOK_SECRET'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'error': 'INVALID_WEBHOOK_SECRET'}, status=status.HTTP_401_UNAUTHORIZED)
 
         actor = f"n8n:{request.data.get('triggered_by', 'cron_sweeper')}"
         sweep_result = SweepService.run_sweep(performed_by=actor)
