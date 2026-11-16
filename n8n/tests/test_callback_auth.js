@@ -194,5 +194,16 @@ metaWithChannel.entry[0].changes[0].value.statuses[0].channel = 'email';
 out = run(ENV, req(metaWithChannel, { headers: { 'x-provider-token': TOKEN } }));
 check('J9 Meta + channel:"email" -> whatsapp', out[0].json.payload && out[0].json.payload.channel === 'whatsapp', JSON.stringify(out[0].json).slice(0, 160));
 
+console.log('K. the patient identity a provider sends actually reaches Django (3.7)');
+// `normalize()` returns `patient_name`; the forwarder used to read `n.patientName`, which
+// is undefined, so every callback silently dropped the name the provider sent.
+out = noChannel(Object.assign({}, voiceBody, { id: 'x-9101', patient_name: 'Amina Test' }));
+check('K1 provider patient_name reaches the payload', out[0].json.payload.patient_name === 'Amina Test', JSON.stringify(out[0].json.payload.patient_name));
+check('K1b ...as a string, not undefined', typeof out[0].json.payload.patient_name === 'string', typeof out[0].json.payload.patient_name);
+out = noChannel(Object.assign({}, voiceBody, { id: 'x-9102' }));
+check('K2 absent name becomes an empty string', out[0].json.payload.patient_name === '', JSON.stringify(out[0].json.payload.patient_name));
+out = noChannel({ id: 'x-9103', status: 'delivered', recipient: '+2348030009103', request_code: 'REQ-2026-9581' });
+check('K3 the recipient alias is still read as the phone', out[0].json.payload.patient_phone === '+2348030009103', JSON.stringify(out[0].json.payload.patient_phone));
+
 console.log(failures ? '\nFAILED: ' + failures + ' of ' + total : '\nALL PASS (' + total + ' assertions)');
 process.exit(failures ? 1 : 0);

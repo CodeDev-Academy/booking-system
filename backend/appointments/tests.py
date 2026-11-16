@@ -4174,6 +4174,110 @@ class InteractionLogAPITests(APITestCase):
         self.assertEqual(log.booking_request, self.booking)
         self.assertEqual(InteractionLog.objects.count(), 1)
 
+    def test_callback_cannot_reattribute_patient_phone(self):
+        # Phase 3 / 3.7: a delivery receipt may FILL a blank number, never REWRITE
+        # one that already exists. The delivery outcome is real, so the status still
+        # advances - only the identity is refused. A silent overwrite would move the
+        # patient's whole message history onto another number (sandbox call, provider
+        # echoing a trunk DID, cross-wired external_ref) with nothing to show for it.
+        self._post_status('sent')
+
+        res = self._post_with_secret({
+            'provider': 'voicebip',
+            'channel': 'voice',
+            'status': 'answered',
+            'external_ref': 'VB-CALL-7788',
+            'patient_phone': '08099998888',
+            'call_duration_seconds': 30,
+        })
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        log = InteractionLog.objects.get(external_ref='VB-CALL-7788')
+        self.assertEqual(log.patient_phone, '+2348030001122')
+        self.assertEqual(log.status, 'answered')
+        self.assertEqual(log.call_duration_seconds, 30)
+        # The discrepancy is on the row reception reads, not only in a log file.
+        self.assertIn('did not match', log.summary)
+        self.assertIn('Patient accepted 10:00 slot.', log.summary)
+
+    def test_phone_mismatch_flag_is_not_duplicated(self):
+        # Providers retry. A second mismatching callback must not stack the sentence.
+        self._post_status('sent')
+        mismatch = {
+            'provider': 'voicebip',
+            'channel': 'voice',
+            'status': 'answered',
+            'external_ref': 'VB-CALL-7788',
+            'patient_phone': '08099998888',
+        }
+        self._post_with_secret(mismatch)
+        self._post_with_secret(mismatch)
+
+        log = InteractionLog.objects.get(external_ref='VB-CALL-7788')
+        self.assertEqual(log.summary.count('did not match'), 1)
+
+    def test_same_phone_in_another_format_is_not_a_mismatch(self):
+        # Identity is the normalized number, not the string: '08030001122' and
+        # '+234 803 000 1122' are the same patient and must not be flagged.
+        self._post_status('sent')
+        res = self._post_status('answered', patient_phone='08030001122')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        log = InteractionLog.objects.get()
+        self.assertEqual(log.patient_phone, '+2348030001122')
+        self.assertEqual(log.status, 'answered')
+        self.assertNotIn('did not match', log.summary)
+
+    def test_lower_rank_event_with_different_phone_still_ignored(self):
+        # The lower-rank branch already refused to overwrite. Pin it so the new guard
+        # and the old one cannot drift apart.
+        self._post_status('answered')
+        res = self._post_status('sent', patient_phone='08099998888')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        log = InteractionLog.objects.get()
+        self.assertEqual(log.patient_phone, '+2348030001122')
+        self.assertEqual(log.status, 'answered')
+        self.assertNotIn('did not match', log.summary)
+
+    def test_filling_a_blank_phone_is_not_flagged_as_mismatch(self):
+        # The 2.1 contract: a queued skip row has no number, and the real delivery
+        # event fills it. That is a fill, not a rewrite, so no warning sentence.
+        self._post_with_secret({
+            'provider': 'voicebip',
+            'channel': 'voice',
+            'status': 'queued',
+            'request_code': 'REQ-2026-0042',
+            'external_ref': 'VB-CALL-FILL-1',
+            'error_detail': 'outside_call_window',
+        })
+        res = self._post_with_secret({
+            'provider': 'voicebip',
+            'channel': 'voice',
+            'status': 'answered',
+            'request_code': 'REQ-2026-0042',
+            'external_ref': 'VB-CALL-FILL-1',
+            'patient_phone': '+2348030001122',
+        })
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        log = InteractionLog.objects.get(external_ref='VB-CALL-FILL-1')
+        self.assertEqual(log.patient_phone, '+2348030001122')
+        self.assertNotIn('did not match', log.summary)
+
+    def test_callback_without_name_does_not_blank_stored_name(self):
+        # Same rule as the phone: "said nothing" is not "clear it". A delivery receipt
+        # that carries no patient name must not erase the name the first event carried.
+        self._post_status('sent')
+        self.assertEqual(InteractionLog.objects.get().patient_name, 'Amina Test')
+
+        res = self._post_status('answered', patient_name='')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        log = InteractionLog.objects.get()
+        self.assertEqual(log.patient_name, 'Amina Test')
+        self.assertEqual(log.status, 'answered')
+
     def test_id_only_advancing_event_preserves_links(self):
         # Phase 3 (hardening, link-clobber quirk from 2.1): a provider callback
         # that identifies the message by external_ref alone (typical VoiceBip

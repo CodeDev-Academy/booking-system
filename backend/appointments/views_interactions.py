@@ -28,6 +28,21 @@ from .services.sse_bus import broadcast_event
 
 logger = logging.getLogger(__name__)
 
+# Phase 3 / 3.7: the phone on an existing row is identity, not ordinary data. A callback
+# may fill a blank number (2.1 contract) but must never rewrite one that is already there.
+PHONE_MISMATCH_NOTE = (
+    'Phone on this callback did not match the number on file, '
+    'so the number on file was kept.'
+)
+
+
+def _flag_phone_mismatch(summary):
+    """Append the mismatch note once, keeping whatever the provider actually said."""
+    text = (summary or '').strip()
+    if PHONE_MISMATCH_NOTE in text:
+        return text
+    return (text + ' · ' + PHONE_MISMATCH_NOTE) if text else PHONE_MISMATCH_NOTE
+
 
 class InteractionListCreateView(APIView):
     """
@@ -107,6 +122,33 @@ class InteractionListCreateView(APIView):
                     existing.save(update_fields=filled + ['updated_at'])
                 instance = existing
             else:
+                # Phase 3 / 3.7: a callback may FILL a blank number but must not REWRITE
+                # one that already exists. The delivery outcome is real, so the status
+                # still advances - only the identity is refused. Without this, a sandbox
+                # call, a provider echoing its own DID, or a cross-wired external_ref
+                # could move the patient's whole history onto another number, silently.
+                if existing is not None:
+                    stored_phone = existing.patient_phone
+                    incoming_phone = validated.get('patient_phone') or ''
+                    if stored_phone and incoming_phone and incoming_phone != stored_phone:
+                        validated['patient_phone'] = stored_phone
+                        validated['summary'] = _flag_phone_mismatch(
+                            validated.get('summary') or existing.summary
+                        )
+                        # external_ref only: no phone numbers in the log.
+                        logger.warning(
+                            'Callback %s carried a different phone; kept the stored number.',
+                            external_ref,
+                        )
+                    # Same identity rule for the name, and the same distinction: a
+                    # delivery receipt that says nothing about the patient must not
+                    # erase the name the first event carried. No note here - silence
+                    # is not a discrepancy, so there is nothing to flag.
+                    stored_name = existing.patient_name
+                    incoming_name = validated.get('patient_name') or ''
+                    if stored_name and not incoming_name.strip():
+                        validated['patient_name'] = stored_name
+
                 # Atomic upsert (Review Fix #2): a check-then-create race would let two
                 # concurrent n8n re-deliveries both pass the .first() check and the second
                 # create() crash with IntegrityError. update_or_create handles both outcomes.
