@@ -20,7 +20,7 @@ Exit code `0` = every assertion passed, `1` = at least one failed. Each assertio
 | `test_format.js` | `Format Offers & Telegram Buttons` — patient-facing grammar per option count | 22 |
 | `test_adapter.js` | `Provider Config & Adapter` — routing, guards, skip reasons, dedupe stamping, request body | 62 |
 | `test_lognodes.js` | the three `Log * Interaction` nodes — provider error classification | 121 |
-| `test_callback_auth.js` | `07` › `Verify & Normalize Provider Event` — which token carriers authenticate, the refusal contract, channel inference | 40 |
+| `test_callback_auth.js` | `07` › `Verify & Normalize Provider Event` — which token carriers authenticate, the refusal contract, channel inference, identity fields | 44 |
 
 Counts are the harness's own output (`ok` lines), not an estimate.
 

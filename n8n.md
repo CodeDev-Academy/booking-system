@@ -598,6 +598,12 @@ Layer 4 contract — enforcement (opt-in, default OFF):
     blind `channel = 'sms'` default filed every such event as an SMS delivery report — wrong
     data in the patient timeline, with a `200` that stopped the provider retrying. See
     `TEST.md` T-712f.
+14. **Patient identity is fill-only** — ✅ Done (Phase 3 / 3.7). A callback may fill a blank
+    phone/name but never rewrite a stored one; the delivery outcome still advances, the phone
+    discrepancy is appended to `summary` once, and the log names only the `external_ref`.
+    Also fixed the forwarder reading `n.patientName` (undefined) instead of
+    `n.patient_name`, which meant no callback had ever carried a patient name to Django.
+    See `TEST.md` T-712g.
 
 ### 5.8 Edge cases owned by this integration
 
@@ -609,7 +615,9 @@ Layer 4 contract — enforcement (opt-in, default OFF):
 - Call window 08:00–19:00 Africa/Lagos; call started at 18:59 still completes.
 - Retry policy: max 2 attempts, backoff; each attempt logged separately with its own `external_ref`.
 - DND / invalid number → `failed` (not `no_answer`).
-- Duplicate or out-of-order callbacks → upsert by `external_ref`, status rank enforced.
+- Duplicate or out-of-order callbacks → upsert by `external_ref`, status rank enforced; a
+  callback can fill a blank phone but never rewrite a stored one (3.7) — the mismatch is
+  flagged in the row's summary instead of being rejected.
 - Provider key missing/invalid → the branch logs `failed` and the request appears in Needs
   Attention; never silently succeeds. Since 3.3 the class leads the sentence
   (`Provider authentication failed: Invalid API key`), so a bad key is distinguishable at
@@ -642,9 +650,14 @@ Layer 4 contract — enforcement (opt-in, default OFF):
 `POST /webhook/provider-callback`. Point the partner's delivery-report / call-outcome webhook
 at it and give them the shared token.
 
-**Auth.** `PROVIDER_CALLBACK_TOKEN` must be supplied as `?token=`, `?access_token=`, or an
-`X-Provider-Token` / `X-Callback-Token` / `X-Webhook-Token` header. Unset env var → every
-request is `401` (fail closed).
+**Auth.** `PROVIDER_CALLBACK_TOKEN` must be supplied in an `X-Provider-Token` /
+`X-Callback-Token` / `X-Webhook-Token` header (the header wins if several are present).
+Unset env var → every request is `401` (fail closed). A `?token=` query parameter is honoured
+**only** on a Meta envelope (Meta cannot set custom headers) or when
+`PROVIDER_CALLBACK_ALLOW_QUERY_TOKEN` is exactly `true` — an escape hatch for a partner whose
+dashboard can only paste a URL. `?access_token=` and `body.token` are no longer accepted: n8n
+records the webhook's query object in every execution, so a URL token writes the secret into
+the log of every callback, permanently, for anyone with UI access. See Phase 3 / 3.5.
 
 **Request body** (any subset; the receiver infers the rest):
 
@@ -713,6 +726,23 @@ duration, no request/appointment code) — no longer unlinks a row from its
 a non-`null` value still wins, including deliberate re-linking. Without this, the
 dashboard lost the request timeline for exactly the callbacks our own normalizer is least
 likely to enrich.
+
+**An existing row's phone and name are identity** (Phase 3 / 3.7). A callback may **fill** a
+blank number — the 2.1 skip-visibility contract — but it may never **rewrite** one that is
+already stored. The delivery outcome is real, so the status still advances; only the identity
+is refused, and the discrepancy is appended to the row's `summary` (idempotently, so a retried
+callback cannot stack it) so reception sees it rather than it living in a log file. The log
+line names the `external_ref` only, never the numbers. A nameless callback is not a
+discrepancy — silence never erases a stored name — so it is restored silently with no note.
+Without the guard, a sandbox call, a provider echoing its own trunk DID, or a cross-wired
+`external_ref` could move a patient's whole message history onto another number with nothing
+to show for it.
+
+> **Forwarder gotcha (fixed in 3.7):** the `Forward to Django` node read `n.patientName`, but
+> `normalize()` returns `patient_name` — so the value was `undefined`, n8n dropped it from the
+> payload, and **no callback had ever carried a patient name to Django**. Add a `patient_name`
+> assertion to any new alias you map: a silently undefined expression is invisible to the
+> harness unless something asserts on the outgoing payload.
 
 **Vocabulary tables** live in the `Verify & Normalize Provider Event` Code node
 (`STATUS_ALIASES`, `CHANNEL_ALIASES`). Only those two tables need editing when the partner's

@@ -1498,6 +1498,62 @@ that are not failures.
 
 **State.** Full suite **200 tests / 200 pass** (`python manage.py test --parallel 1`,
 exit 0). `07` live and in sync with `n8n/07_provider_callback.json`; both live workflows
-`valid: true`. Next: 3.7 (`patient_phone` guard on callbacks - and the forwarder reads
-`n.patientName`, which `normalize()` never returns, so `patient_name` never reaches Django),
-3.8 (`voice_payload_missing` row).
+`valid: true`. Next: 3.7 (patient identity on callbacks), 3.8 (`voice_payload_missing` row).
+
+---
+
+## 2026-11-16 - Phase 3 / 3.7: patient identity on a callback is fill-only
+
+**Origin.** Reading 3.6 surfaced two defects in the same field, one of them a silent
+data-loss bug. The upsert path built `defaults` from every validated field, so
+`update_or_create` would happily write a callback's `patient_phone` over a number already on
+the row - while the lower-rank branch fourteen lines above refused exactly that and filled
+blanks only. Two opposite policies on the same field, in one file. And the overwrite was
+reachable, not theoretical: `normalize_phone_e164` is deliberately lenient (a bare 11-digit
+`0…` number becomes `+234…`), so a sandbox call, a provider echoing its trunk DID, or a
+cross-wired `external_ref` reattributes a patient's whole message history with nothing to
+show for it. It is the link-clobber bug fixed in 3.1, one field over.
+
+The second defect was in `07`: the forwarder read `n.patientName`, but `normalize()` returns
+`patient_name`. The value was `undefined`, n8n dropped it from the payload, and **no callback
+had ever carried a patient name to Django**. One line - and only visible because the live
+probe asserted on Django rows instead of the webhook's own response.
+
+**The rule is "fill a blank, never rewrite."** A callback may fill a missing phone (the 2.1
+skip-visibility contract: a queued row has no number because nothing was sent), but a stored
+number is identity. The delivery outcome is real, so the status still advances and the
+duration/error text still land; only the identity is refused. The mismatch is appended to the
+row's `summary` once (`_flag_phone_mismatch` is idempotent, so provider retries cannot stack
+it) because a discrepancy that only exists in a log file is invisible to the person who needs
+it - and the log line names the `external_ref` only, never the numbers. The same rule then
+applied itself to the name: a callback that says nothing about the patient must not erase the
+name the first event carried; silence is not a discrepancy, so it is restored with no note.
+
+Deliberately **not** rejected with `400`: throwing away a real delivery outcome to protect a
+field we can simply keep would trade a guaranteed loss for a hypothetical one.
+
+**Tests first.** Six in `InteractionLogAPITests`: reattribution refused, the flag not
+duplicated, a same-number-in-another-format not flagged, the lower-rank branch pinned so the
+two policies cannot drift apart, a blank filled without a note, and a nameless callback not
+blanking the name. Two red first (the overwrite and the stacking), then 31/31. Section K in
+`test_callback_auth.js`: 44 assertions, 3 red first (`patient_name` reaching the payload,
+being a string rather than `undefined`, and an absent name becoming `''`), with K3 keeping the
+`recipient` phone alias pinned.
+
+**Verified live on `REQ-2026-9701`, reading Django rows.** A callback with a different phone
+advanced the row to `answered`, kept `+2348030009701`, and still stored the 42-second
+duration; a retried mismatch left exactly one sentence; `Amina Probe` arrived on the first
+callback and survived a later nameless one; the same number as `08030009702` was not flagged;
+a blank number was still filled. 13/13.
+
+Two probe bugs worth recording, since both were mine and both looked like code failures. The
+first version asserted on the webhook response, which only echoes
+`ok/accepted/external_ref/status/channel/request_id` - the row is the truth. And the
+"same format" case used `080300009702`, twelve digits, which the lenient normalizer turns
+into `+080300009702` and correctly reads as a mismatch: an 11-digit local number is the only
+form that collapses to the stored `+234…`.
+
+**State.** Full suite **206 tests / 206 pass** (`python manage.py test --parallel 1`,
+exit 0). `07` live and in sync with `n8n/07_provider_callback.json`; both live workflows
+`valid: true`. Next: 3.8 (`voice_payload_missing` row).
+

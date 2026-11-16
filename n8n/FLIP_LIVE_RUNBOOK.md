@@ -257,6 +257,14 @@ Two other `200` answers are not failures:
 
 Both are visible in the n8n execution and absent from the dashboard feed on purpose.
 
+**Identity is fill-only.** A callback that carries a *different* number than the one already
+on the row still returns `200 accepted` and still advances the status — before you assume the
+callback "failed", open the row: the stored number is kept and its summary ends with *"Phone
+on this callback did not match the number on file, so the number on file was kept."* That is
+the desired behaviour (a sandbox call, or a provider echoing its own DID, must not reattribute
+a patient), so fix the payload, not the receiver. A callback that carries no name never
+blanks a stored one.
+
 ---
 
 ## 6. Retire the simulator

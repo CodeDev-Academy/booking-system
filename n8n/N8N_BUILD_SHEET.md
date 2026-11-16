@@ -640,6 +640,13 @@ review. Their flaws are **not to be patched** — the skeletons get rebuilt as W
    escaped quotes, the parse throws, and the raw wrapper (`404 - "{\"code\":404,…`)
    reaches reception. `n8n/tests/test_lognodes.js` asserts the block is byte-identical
    across every copy, so a drifted paste fails the harness.
+8. **Patient identity on a callback is fill-only.** `POST /interactions/` accepts a callback
+   that carries a phone/name, but on an existing row it may only **fill a blank**, never
+   rewrite a stored value. The delivery outcome still advances, and a phone discrepancy is
+   appended to `summary` once (idempotent; no numbers in the log). If a rebuild forwards
+   identity fields, read the snake_case keys `normalize()` actually returns — `n.patientName`
+   was `undefined` in `07` for a whole phase, so no callback ever carried a patient name to
+   Django. Assert on the outgoing payload, not just the response code.
 
 ## 7. Build & test order (recommended)
 
