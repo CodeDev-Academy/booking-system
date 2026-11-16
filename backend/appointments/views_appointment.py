@@ -2,7 +2,6 @@ import csv
 import uuid
 import datetime
 from django.db import transaction
-from django.db.models import Q
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
@@ -14,6 +13,7 @@ from rest_framework.permissions import AllowAny
 from .models import Appointment, Doctor, FollowUpTask, AuditLog, ClinicSetting
 from .permissions import IsStaffAuthenticated
 from .services.hold_service import HoldService, SlotConflictException
+from .services.slot_selection import select_slot_offer
 from .services.disruption_service import DisruptionService
 from .services.webhook_security import has_staff_or_webhook_access, verify_webhook_secret
 from .services.sse_bus import broadcast_event
@@ -75,60 +75,50 @@ class SlotHoldView(APIView):
         # Note: patient replies create 15-minute HOLDS (the request only becomes
         # 'converted' at confirmation), so the active-hold check is the real signal.
         # Expired holds do NOT match — the patient legitimately gets a fresh chance.
+        # Workflow C / C.1: this core is shared with the patient-reply webhook.
         offer = validated.get('slot_offer_obj')
         if offer:
-            now = timezone.now()
-            existing = Appointment.objects.filter(
-                booking_request=offer.request,
-            ).filter(
-                Q(status='confirmed') | Q(status='held', hold_expires_at__gt=now)
-            ).first()
-            if existing or offer.is_selected or offer.request.status == 'converted':
+            outcome, appointment = select_slot_offer(offer, performer=performer)
+            if outcome == 'already_confirmed':
                 return Response({
                     "error": "ALREADY_CONFIRMED",
                     "already_confirmed": True,
                     "detail": "This request was already selected. No action needed.",
-                    "appointment_code": existing.appointment_code if existing else None,
+                    "appointment_code": appointment.appointment_code if appointment else None,
                 }, status=status.HTTP_200_OK)
+        else:
+            try:
+                appointment = HoldService.acquire_slot(
+                    doctor_id=validated['doctor_obj'].id,
+                    service_id=validated['service_obj'].id,
+                    start_datetime=validated['start_dt'],
+                    end_datetime=validated['end_dt'],
+                    patient_name=validated['name'],
+                    patient_phone=validated['phone'],
+                    booking_request_id=validated['booking_req'].id if validated.get('booking_req') else None,
+                    is_hold=not (is_instant or is_walk_in),
+                    initial_status='arrived' if is_walk_in else None,
+                    performed_by=performer,
+                    date_of_birth=validated.get('dob'),
+                    gender=validated.get('gender', ''),
+                    is_emergency=validated.get('is_emergency', False),
+                )
+            except SlotConflictException as e:
+                return Response({
+                    "error": "SLOT_CONFLICT",
+                    "detail": str(e),
+                    "conflicting_appointment": getattr(e.conflicting_appointment, 'appointment_code', None)
+                }, status=status.HTTP_409_CONFLICT)
 
-        try:
-            appointment = HoldService.acquire_slot(
-                doctor_id=validated['doctor_obj'].id,
-                service_id=validated['service_obj'].id,
-                start_datetime=validated['start_dt'],
-                end_datetime=validated['end_dt'],
-                patient_name=validated['name'],
-                patient_phone=validated['phone'],
-                booking_request_id=validated['booking_req'].id if validated.get('booking_req') else None,
-                is_hold=not (is_instant or is_walk_in),
-                initial_status='arrived' if is_walk_in else None,
-                performed_by=performer,
-                date_of_birth=validated.get('dob'),
-                gender=validated.get('gender', ''),
-                is_emergency=validated.get('is_emergency', False),
-            )
-        except SlotConflictException as e:
-            return Response({
-                "error": "SLOT_CONFLICT",
-                "detail": str(e),
-                "conflicting_appointment": getattr(e.conflicting_appointment, 'appointment_code', None)
-            }, status=status.HTTP_409_CONFLICT)
-
-        # Mark slot offer as selected if applicable
-        if 'slot_offer_obj' in validated:
-            offer = validated['slot_offer_obj']
-            offer.is_selected = True
-            offer.save(update_fields=['is_selected'])
-
-        broadcast_event('slot.held', {
-            'appointment_id': str(appointment.id),
-            'appointment_code': appointment.appointment_code,
-            'doctor_id': str(appointment.doctor.id),
-            'start_datetime': appointment.start_datetime.isoformat(),
-            'end_datetime': appointment.end_datetime.isoformat(),
-            'status': appointment.status,
-            'hold_expires_at': appointment.hold_expires_at.isoformat() if appointment.hold_expires_at else None,
-        })
+            broadcast_event('slot.held', {
+                'appointment_id': str(appointment.id),
+                'appointment_code': appointment.appointment_code,
+                'doctor_id': str(appointment.doctor.id),
+                'start_datetime': appointment.start_datetime.isoformat(),
+                'end_datetime': appointment.end_datetime.isoformat(),
+                'status': appointment.status,
+                'hold_expires_at': appointment.hold_expires_at.isoformat() if appointment.hold_expires_at else None,
+            })
 
         return Response({
             "appointment_id": str(appointment.id),

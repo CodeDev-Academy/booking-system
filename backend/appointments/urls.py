@@ -52,6 +52,7 @@ from .views_realtime import (
     InboundWebhookView,
     ExpirySweepWebhookView,
 )
+from .views_patient_reply import PatientReplyWebhookView
 from .views_interactions import InteractionListCreateView
 from .views_analytics import (
     AnalyticsSummaryView,
@@ -169,6 +170,9 @@ urlpatterns = [
     path('webhooks/telegram/', InboundWebhookView.as_view(), name='webhook-telegram'),
     path('webhooks/whatsapp/inbound/', InboundWebhookView.as_view(), name='webhook-whatsapp-inbound'),
     path('webhooks/expiry-sweep/', ExpirySweepWebhookView.as_view(), name='webhook-expiry-sweep'),
+    # Workflow C / C.1: channel-neutral patient replies (SMS / WhatsApp) —
+    # phone -> open request resolution and intent interpretation live in Django.
+    path('webhooks/patient-reply/', PatientReplyWebhookView.as_view(), name='webhook-patient-reply'),
     path('telegram/webhook/', InboundWebhookView.as_view(), name='telegram-webhook-alias'),
 
     # Task 3.6: Analytics KPI Summary API & CSV Exports

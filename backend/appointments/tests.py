@@ -5795,6 +5795,313 @@ class DispatchEnforcementTests(APITestCase):
         self.assertEqual(res.data['error'], 'PATIENT_ALREADY_BOOKED')
 
 
+class PatientReplyWebhookTests(APITestCase):
+    """
+    Workflow C / C.1 (2026-11-16) — the channel-neutral patient-reply endpoint.
+
+        POST /api/v1/webhooks/patient-reply/
+        X-Webhook-Secret: <shared>          (fail closed)
+        {"phone", "text", "channel", "provider_message_id"}
+
+    Telegram already works because its button carries `select_slot_<offer>`. An SMS
+    says only "2" plus the sender's number, so Django must answer two questions:
+    which open request belongs to this phone, and which offer is number 2.
+
+    The endpoint owns INTERPRETATION; n8n stays a transport that delivers `reply_text`.
+    Tests R1-R12 pin: resolution (R3, R8), select intent (R1, R4, R5, R11),
+    idempotency (R2, R12), lifecycle effects (R6, R7), auth (R9), inbound logging (R10).
+    """
+
+    ENDPOINT = '/api/v1/webhooks/patient-reply/'
+    SECRET = 'clinic_dev_secret_2026'
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = self.SECRET
+        self.clinic.save()
+
+        self.doctor = Doctor.objects.create(
+            name='Dr. Reply Doctor',
+            specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0),
+            shift_end=datetime.time(17, 0),
+        )
+        self.service = Service.objects.create(
+            name='Dental Consultation',
+            duration_minutes=30,
+            buffer_minutes=5,
+            price=10000,
+        )
+        self.booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0101',
+            patient_name='Amina Reply',
+            patient_phone='+2348030001122',
+            service=self.service,
+            status='slots_offered',
+        )
+        # Three offers, deliberately NOT in start-time order (same shape as
+        # SlotOptionNumberHoldTests): "2" must mean the 2nd offer in ORIGINAL
+        # dispatch order, never the 2nd-earliest time.
+        base = timezone.make_aware(datetime.datetime(2026, 12, 1, 10, 0, 0))
+        self.offer1 = SlotOffer.objects.create(
+            request=self.booking, doctor=self.doctor,
+            start_datetime=base, end_datetime=base + datetime.timedelta(minutes=30),
+            expires_at=timezone.now() + datetime.timedelta(minutes=60),
+        )
+        self.offer2 = SlotOffer.objects.create(
+            request=self.booking, doctor=self.doctor,
+            start_datetime=base - datetime.timedelta(hours=1),
+            end_datetime=base - datetime.timedelta(hours=1) + datetime.timedelta(minutes=30),
+            expires_at=timezone.now() + datetime.timedelta(minutes=60),
+        )
+        self.offer3 = SlotOffer.objects.create(
+            request=self.booking, doctor=self.doctor,
+            start_datetime=base + datetime.timedelta(hours=2),
+            end_datetime=base + datetime.timedelta(hours=2) + datetime.timedelta(minutes=30),
+            expires_at=timezone.now() + datetime.timedelta(minutes=60),
+        )
+        t0 = timezone.now()
+        SlotOffer.objects.filter(id=self.offer1.id).update(offered_at=t0 - datetime.timedelta(minutes=2))
+        SlotOffer.objects.filter(id=self.offer2.id).update(offered_at=t0 - datetime.timedelta(minutes=1))
+        SlotOffer.objects.filter(id=self.offer3.id).update(offered_at=t0)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _reply(self, payload=None, secret='__default__'):
+        body = {
+            'phone': '+2348030001122',
+            'text': '2',
+            'channel': 'sms',
+            'provider_message_id': 'vb-in-0001',
+        }
+        if payload:
+            body.update(payload)
+        kwargs = {'format': 'json'}
+        if secret == '__default__':
+            kwargs['HTTP_X_WEBHOOK_SECRET'] = self.SECRET
+        elif secret is not None:
+            kwargs['HTTP_X_WEBHOOK_SECRET'] = secret
+        return self.client.post(self.ENDPOINT, body, **kwargs)
+
+    # --- R1: select by option number -------------------------------------
+
+    def test_r1_option_two_holds_the_second_dispatched_offer(self):
+        res = self._reply({'text': '2', 'provider_message_id': 'vb-in-1001'})
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 'held')
+        self.assertEqual(res.data['intent'], 'select')
+        self.assertTrue(res.data['appointment_code'].startswith('AP-'))
+        self.assertEqual(res.data['request_id'], 'REQ-2026-0101')
+
+        self.assertEqual(Appointment.objects.filter(booking_request=self.booking).count(), 1)
+        self.offer2.refresh_from_db()
+        self.assertTrue(self.offer2.is_selected)
+        self.offer1.refresh_from_db()
+        self.assertFalse(self.offer1.is_selected)
+
+        # The reply names the slot the patient actually picked (early offer, not 10:00).
+        expected_time = timezone.localtime(self.offer2.start_datetime).strftime('%I:%M %p')
+        self.assertIn(expected_time, res.data['reply_text'])
+
+    # --- R2: provider retries the same message ---------------------------
+
+    def test_r2_same_provider_message_id_is_duplicate_ignored(self):
+        first = self._reply({'text': '2', 'provider_message_id': 'vb-in-1002'})
+        self.assertEqual(first.data['status'], 'held')
+
+        second = self._reply({'text': '2', 'provider_message_id': 'vb-in-1002'})
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.data['status'], 'duplicate_ignored')
+
+        self.assertEqual(Appointment.objects.filter(booking_request=self.booking).count(), 1)
+        self.assertEqual(
+            InteractionLog.objects.filter(
+                direction='inbound', external_ref='vb-in-1002'
+            ).count(),
+            1,
+        )
+
+    # --- R3: phone with no open request ----------------------------------
+
+    def test_r3_unknown_phone_is_a_normal_unmatched_answer(self):
+        res = self._reply({
+            'phone': '+2348099990000',
+            'text': '2',
+            'provider_message_id': 'vb-in-1003',
+        })
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 'unmatched')
+        self.assertEqual(res.data['intent'], 'none')
+        self.assertTrue(res.data['reply_text'])
+        self.assertEqual(Appointment.objects.count(), 0)
+        self.assertEqual(InteractionLog.objects.count(), 0)
+
+    # --- R4: option number with no matching offer ------------------------
+
+    def test_r4_option_nine_is_out_of_range_without_a_hold(self):
+        res = self._reply({'text': '9', 'provider_message_id': 'vb-in-1004'})
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 'out_of_range')
+        self.assertEqual(res.data['intent'], 'select')
+        self.assertIsNone(res.data.get('appointment_code'))
+        self.assertTrue(res.data['reply_text'])
+        self.assertEqual(Appointment.objects.count(), 0)
+        self.assertFalse(SlotOffer.objects.filter(is_selected=True).exists())
+
+    # --- R5: the 60-minute window has passed -----------------------------
+
+    def test_r5_expired_offers_do_not_hold(self):
+        SlotOffer.objects.filter(request=self.booking).update(
+            expires_at=timezone.now() - datetime.timedelta(minutes=1)
+        )
+        res = self._reply({'text': '2', 'provider_message_id': 'vb-in-1005'})
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 'expired')
+        self.assertTrue(res.data['reply_text'])
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    # --- R6: cancel ------------------------------------------------------
+
+    def test_r6_cancel_cancels_the_live_appointment(self):
+        appt = Appointment.objects.create(
+            appointment_code='AP-7106',
+            patient_name=self.booking.patient_name,
+            patient_phone=self.booking.patient_phone,
+            doctor=self.doctor,
+            service=self.service,
+            booking_request=self.booking,
+            start_datetime=self.offer1.start_datetime,
+            end_datetime=self.offer1.end_datetime,
+            status='confirmed',
+            confirmed_at=timezone.now(),
+        )
+
+        res = self._reply({'text': 'cancel', 'provider_message_id': 'vb-in-1006'})
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 'cancelled')
+        self.assertEqual(res.data['intent'], 'cancel')
+        self.assertIn('cancel', res.data['reply_text'].lower())
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, 'cancelled')
+        self.assertIsNotNone(appt.cancelled_at)
+        self.assertEqual(res.data['appointment_code'], 'AP-7106')
+
+    # --- R7: reschedule --------------------------------------------------
+
+    def test_r7_reschedule_moves_the_request_to_priority_tab(self):
+        self.booking.status = 'offer_expired'
+        self.booking.save(update_fields=['status'])
+
+        res = self._reply({'text': 'reschedule', 'provider_message_id': 'vb-in-1007'})
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 're_requested')
+        self.assertEqual(res.data['intent'], 'reschedule')
+        self.assertTrue(res.data['reply_text'])
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.status, 're_requested')
+        self.assertTrue(
+            AuditLog.objects.filter(
+                entity_id=self.booking.id,
+                action='PATIENT_RE_REQUESTED_TIMES',
+            ).exists()
+        )
+
+    # --- R8: local phone format ------------------------------------------
+
+    def test_r8_local_phone_resolves_to_the_same_patient(self):
+        res = self._reply({
+            'phone': '08030001122',
+            'text': '1',
+            'provider_message_id': 'vb-in-1008',
+        })
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 'held')
+        appointment = Appointment.objects.get(booking_request=self.booking)
+        self.assertEqual(appointment.patient_phone, '+2348030001122')
+
+    # --- R9: fail-closed auth --------------------------------------------
+
+    def test_r9_missing_or_wrong_secret_rejects_without_writing(self):
+        missing = self._reply({'provider_message_id': 'vb-in-1009'}, secret=None)
+        self.assertEqual(missing.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        wrong = self._reply({'provider_message_id': 'vb-in-1009b'}, secret='attacker-guess-123')
+        self.assertEqual(wrong.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        self.assertEqual(Appointment.objects.count(), 0)
+        self.assertEqual(InteractionLog.objects.count(), 0)
+
+    # --- R10: the patient's side of the conversation is recorded ---------
+
+    def test_r10_one_inbound_interaction_row_is_written(self):
+        res = self._reply({'text': '2', 'channel': 'sms', 'provider_message_id': 'vb-in-1010'})
+        self.assertEqual(res.data['status'], 'held')
+
+        log = InteractionLog.objects.get(external_ref='vb-in-1010')
+        self.assertEqual(log.direction, 'inbound')
+        self.assertEqual(log.channel, 'sms')
+        self.assertEqual(log.patient_phone, '+2348030001122')
+        self.assertEqual(log.booking_request_id, self.booking.id)
+        self.assertEqual(log.appointment_id, Appointment.objects.get().id)
+        self.assertNotIn('+2348030001122', log.summary)
+
+    # --- R11: the request already has a live appointment -----------------
+
+    def test_r11_already_confirmed_returns_the_original_code(self):
+        Appointment.objects.create(
+            appointment_code='AP-7111',
+            patient_name=self.booking.patient_name,
+            patient_phone=self.booking.patient_phone,
+            doctor=self.doctor,
+            service=self.service,
+            booking_request=self.booking,
+            start_datetime=self.offer1.start_datetime,
+            end_datetime=self.offer1.end_datetime,
+            status='held',
+            hold_expires_at=timezone.now() + datetime.timedelta(minutes=10),
+        )
+
+        res = self._reply({'text': '2', 'provider_message_id': 'vb-in-1011'})
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 'already_confirmed')
+        self.assertEqual(res.data['appointment_code'], 'AP-7111')
+        self.assertEqual(Appointment.objects.filter(booking_request=self.booking).count(), 1)
+
+    # --- R12: two channels, one booking ----------------------------------
+
+    def test_r12_cross_channel_replies_stay_idempotent(self):
+        first = self._reply({'text': '2', 'channel': 'sms', 'provider_message_id': 'vb-in-2001'})
+        self.assertEqual(first.data['status'], 'held')
+        code = first.data['appointment_code']
+
+        # A different message on another channel: friendly, no second appointment.
+        second = self._reply({'text': '3', 'channel': 'whatsapp', 'provider_message_id': 'vb-in-2002'})
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.data['status'], 'already_confirmed')
+        self.assertEqual(second.data['appointment_code'], code)
+        self.assertEqual(Appointment.objects.filter(booking_request=self.booking).count(), 1)
+
+        # The provider retries the FIRST message, now on the other channel.
+        third = self._reply({'text': '2', 'channel': 'whatsapp', 'provider_message_id': 'vb-in-2001'})
+        self.assertEqual(third.data['status'], 'duplicate_ignored')
+        self.assertEqual(Appointment.objects.filter(booking_request=self.booking).count(), 1)
+        self.assertEqual(
+            InteractionLog.objects.filter(direction='inbound', external_ref='vb-in-2001').count(),
+            1,
+        )
+
+
 
 
 
