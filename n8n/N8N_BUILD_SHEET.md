@@ -132,6 +132,28 @@ phone → open request and the intent. **Django decides; n8n only parses and del
 > `{status, intent, request_id, appointment_code, channel, reply_text}`. See `n8n.md` §5.8.
 > The table below is the C.2 rebuild spec; nothing here needs a second Django call.
 
+### 4.1 Current build state (C.2, 2026-11-16) — ✅ DONE
+
+Workflow ID `lBAjZ9ozCvFzKIBs` (`04_Patient_Response_Handler`) — **active**, 19 nodes,
+`valid: true` (0 errors, 22 connections, 23 expressions). Repo JSON is the source; the spec
+table above was followed exactly. The full graph and the response contract live in
+`n8n.md` §5.8.1.
+
+| Verification | Result |
+|---|---|
+| Harness (`node n8n/tests/test_reply_handler.js`) | **91 assertions**, runs the shipped node sources: fail-closed auth, Meta + VoiceBip payloads, one-call rule, duplicate skip, delivery routing, outbound row, drift guards |
+| Live proof (`c2_live_proof.py` through the running workflow) | **36/36 checks**: wrong secret → 401 with zero writes, out-of-range + hold + replay + WhatsApp cancel + status-callback ignore + reschedule, two replies → two outbound rows, voice-tagged SMS → SMS, unmatched number → guidance reply; DB left clean |
+| Django regression suite | `manage.py test --parallel 1` → **218 tests, OK** |
+| Removed by design (asserted by the harness) | staff-JWT `PATCH …/status/`, duplicated `/api/v1`, secret fallbacks, `re_request_slots_` prefix |
+
+**Companion fix — `06_Provider_Simulator` mints one id per message (C.2).** The outbound
+`InteractionLog` row is keyed on `external_ref` and `/interactions/` upserts on it, so a
+request-scoped mock id (`mock-sms-<REQ>`) made the second reply overwrite the first row.
+The simulator now returns `mock-<channel>-<request_code>-<stamp>` / `wamid.mock-whatsapp-<request_code>-<stamp>`
+(real gateways do exactly this — the id is what a delivery report matches). Guarded by
+`node n8n/tests/test_simulator_ids.js` (19 assertions). Manual REPL tests: read the actual id
+from the log row or execution output — it is no longer predictable.
+
 | Step | Node | Detail |
 |---|---|---|
 | Triggers | 2 webhooks | `/webhook/whatsapp-inbound` (Meta payload) and `/webhook/sms-inbound` (VoiceBip SMS). Both must respond < 5s (Meta retries). Both need the **fail-closed** `X-Webhook-Secret` check copied from `05` (`Verify … Secret` → `IF … Authorized` → true 401 via `responseMode: responseNode`). No `$env.X || 'clinic_dev_…'` fallbacks. |
@@ -609,7 +631,7 @@ row without a phone is still rejected `400`.
 | `01_intake_webhook.json` | Intake notifications | Minor — intake lands in Django directly; n8n intake webhook is mostly for the dashboard chime |
 | `02_hold_and_offer_expiry_cron.json` | Sweeper skeleton | Per §3 — add nudge branch + recovery sends + logging |
 | `03_reminder_flows.json` | Reminder skeleton | Per §2 — add SMS leg + logging + dedupe |
-| `04_patient_response_handler.json` | Response skeleton | Per §4 — rebuild around `POST /webhooks/patient-reply/` (C.1 is built; Django resolves phone + intent and returns `reply_text`). Remove the PATCH branch, the duplicate `/api/v1`, the secret fallbacks and the `re_request_slots_` prefix. |
+| `04_patient_response_handler.json` | ✅ Rebuilt (C.2, 2026-11-16) — live `lBAjZ9ozCvFzKIBs`, 19 nodes | Done per §4 — one call to `POST /webhooks/patient-reply/`, `reply_text` delivered verbatim. PATCH branch, duplicate `/api/v1`, secret fallbacks and `re_request_slots_` prefix are **removed** (harness-asserted). See `n8n.md` §5.8.1. |
 | `05_slot_offer_dispatcher.json` | ✅ Fresh export of the live workflow | Re-export after any live edit (see §5.1). Graph = 20 nodes: auth → format → adapter → switch (4 outputs, skip is wired) → 3 live send nodes → 3 log nodes + skip/probe-failure loggers, plus the D-2 voice guard. |
 | `06_provider_simulator.json` | ✅ Fresh export (dev only) | Stands in for VoiceBip/Meta while `PROVIDER_MOCK=true`. Deactivate + delete once real credentials are in. |
 | `07_provider_callback.json` | ✅ Fresh export of the live workflow | `POST /webhook/provider-callback` — authenticated, idempotent provider events (see §5.3). Point VoiceBip's delivery-report / call-outcome webhook here. |

@@ -11,6 +11,8 @@ node n8n/tests/test_adapter.js
 node n8n/tests/test_lognodes.js
 node n8n/tests/test_callback_auth.js
 node n8n/tests/test_voice_guard.js
+node n8n/tests/test_reply_handler.js
+node n8n/tests/test_simulator_ids.js
 ```
 
 Exit code `0` = every assertion passed, `1` = at least one failed. Each assertion prints
@@ -23,6 +25,8 @@ Exit code `0` = every assertion passed, `1` = at least one failed. Each assertio
 | `test_lognodes.js` | the three `Log * Interaction` nodes — provider error classification | 121 |
 | `test_callback_auth.js` | `07` › `Verify & Normalize Provider Event` — which token carriers authenticate, the refusal contract, channel inference, identity fields | 44 |
 | `test_voice_guard.js` | `Merge Voice Guard` + `Log Skipped Channel` — fail closed on a missing payload, the held-back row, and the graph wire that carries it | 31 |
+| `test_reply_handler.js` | `04` (C.2) › `Verify Reply Secret`, `Normalize Patient Reply`, `Prepare Reply Delivery`, `Log Reply Outcome`, plus graph drift guards — fail-closed auth, Meta + VoiceBip payload shapes, the one-call rule, the duplicate skip, delivery routing, the outbound row | 91 |
+| `test_simulator_ids.js` | `06` › the three `Build * Response` nodes — one provider id per message, readable ids that keep the `REQ-` code, Meta's real shape, the 500 switch | 19 |
 
 Counts are the harness's own output (`ok` lines), not an estimate.
 

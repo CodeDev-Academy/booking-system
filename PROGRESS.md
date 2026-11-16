@@ -1752,32 +1752,103 @@ No schema change, no new dependency, no frontend change.
 
 ### Out of scope (unchanged)
 
-- The n8n workflow rebuild (**C.2**) - `04_patient_response_handler.json` is still the audited
-  skeleton.
+- The n8n workflow rebuild (**C.2**) - done immediately after; see the C.2 section below.
 - VoiceBip's inbound payload format - still an open partner question, which is why the endpoint
   takes a neutral `{phone, text, channel, provider_message_id}` shape.
 - Forwarding Meta inbound messages from `07` (WhatsApp is dormant).
 
 ---
 
-## Next up - Workflow C / C.2 (NOT started)
+## 2026-11-16 - Workflow C / C.2: `04` rebuilt around the endpoint (built, live-proven)
 
-**Status: ready to start. C.1 (the Django endpoint) is done and live-proven.**
+**Status: DONE.** Full Django suite still **218 tests / 218 pass** (`--parallel 1`, exit 0).
+All 7 n8n harnesses green (`test_reply_handler.js` 91, `test_simulator_ids.js` 19, plus the
+five existing ones). Live proof ran **through the running n8n workflow into Django**: 36/36
+checks, cleanup verified. Live workflow `lBAjZ9ozCvFzKIBs` (19 nodes, active, `valid: true` -
+0 errors, 22 connections, 23 expressions); the repo JSON is the source.
 
-Rebuild `n8n/04_patient_response_handler.json` around the C.1 endpoint. The audited defects to
-remove, not patch:
+### What was broken
 
-1. `PATCH /appointments/{id}/status/` with `X-Webhook-Secret` - staff-JWT-only, and a
-   patient-facing webhook must never PATCH arbitrary ids. Replace with
-   `POST /webhooks/patient-reply/` (scoped by phone, validated server-side).
-2. Duplicated `/api/v1` in the URL - `DJANGO_API_BASE_URL` already includes `/api/v1`.
-3. Secret fallbacks (`$env.X || 'clinic_dev_...'`) - copy `05`'s fail-closed pattern.
-4. `re_request_slots_{id}` prefix - gone with the rebuild; reschedule is now the word
-   `reschedule`, interpreted by Django.
-5. No inbound `POST /interactions/` from n8n: C.1 writes the inbound row itself. Sending one
-   would duplicate the patient's message.
-6. Deliver `reply_text` verbatim on the same channel; if it is `""` (duplicate), send nothing.
-7. `needs_reception` / `out_of_range` / `expired` / `slot_conflict` need no client-side
-   decision - they already carry the sentence to send.
+The endpoint existed, but nothing used it: `n8n/04_patient_response_handler.json` was still
+the audited skeleton - a Telegram-button router that PATCHed `/appointments/{id}/status/` with
+a staff-JWT route a patient webhook must never touch, built URLs with `/api/v1` twice, carried
+`|| 'clinic_dev_…'` secret fallbacks, and a `re_request_slots_{id}` prefix for a flow that no
+longer exists. An SMS reply hit nothing.
 
-Then Workflow B (the expiry sweeper), then Phase 5.
+### What shipped
+
+**1. Rebuilt, not patched.** Two triggers (`/webhook/whatsapp-inbound` for Meta envelopes,
+`/webhook/sms-inbound` for VoiceBip flat payloads), both fail-closed on `X-Webhook-Secret`
+copied from `05` (`Verify Reply Secret` -> `IF Reply Authorized` -> a real **401**; an unset
+env rejects even the correct dev string). Then one graph:
+normalize -> switch -> **one** `POST /webhooks/patient-reply/` -> deliver `reply_text`
+verbatim on the patient's channel -> one outbound log row -> `200` to the provider.
+Removals are asserted by the harness: no PATCH node, no `/api/v1` in any URL, no
+`re_request_slots_`, no secret fallback.
+
+**2. n8n decides nothing.** `Normalize Patient Reply` only reshapes either provider payload
+into `{phone, text, channel, provider_message_id}`; "2" is forwarded as `"2"`. Meta buttons,
+`interactive` replies and media captions are read; a **status callback is not a reply** - it
+answers `200 {ignored:"not_a_message"}` and writes nothing, because `07` owns delivery
+reports. A message with no number is `400 missing_phone`.
+
+**3. Delivery.** `duplicate_ignored` (empty `reply_text`) -> `200 sent:false`, nothing sent,
+no row. Django non-2xx/network -> `500 django_unavailable` (a provider retry is safe there).
+Mock mode points at `06`'s simulator; live mode **refuses to guess** - missing credentials are
+a `provider_not_configured` skip, never an invented URL. The trigger owns the transport: a
+payload mislabeled `channel: "voice"` on the SMS trigger is still an SMS reply.
+
+**4. The outbound row (06.1 requirement 6).** One `POST /interactions/` with
+`direction="outbound"`, the provider message id as `external_ref`, request/appointment links,
+and a held-back reply (skip or provider failure) recorded as **`failed` with one actionable
+sentence** - the patient is waiting, and silence would be invisible. Best-effort by design: a
+Django outage while logging never breaks the answer to the provider.
+
+**5. Companion fix - the simulator minted one id per request.** The live proof caught it: two
+replies to one request both came back `external_ref: mock-sms-<REQ>`, and `/interactions/`
+upserts on `external_ref`, so the second outbound row **overwrote the first** - the dashboard
+would have shown one reply where the patient received two. `06` now mints
+`mock-<channel>-<REQ>-<stamp>` / `wamid.mock-whatsapp-<REQ>-<stamp>`, which is what real
+gateways do: the id is what a delivery report matches. `07`'s legacy `REQ-…` fallback still
+finds the code inside the id.
+
+### Tests (written first)
+
+- `n8n/tests/test_reply_handler.js`: runs the **shipped** node sources from the workflow JSON;
+  **red first** (the workflow was still the skeleton), then **91 assertions green** - fail-closed
+  auth (9), Meta shapes (13), VoiceBip aliases (10), delivery routing (21), the outbound row and
+  error classification (21), graph drift guards (13, including the canonical error block being
+  byte-identical to `05`).
+- `n8n/tests/test_simulator_ids.js`: **4 red -> 19 green** - one id per message, readable ids
+  that keep the `REQ-` code, Meta's real response shape, the `PROVIDER_MOCK_FAIL` 500 switch.
+
+### Live proof
+
+`c2_live_proof.py` through `127.0.0.1:5678` into `127.0.0.1:8000`, real rows: wrong secret ->
+`401` with zero writes; `9` -> `out_of_range` (delivered); `2` -> `held` on the **second
+dispatched** offer; provider replay of the same message id -> `duplicate_ignored`, no second
+appointment, no new row; WhatsApp `cancel` -> `cancelled` and the reply logged as
+`meta_whatsapp` with the real wamid; a Meta status callback for that wamid -> ignored, the row
+untouched; `reschedule` -> `re_requested` + audit row; **two replies -> two outbound rows with
+distinct refs** (the C.2 fix, asserted); a voice-tagged SMS -> still SMS/voicebip; an unmatched
+number -> Django's guidance text delivered with a request-less row. **36/36, exit 0**, all
+proof rows deleted and verified gone.
+
+### Files
+
+- Rebuilt: `n8n/04_patient_response_handler.json` (19 nodes, live `lBAjZ9ozCvFzKIBs`)
+- Fixed: `n8n/06_provider_simulator.json` (one id per message; live copy updated too)
+- New: `n8n/tests/test_reply_handler.js`, `n8n/tests/test_simulator_ids.js`
+- Docs: `PROGRESS.md`, `TEST.md` (T-713b), `n8n.md` (§3 auth table, Workflow 4 banner,
+  §5.8 status + new §5.8.1, mock-mode note, §6 matrix), `n8n/N8N_BUILD_SHEET.md` (§4.1, §6),
+  `n8n/tests/README.md`
+
+No backend change, no schema change, no new dependency, no frontend change.
+
+---
+
+## Next up - Workflow B (the expiry sweeper), then Phase 5
+
+**Status: ready to start.** Workflow C is complete end to end (C.1 endpoint + C.2 workflow).
+Next per the build order: `02_hold_and_offer_expiry_cron.json` (the nudge branch + recovery
+sends + logging), then Phase 5 partner handover.

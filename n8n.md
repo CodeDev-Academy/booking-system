@@ -142,7 +142,13 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
 - **Template File**: `n8n/04_patient_response_handler.json`
 - **Purpose**: Ingests interactive callback clicks from Telegram Inline Keyboards and WhatsApp button clicks, and routes them to the correct transactional backend endpoint.
 
-#### Node Pipeline & Data Flow:
+> **✅ REBUILT (C.2, 2026-11-16).** The shipped JSON is no longer the Telegram-button
+> router sketched below — that design was retired with C.1. The live graph is the
+> SMS/WhatsApp reply transport described in **§5.8.1**: two webhook triggers, one call
+> to `POST /api/v1/webhooks/patient-reply/`, and Django's `reply_text` delivered
+> verbatim. The sketch below is kept only as the history of the original idea.
+
+#### Node Pipeline & Data Flow (original blueprint — superseded, see §5.8.1):
 ```
 [Webhook Node: Telegram/WhatsApp Inbound Callback]
        │
@@ -215,7 +221,7 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
    | `05` Slot Offer Dispatcher | `/webhook/dispatch-offers` | `X-Webhook-Secret` checked **before** the graph runs (`Verify Dispatch Secret` → `IF Dispatch Authorized`) | **401** `{ok:false,error:"unauthorized",reason}` — nothing is sent |
    | `07` Provider Callback | `/webhook/provider-callback` (**GET + POST**, one output per method) | POST: `PROVIDER_CALLBACK_TOKEN` in a **header** (`X-Provider-Token` / `X-Callback-Token` / `X-Webhook-Token`); a query token only for a Meta envelope or with `PROVIDER_CALLBACK_ALLOW_QUERY_TOKEN=true`. GET: `hub.verify_token` vs `WHATSAPP_VERIFY_TOKEN` (Meta handshake only) | POST **401**; GET **403** — both fail closed when the env var is unset |
    | `06` Provider Simulator | `/webhook/provider-sim/*` | none — dev-only, deactivated before launch | n/a |
-   | `01` Intake / `04` Patient Response | `/webhook/intake`, `/webhook/messaging/inbound` | **none yet** (skeletons) — scheduled with Workflow C. C.2 adds the fail-closed `X-Webhook-Secret` check to `04` itself; its call **into** Django is `POST /api/v1/webhooks/patient-reply/`, which does its own fail-closed check (C.1, §5.8) | n/a until C.2 |
+   | `04` Patient Response (C.2) | `/webhook/whatsapp-inbound` + `/webhook/sms-inbound` (**both POST**) | `X-Webhook-Secret` checked **before** the graph runs (`Verify Reply Secret` → `IF Reply Authorized`), same pattern as `05` | **401** `{ok:false,error:"unauthorized",reason}` — nothing is sent; its call **into** Django (`POST /api/v1/webhooks/patient-reply/`) carries the same secret and Django checks it again (C.1, §5.8) |
 
    `05` is the most sensitive entry point because it triggers real outbound messages and
    calls, so it answers with a true **401** (`responseMode: responseNode`) instead of the
@@ -381,7 +387,7 @@ switching provider = editing this block only.
 **How mock mode works (updated at Stage D-3).** `PROVIDER_MOCK=true` does **not** skip the
 send nodes. It points every provider URL at `06_Provider_Simulator` — a small n8n workflow
 that answers `/webhook/provider-sim/{whatsapp|sms|voice}` with a realistic provider payload
-(`external_ref: mock-<channel>-<request_code>`) or an HTTP **500** when
+(`external_ref: mock-<channel>-<request_code>-<stamp>`) or an HTTP **500** when
 `PROVIDER_MOCK_FAIL=true`. Consequences:
 
 - The real HTTP nodes, their auth headers and their JSON bodies run exactly as in production,
@@ -390,6 +396,14 @@ that answers `/webhook/provider-sim/{whatsapp|sms|voice}` with a realistic provi
   Needs Attention tab), not a simulated branch.
 - Flipping live is still config only: `PROVIDER_MOCK=false` + real `VOICEBIP_*` /
   `WHATSAPP_*` values. The simulator workflow can then be deactivated and deleted.
+
+**One id per message (updated at C.2).** The simulator mints a fresh id for every accepted
+send — `mock-sms-<request_code>-<stamp>` / `wamid.mock-whatsapp-<request_code>-<stamp>` —
+because that is what real gateways do: the id is what a delivery report comes back with, and
+`POST /interactions/` upserts `InteractionLog` rows on it. The old request-scoped id made two
+replies to one request share a ref, so the second outbound row overwrote the first. Kept
+properties: the id stays readable, and the `REQ-…` code inside it keeps `07`'s legacy fallback
+working in dev.
 
 **WhatsApp leg: dormant but credential-ready (Phase 1).** Telegram ships first, so the
 WhatsApp path is fully built and inert. It refuses to fire until it is genuinely configured:
@@ -617,7 +631,7 @@ Layer 4 contract — enforcement (opt-in, default OFF):
     the same wire and stays unlogged, by the decision in item 9. See `TEST.md` T-712h.
 
 16. **Inbound patient replies** — phone number → open request → intent, in Django.
-    ✅ Done (Workflow C / C.1). See §5.8 below. `04` itself is rebuilt in C.2.
+    ✅ Done (Workflow C / C.1 + C.2). See §5.8 (endpoint) and §5.8.1 (the rebuilt `04`).
 
 ### 5.8 Inbound patient replies: one Django endpoint (Workflow C / C.1)
 
@@ -675,10 +689,66 @@ Content-Type: application/json
 - **Partner payload shape is neutral** (`{phone, text, channel, provider_message_id}`) because
   VoiceBip's inbound format is still an open question. `04` does the parsing, not Django.
 
-**C.2 must:** replace the skeleton's staff-JWT `PATCH /appointments/{id}/status/` with this
-endpoint, drop the duplicated `/api/v1`, drop the `re_request_slots_` prefix, copy `05`'s
-fail-closed secret pattern, **not** POST an inbound `POST /interactions/` row (Django already
-wrote it), and skip sending when `reply_text` is empty.
+**C.2 status:** DONE (2026-11-16). `04` was rebuilt around this endpoint — see §5.8.1.
+Verified by `n8n/tests/test_reply_handler.js` (91 assertions) and a live end-to-end proof
+through the running n8n workflow (36 checks).
+
+### 5.8.1 The rebuilt `04_Patient_Response_Handler` (Workflow C / C.2)
+
+**Status: DONE (2026-11-16).** Live workflow `lBAjZ9ozCvFzKIBs` (19 nodes, active), repo
+JSON is the source. Proven live: 36/36 checks, all rows cleaned up afterwards.
+
+The old skeleton was a Telegram-button router with a staff-JWT `PATCH /appointments/{id}/status/`
+and its own `/api/v1` URL mashing. All of that is **removed, not patched**: no PATCH node, no
+`/api/v1` in any URL (the base URL already ends in `/api/v1`), no `re_request_slots_` prefix,
+no `clinic_dev_…` fallback — an unset `DJANGO_WEBHOOK_SECRET` rejects every request.
+
+```
+[WhatsApp Inbound Webhook]   [SMS Inbound Webhook]      Meta envelope or VoiceBip/flat payload
+            └────────────┬────────┘
+     [Verify Reply Secret]                          fail closed, 401 {ok:false,error:"unauthorized",reason}
+            │
+     [Normalize Patient Reply]                      → {phone, text, channel, provider_message_id}; "2" stays "2"
+            │
+     [Switch Reply Action] ── ignore / bad_request ─► 200 {ignored:"not_a_message"} / 400 {error:"missing_phone"}
+            │ reply
+     [Ask Django Patient Reply]                     ONE call: POST /webhooks/patient-reply/ (+ X-Webhook-Secret)
+        │            └── error ─────────────────────► 500 {ok:false,error:"django_unavailable"} (retry is safe)
+     [IF Reply Text Present] ── empty ─────────────► 200 {ok:true,status,sent:false,reason:"empty_reply"}
+            │
+     [Prepare Reply Delivery]                       wraps reply_text for SMS (VoiceBip) or WhatsApp (Meta)
+            │
+     [Route Reply Channel] ── skip ────────────────► logged as `failed`, still answers 200
+            │
+     [Send Reply WhatsApp] / [Send Reply SMS]       onError → the same log node
+            │
+     [Log Reply Outcome]                            ONE POST /interactions/ row, direction="outbound"
+            │
+     [Respond Reply Handled]                        200 {ok:true,status,intent,request_id,appointment_code,reply_delivered,logged}
+```
+
+**Contract details:**
+
+- **n8n decides nothing.** `Normalize Patient Reply` only reshapes; "2" is forwarded as `"2"`.
+  Intent, offer resolution, holds, cancels and all copy are Django's (§5.8).
+- **Two triggers, one transport rule.** The trigger decides the transport; the body may only
+  refine it to `sms` or `whatsapp`. Anything else (a provider mislabeling `channel: "voice"`) is
+  an SMS reply — a mislabel must never strand the patient. Telegram stays Django's.
+- **Meta specifics.** A status callback (`sent`/`delivered`/`read`) is **not** a reply: 200
+  `{ignored:"not_a_message"}`, nothing written — `07` owns delivery reports. Button payloads,
+  `interactive` replies and media captions are read; a caption is kept for a human.
+- **Delivery.** Mock mode (default) points at the `06` simulator; live mode refuses to guess —
+  missing credentials mean a skipped leg, not a guessed endpoint. `reply_text` is sent verbatim.
+- **The outbound row.** One `POST /interactions/` with `direction="outbound"`, the provider id
+  as `external_ref`, and links to the request/appointment. A held-back reply (skip reason or
+  provider failure) is logged as `failed` with one actionable sentence — the patient is waiting
+  and silence would be invisible. A Django outage while logging never breaks the patient flow
+  (the row is best-effort; the answer to the provider already went out).
+- **Idempotency is end-to-end.** The provider retrying its webhook → Django answers
+  `duplicate_ignored` with an empty `reply_text` → nothing is sent, no row is written.
+- **Harness:** `node n8n/tests/test_reply_handler.js` runs the shipped node sources (91
+  assertions: fail-closed auth, both payload shapes, the one-call rule, duplicate skip,
+  delivery routing, the outbound row, and graph drift guards).
 
 ### 5.9 Edge cases owned by this integration
 
@@ -847,7 +917,7 @@ has no "unknown" value, so a row would require lying in the other direction.
 | **Intake Webhook** | `n8n/01_intake_webhook.json` | Webhook (`/webhook/intake`) | Ingest, sanitize, post to Django queue |
 | **Hold & Expiry Sweeper** | `n8n/02_hold_and_offer_expiry_cron.json` | Cron (`*/1 * * * *`) | Check 60m offer and 15m hold expiries |
 | **Reminder Flows** | `n8n/03_reminder_flows.json` | Cron (Twice daily) | Dispatch 24h & 2h pre-visit interactive buttons |
-| **Patient Response Handler** | `n8n/04_patient_response_handler.json` | Webhook (`/webhook/messaging/inbound`) | Route inline buttons (Hold, Confirm, Cancel, Re-Request) |
+| **Patient Response Handler** | `n8n/04_patient_response_handler.json` | Webhook (`/webhook/whatsapp-inbound`, `/webhook/sms-inbound`) | C.2: asks Django what an SMS/WhatsApp reply means (`/webhooks/patient-reply/`) and delivers `reply_text` verbatim |
 | **Slot Offer Dispatcher** | `n8n/05_slot_offer_dispatcher.json` | Webhook (`/webhook/dispatch-offers`) | Format & send approved 1h slot buttons to patient |
 | **Provider Simulator** (dev only) | `n8n/06_provider_simulator.json` | Webhook (`/webhook/provider-sim/{channel}`) | Stand-in for VoiceBip/Meta: realistic success payload or HTTP 500 when `PROVIDER_MOCK_FAIL=true` |
 | **Provider Callback Receiver** | `n8n/07_provider_callback.json` | Webhook (`/webhook/provider-callback`) | Authenticate + normalize provider delivery reports / call outcomes, upsert `InteractionLog` |
