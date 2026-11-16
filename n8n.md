@@ -215,7 +215,7 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
    | `05` Slot Offer Dispatcher | `/webhook/dispatch-offers` | `X-Webhook-Secret` checked **before** the graph runs (`Verify Dispatch Secret` → `IF Dispatch Authorized`) | **401** `{ok:false,error:"unauthorized",reason}` — nothing is sent |
    | `07` Provider Callback | `/webhook/provider-callback` (**GET + POST**, one output per method) | POST: `PROVIDER_CALLBACK_TOKEN` in a **header** (`X-Provider-Token` / `X-Callback-Token` / `X-Webhook-Token`); a query token only for a Meta envelope or with `PROVIDER_CALLBACK_ALLOW_QUERY_TOKEN=true`. GET: `hub.verify_token` vs `WHATSAPP_VERIFY_TOKEN` (Meta handshake only) | POST **401**; GET **403** — both fail closed when the env var is unset |
    | `06` Provider Simulator | `/webhook/provider-sim/*` | none — dev-only, deactivated before launch | n/a |
-   | `01` Intake / `04` Patient Response | `/webhook/intake`, `/webhook/messaging/inbound` | **none yet** — scheduled with Workflow C (Telegram `secret_token` header check) | n/a |
+   | `01` Intake / `04` Patient Response | `/webhook/intake`, `/webhook/messaging/inbound` | **none yet** (skeletons) — scheduled with Workflow C. C.2 adds the fail-closed `X-Webhook-Secret` check to `04` itself; its call **into** Django is `POST /api/v1/webhooks/patient-reply/`, which does its own fail-closed check (C.1, §5.8) | n/a until C.2 |
 
    `05` is the most sensitive entry point because it triggers real outbound messages and
    calls, so it answers with a true **401** (`responseMode: responseNode`) instead of the
@@ -616,7 +616,71 @@ Layer 4 contract — enforcement (opt-in, default OFF):
     (`skip-voice-…`, `error_detail: voice_payload_missing`). `patient_already_engaged` takes
     the same wire and stays unlogged, by the decision in item 9. See `TEST.md` T-712h.
 
-### 5.8 Edge cases owned by this integration
+16. **Inbound patient replies** — phone number → open request → intent, in Django.
+    ✅ Done (Workflow C / C.1). See §5.8 below. `04` itself is rebuilt in C.2.
+
+### 5.8 Inbound patient replies: one Django endpoint (Workflow C / C.1)
+
+**Status: DONE (2026-11-16).** Verified by `PatientReplyWebhookTests` (R1–R12) and a live
+proof against the dev server (28/28).
+
+Telegram replies work because the button carries the offer id (`select_slot_<offer>`). An SMS
+or WhatsApp reply carries only the sender's number and the text. Django must therefore answer
+*"which open request is this phone replying about, and which offer is number 2?"* — n8n cannot,
+because that is a database question and n8n never gets DB access.
+
+```
+POST /api/v1/webhooks/patient-reply/
+X-Webhook-Secret: <shared>                 (fail closed; 401 and no writes)
+Content-Type: application/json
+
+{"phone": "+2348030001122", "text": "2",
+ "channel": "sms", "provider_message_id": "vb-in-8812"}
+
+200 {"status": "...", "intent": "select|cancel|reschedule|other|none",
+     "request_id": "REQ-2026-0042", "appointment_code": "AP-1042" | null,
+     "channel": "sms", "reply_text": "<send this verbatim>"}
+```
+
+**What Django decides (n8n decides nothing):**
+
+| Input | `status` | Effect |
+|---|---|---|
+| `1`..`4` | `held` | holds that option, in original dispatch order; reply names doctor/time/code |
+| `1`..`4` when a live booking exists | `already_confirmed` | no second booking; original `appointment_code` |
+| number not offered | `out_of_range` | no hold |
+| valid number, 60-minute window passed | `expired` | no hold |
+| `cancel` | `cancelled` | live appointment cancelled (or `needs_reception` if none) |
+| `reschedule` | `re_requested` | priority tab + `PATIENT_RE_REQUESTED_TIMES` audit row |
+| other text | `needs_reception` | handed to reception |
+| same `provider_message_id` again | `duplicate_ignored` | no action; `reply_text` is `""` |
+| phone has no open request | `unmatched` | normal `200`, nothing written |
+| time taken inside the lock | `slot_conflict` | normal answer, no hold |
+
+**Rules that make it safe:**
+
+- **Auth:** `X-Webhook-Secret` only (header, constant-time, unset = closed). Staff JWT is not
+  accepted: this is a machine-to-machine route and a patient never holds the secret.
+- **Idempotency:** `provider_message_id` is stored as `InteractionLog.external_ref` (already
+  unique), so the inbound row is the claim. A provider retry cannot create a second hold, and
+  an empty `reply_text` tells `04` not to send anything.
+- **One code path:** selection goes through `services/slot_selection.py::select_slot_offer`,
+  shared with `SlotHoldView`, so the dashboard, the n8n hold and an SMS reply cannot drift.
+- **One inbound row** per accepted message (`direction="inbound"`, request/appointment links,
+  summary built from the outcome). The patient's raw text is **not** stored: it may contain a
+  phone number or clinical detail. `unmatched` writes nothing.
+- **Copy lives in Django.** `reply_text` is plain text (SMS-safe); `04` sends it as-is.
+- **Telegram is not routed here.** Django already owns that conversation; duplicating it would
+  handle one tap twice.
+- **Partner payload shape is neutral** (`{phone, text, channel, provider_message_id}`) because
+  VoiceBip's inbound format is still an open question. `04` does the parsing, not Django.
+
+**C.2 must:** replace the skeleton's staff-JWT `PATCH /appointments/{id}/status/` with this
+endpoint, drop the duplicated `/api/v1`, drop the `re_request_slots_` prefix, copy `05`'s
+fail-closed secret pattern, **not** POST an inbound `POST /interactions/` row (Django already
+wrote it), and skip sending when `reply_text` is empty.
+
+### 5.9 Edge cases owned by this integration
 
 - Partial dispatch where the only checked channel is unconfigured → guard blocks it (§5.6).
 - Duplicate dispatch → existing `PATIENT_ALREADY_BOOKED` guard + idempotency key per provider call.

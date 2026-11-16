@@ -194,6 +194,12 @@ erDiagram
     }
 ```
 
+> **Inbound idempotency (C.1).** `INTERACTION_LOG.external_ref` doubles as the
+> dedupe key for the patient-reply webhook. A retried provider message carries
+> the same message ID, so `get_or_create` finds the existing row and the reply
+> is answered with `duplicate_ignored` instead of being processed twice. The
+> column already exists and is unique — no migration is required.
+
 ---
 
 ## 2. Table Indexing & Performance Strategy

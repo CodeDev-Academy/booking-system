@@ -215,6 +215,46 @@ Validates 4-digit Quick PIN after 20-minute idle screen lock.
 - `POST /api/v1/webhooks/whatsapp/inbound/` (Direct Meta Cloud API webhook)
 - `POST /api/v1/webhooks/expiry-sweep/` (Invoked every 1m by n8n cron worker)
 - `POST /api/v1/webhooks/re-engagement/` (Triggered upon offer expiry to send `[🔄 See New Times]`)
+- `POST /api/v1/webhooks/patient-reply/` (SMS / WhatsApp patient reply — see below)
+
+### `POST /api/v1/webhooks/patient-reply/`
+Interprets a patient's text reply for a channel that has no buttons (SMS, WhatsApp). Django
+resolves the sender's phone to the most recent open booking request, applies the intent, and
+composes the sentence to send. n8n only delivers `reply_text`.
+
+**Auth:** `X-Webhook-Secret` header only (fail closed, `401` and no writes). Staff JWT is not
+accepted — this is a machine-to-machine route.
+
+**Request Payload:**
+```json
+{
+  "phone": "+2348030001122",
+  "text": "2",
+  "channel": "sms",
+  "provider_message_id": "vb-in-8812"
+}
+```
+
+**Response (`200 OK`):**
+```json
+{
+  "status": "held",
+  "intent": "select",
+  "request_id": "REQ-2026-0042",
+  "appointment_code": "AP-1042",
+  "channel": "sms",
+  "reply_text": "Thank you! Your time is held: Dr. Ade, Tue 01 Dec, 09:00 AM. Your reference is AP-1042. ..."
+}
+```
+
+**Statuses:** `held`, `already_confirmed`, `out_of_range`, `expired`, `duplicate_ignored`
+(`reply_text` is `""` — send nothing), `unmatched`, `needs_reception`, `cancelled`,
+`re_requested`, `slot_conflict`.
+
+`unmatched` is a normal `200` answer (no open request for that number), not an error.
+Replaying the same `provider_message_id` is idempotent and creates no second appointment.
+Each accepted message writes one `direction="inbound"` `InteractionLog` row; `unmatched`
+writes nothing.
 
 ---
 

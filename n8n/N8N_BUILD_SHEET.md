@@ -123,26 +123,29 @@ Full read API (for debugging what you logged): `GET /api/v1/interactions/?patien
 
 ## 4. Workflow C — `04_patient_response_handler.json` (build THIRD — the critical one)
 
-**Purpose:** inbound WhatsApp/SMS patient replies → slot selection, re-request, cross-channel neutralization.
+**Purpose:** inbound WhatsApp/SMS patient replies → one call to Django, which resolves the
+phone → open request and the intent. **Django decides; n8n only parses and delivers.**
+
+> **C.1 is built (2026-11-16).** Django now owns the whole interpretation:
+> `POST /api/v1/webhooks/patient-reply/` (`X-Webhook-Secret`, body
+> `{phone, text, channel, provider_message_id}`) returns
+> `{status, intent, request_id, appointment_code, channel, reply_text}`. See `n8n.md` §5.8.
+> The table below is the C.2 rebuild spec; nothing here needs a second Django call.
 
 | Step | Node | Detail |
 |---|---|---|
-| Triggers | 2 webhooks | `/webhook/whatsapp-inbound` (Meta status/callback payload) and `/webhook/sms-inbound` (VoiceBip SMS delivery). Both must respond < 5s (Meta times out retries). |
-| 1 | Normalize | Extract `patient_phone`, `message text/button payload`, `provider message id` → E.164 the phone. |
-| 2 | Log inbound | InteractionLog: `direction:"inbound"`, `provider:"meta_whatsapp"|"voicebip"`, raw text in `summary`. |
-| 3 | Router (Switch) | a) `1`/`2`/`3` or button tap → **slot selection** · b) `NEW` / "See New Times" button → **re-request** · c) anything else → ignore (or future features). |
-| 4a | ~~Slot lookup~~ **NOT NEEDED** | **No static-data map, no Workflow-D dependency.** The backend resolves the patient's number itself — C sends `option_number` + `request_id` in ONE call (below). Workflow D and Workflow C are fully independent; you can rebuild/restart either without breaking the other. |
-| 5a | Hold call | `POST {base}/api/v1/slots/hold/` with `X-Webhook-Secret`: `{"request_id":"REQ-2026-0042","option_number":2,"response_channel":"sms"}` — **ONE call, zero extra latency.** The backend maps reply `2` to the 2nd offer in ORIGINAL dispatch order (never renumbered by prior selections), validates expiry/selection inside its locked transaction, and creates the 15-min hold. |
-| 6a | Branch on response | **200 with `appointment_code` + `status:"held"`** → send confirmation on the SAME channel: *"Confirmed! Ref: {{appointment_code}} with {{doctor_name}} on {{start_datetime}}. See you then!"* (note: the slot is a 15-min hold until the front desk confirms — treat the code as the patient's reference immediately) · **200 with `error:"ALREADY_CONFIRMED"`** → the patient already picked (other channel) — send *"You're already confirmed! Ref: {{appointment_code}}"*, log `answered`, done · **400 containing "expired"** → *"Sorry, those times expired. Reply NEW for fresh times."* · **409 `SLOT_CONFLICT`** → *"Sorry, that time was just taken. Reply NEW for fresh times."* |
-| 4b | Re-request | `POST {base}/api/v1/booking-requests/REQ-2026-0042/re-request/` with `X-Webhook-Secret`, body `{"re_requested_by":"patient_whatsapp_button"}` → then instantly ack the patient: *"Thank you {{name}}! Our front desk is reviewing fresh times for you right now."* |
-| 7 | Log | InteractionLog for the outcome (`answered` for selection, `failed`+`error_detail` for conflicts). |
+| Triggers | 2 webhooks | `/webhook/whatsapp-inbound` (Meta payload) and `/webhook/sms-inbound` (VoiceBip SMS). Both must respond < 5s (Meta retries). Both need the **fail-closed** `X-Webhook-Secret` check copied from `05` (`Verify … Secret` → `IF … Authorized` → true 401 via `responseMode: responseNode`). No `$env.X || 'clinic_dev_…'` fallbacks. |
+| 1 | Normalize | Extract `phone`, `text` (or button payload → its number/word), `channel`, `provider_message_id`. Send the phone as received; Django normalizes (`0803…` and `+234803…` are one identity). Never build a URL with `/api/v1` twice: `DJANGO_API_BASE_URL` **already includes** `/api/v1`. |
+| 2 | Patient Reply call | `POST {DJANGO_API_BASE_URL}/webhooks/patient-reply/` with `X-Webhook-Secret`, body `{"phone", "text", "channel", "provider_message_id"}`. **ONE call.** Do not PATCH `/appointments/{id}/status/` (staff-JWT-only, and a patient webhook must never touch arbitrary ids). |
+| 3 | Branch on `status` | `held` / `already_confirmed` / `out_of_range` / `expired` / `cancelled` / `re_requested` / `needs_reception` / `slot_conflict` → send `reply_text` **verbatim** on the same channel. `duplicate_ignored` (`reply_text: ""`) → send **nothing**. Any non-2xx or network error → log and stop; do not invent a message. |
+| 4 | Log | **Do not POST `/interactions/` for the inbound message.** Django already wrote exactly one `direction="inbound"` row (it is also the idempotency claim). A second row would duplicate the patient's message in the dossier. |
+| — | Removed by design | `4a` slot lookup, static-data maps, the `option_number`+`request_id` construction, `re_request_slots_{id}`, and the two-call select/re-request split. All of it is one endpoint now. |
 
-**Cross-channel neutralization (double-reply defense):** SOLVED in the backend (2026-11-13).
-Any second selection for a request that already has an active hold or confirmation returns
-**200 `ALREADY_CONFIRMED`** with the existing `appointment_code` — n8n sends the friendly
-"already confirmed (Ref: AP-XXXX)" message. The number→offer mapping lives in Django, so a
-stale or lost n8n static-data map can never make a live patient reply fail. Old workaround
-(treat 409-after-confirm as "no action") is obsolete — keep it only as a fallback branch.
+**Cross-channel neutralization (double-reply defense):** solved in the backend. Any second
+selection for a request that already has an active hold or confirmation answers
+`200 already_confirmed` with the existing `appointment_code`, and the same message replayed by
+the provider answers `duplicate_ignored` with an empty `reply_text`. A stale or lost n8n map can
+never make a live reply fail, because there is no map.
 
 ---
 
@@ -606,7 +609,7 @@ row without a phone is still rejected `400`.
 | `01_intake_webhook.json` | Intake notifications | Minor — intake lands in Django directly; n8n intake webhook is mostly for the dashboard chime |
 | `02_hold_and_offer_expiry_cron.json` | Sweeper skeleton | Per §3 — add nudge branch + recovery sends + logging |
 | `03_reminder_flows.json` | Reminder skeleton | Per §2 — add SMS leg + logging + dedupe |
-| `04_patient_response_handler.json` | Response skeleton | Per §4 — add SMS "1/2/3" replies, re-request, channel neutralization, logging |
+| `04_patient_response_handler.json` | Response skeleton | Per §4 — rebuild around `POST /webhooks/patient-reply/` (C.1 is built; Django resolves phone + intent and returns `reply_text`). Remove the PATCH branch, the duplicate `/api/v1`, the secret fallbacks and the `re_request_slots_` prefix. |
 | `05_slot_offer_dispatcher.json` | ✅ Fresh export of the live workflow | Re-export after any live edit (see §5.1). Graph = 20 nodes: auth → format → adapter → switch (4 outputs, skip is wired) → 3 live send nodes → 3 log nodes + skip/probe-failure loggers, plus the D-2 voice guard. |
 | `06_provider_simulator.json` | ✅ Fresh export (dev only) | Stands in for VoiceBip/Meta while `PROVIDER_MOCK=true`. Deactivate + delete once real credentials are in. |
 | `07_provider_callback.json` | ✅ Fresh export of the live workflow | `POST /webhook/provider-callback` — authenticated, idempotent provider events (see §5.3). Point VoiceBip's delivery-report / call-outcome webhook here. |
@@ -628,6 +631,10 @@ review. Their flaws are **not to be patched** — the skeletons get rebuilt as W
    a patient-facing webhook must never PATCH arbitrary appointment ids. Workflow C
    needs a **dedicated, webhook-auth'd, scoped endpoint** (e.g. "select offer N for
    request R" validated server-side), mirroring what the Telegram path already does.
+   **✅ The Django half is built (C.1, 2026-11-16):** `POST /api/v1/webhooks/patient-reply/`
+   takes `{phone, text, channel, provider_message_id}`, resolves the phone → open request
+   itself, and returns `reply_text`. C.2 must **use it and delete the PATCH branch**; do not
+   reintroduce `PATCH /appointments/{id}/status/` or a second "select" call.
 2. **URL contract.** `01`–`04` append `/api/v1/...` to `DJANGO_API_BASE_URL`, while
    `05`/`07` (and `.env.example`) expect the base to already include it. Canonical:
    **`DJANGO_API_BASE_URL` includes `/api/v1`** — the rebuilds follow 05/07.
@@ -663,12 +670,16 @@ review. Their flaws are **not to be patched** — the skeletons get rebuilt as W
    identity fields, read the snake_case keys `normalize()` actually returns — `n.patientName`
    was `undefined` in `07` for a whole phase, so no callback ever carried a patient name to
    Django. Assert on the outgoing payload, not just the response code.
+   **Inbound replies are different (C.1):** the patient-reply endpoint writes the inbound row
+   itself, including the normalized phone and the request/appointment links. Workflow C must
+   **not** forward identity or POST an inbound `/interactions/` row — that would duplicate the
+   message and contradict the fill-only rule.
 
 ## 7. Build & test order (recommended)
 
 1. **Reminders (A)** — validates secret, GET endpoint, one provider send, logging. Testable with Telegram-only sends before partner creds arrive.
 2. **Sweeper (B)** — validates cron + sweep API + recovery. Testable end-to-end today: create a request, dispatch, wait 60 min (or temporarily set `offer_expiry_minutes` low in Clinic Settings).
-3. **Response handler (C)** — testable today via the **Telegram** channel end-to-end (bot buttons already work); WhatsApp/SMS legs once partner creds land.
+3. **Response handler (C)** — testable today via the **Telegram** channel end-to-end (bot buttons already work); WhatsApp/SMS legs once partner creds land. The Django half is done (C.1): C.2 only builds the graph around `POST /webhooks/patient-reply/` and delivers `reply_text`.
 4. **Dispatcher (D)** — needs partner WhatsApp template + VoiceBip key for full test; the Telegram leg works today.
 
 **Definition of done (Phase 4):** a full journey — *form request → receptionist dispatch → WhatsApp+SMS+call received → patient replies "2" → confirmation message → interactions visible in dashboard → 24h+2h reminders → reschedule reply* — all logged in `GET /api/v1/interactions/`.

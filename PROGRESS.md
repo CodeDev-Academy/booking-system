@@ -1615,113 +1615,169 @@ handler), then Workflow B (sweeper), then Phase 5.
 
 ---
 
-## Next up - Workflow C / C.1 (approved, NOT started)
+## 2026-11-16 - Workflow C / C.1: patient-reply endpoint (built, live-proven)
 
-**Status: approved by the user on 2026-11-16 - "build it as planned". No code written yet.
-The next session starts at step 1 of the build order below.**
+**Status: DONE.** Full suite **218 tests / 218 pass** (`--parallel 1`, exit 0). The 5 n8n
+harnesses are untouched and still pass. Live proof ran against the real dev server with real
+rows: 28/28 checks, cleanup verified. Two commits on `partner-readiness/phase-1-2`.
 
-### What is broken
+### What was broken
 
-Telegram replies already work end to end. Django owns that whole conversation: the button
-data is `select_slot_<offer_id>`, so the button itself says which offer it means, and
-`TelegramService.handle_telegram_webhook` does the rest.
+Telegram replies work end to end because the button data is `select_slot_<offer_id>`: the
+button itself says which offer, and `TelegramService.handle_telegram_webhook` does the rest.
 
-An SMS or WhatsApp reply is different. The patient types **"2"**. The only other thing the
-provider sends us is the sender's phone number. Nothing in Django answers the question *"which
-open request is this phone replying about, and which offer is number 2?"* - and n8n cannot
-answer it either, because that is a database question and the rule is that n8n never gets
-database access. Reusing `/slots/hold/` directly does not work: it needs a `request_id`, and
-the patient never supplies one.
+An SMS or WhatsApp reply carries only the sender's phone and a few words. Nothing in Django
+answered *"which open request is this phone replying about, and which offer is number 2?"* -
+and n8n cannot answer it, because that is a database question and n8n never gets DB access.
+`/slots/hold/` could not be reused directly: it needs a `request_id`, which the patient never
+supplies.
 
-So today the SMS/WhatsApp reply leg has no entry point. `n8n/04_patient_response_handler.json`
-is still the 12-node skeleton with the defects the Phase 2.5 review found (staff-JWT PATCH on
-`/appointments/{id}/status/`, duplicated `/api/v1` in the URL, secret fallbacks, and the
-`re_request_slots_` prefix that never matches).
+### What shipped
 
-### What exists already (so C.1 is small)
-
-`SlotHoldView` (`backend/appointments/views_appointment.py:40`) is already webhook-auth'd and
-already accepts `{request_id, option_number}`. `SlotHoldRequestSerializer` resolves the option
-number against that request's offers **in original dispatch order**, checks expiry, takes row
-locks, and returns `ALREADY_CONFIRMED` / `SLOT_CONFLICT`. Nothing about the hard part - double
-booking - needs to be rewritten.
-
-### The plan for C.1
-
-One new webhook-auth'd, channel-neutral endpoint. It owns *interpretation*, so n8n stays a
-transport that sends text.
+**1. One channel-neutral endpoint** (`views_patient_reply.py` + `services/patient_reply.py`):
 
 ```
 POST /api/v1/webhooks/patient-reply/
-X-Webhook-Secret: <shared>          (fail closed, same verifier as every other webhook)
+X-Webhook-Secret: <shared>          (fail closed, same verifier as every webhook, 401)
+{"phone": "+2348030001122", "text": "2", "channel": "sms",
+ "provider_message_id": "vb-in-8812"}
 
-{ "phone": "+2348030001122", "text": "2",
-  "channel": "sms", "provider_message_id": "vb-in-8812" }
+{"status", "intent", "request_id", "appointment_code", "channel", "reply_text"}
 ```
 
-- **Resolution:** normalize the phone (`normalize_phone_e164`), then take the most recent
-  `BookingRequest` for it in an open status (`awaiting_slots`, `slots_offered`,
-  `offer_expired`, `re_requested`). No open request is a normal answer (`unmatched`), not an
-  error.
-- **Intent:** a bare `1..4` selects that option through the existing serializer path;
-  `cancel` / `reschedule` do what the Telegram handlers already do; anything else is
-  `needs_reception`.
-- **Idempotency:** keyed on `provider_message_id`. Providers retry webhooks, and without this
-  a replay looks like a slot conflict on a hold that is already there.
-- **Logging:** one **inbound** `InteractionLog` row for the patient's message, so the dashboard
-  shows both sides of the conversation. Today only outbound rows exist.
-- **Copy stays in Django.** The response carries `reply_text`; n8n only delivers it. One place
-  to be wrong, one place to fix.
-- **Telegram is not touched.** Django already owns it; routing it through this endpoint would
-  handle the same update twice.
+`X-Webhook-Secret` only. A patient never holds that secret, so staff JWT is deliberately not
+accepted on this machine-to-machine route.
 
-Response shapes: `held`, `already_confirmed`, `out_of_range`, `expired`, `duplicate_ignored`,
-`unmatched`.
+**2. Resolution** - `normalize_phone_e164(phone)`, then the most recent `BookingRequest` in an
+open status. No open request is a normal `200 unmatched`, not an error and not a 500. The real
+model statuses are `awaiting_review`, `slots_offered`, `offer_expired`, `re_requested` (the
+plan said `awaiting_slots`; that value has never existed in the model).
 
-### Tests first (new `PatientReplyWebhookTests`)
+**3. The select intent reuses the booking core, it does not copy it.** The option number is
+resolved against the request's offers in **original dispatch order** (`offered_at`, `id`) -
+the number the patient saw keeps its meaning. The selection itself goes through
+`services/slot_selection.py::select_slot_offer`, which was extracted verbatim from
+`SlotHoldView` (ALREADY_CONFIRMED guard + `HoldService.acquire_slot` + `is_selected` + SSE).
+Both callers now share one code path; the existing hold tests (`SlotOptionNumberHoldTests`,
+`WebhookSecurityHardeningTests`) stayed green through the extraction. `SlotHoldView` keeps its
+two paths: the shared offer path and the direct calendar/walk-in path.
 
-| # | Case | Expect |
+**4. Intent grammar** (SMS has no buttons, so the vocabulary is small and obvious):
+
+| Text | Intent | Effect |
 |---|---|---|
-| R1 | `"2"` with 3 offers | 200 `held`, right offer selected, reply names that slot |
-| R2 | same reply twice (same `provider_message_id`) | one appointment, second `duplicate_ignored` |
-| R3 | phone with no open request | 200 `unmatched`, nothing written |
-| R4 | `"9"` with 3 offers | 200 `out_of_range`, no hold |
-| R5 | offer expired | 200 `expired`, no hold |
-| R6 | `cancel` | appointment cancelled, reply confirms |
-| R7 | `reschedule` | request `re_requested` (same as the Telegram path) |
-| R8 | phone in local format `08030001122` | resolves to the same patient |
-| R9 | no / wrong `X-Webhook-Secret` | 401, nothing written |
-| R10 | inbound row written | `direction=inbound`, phone handled per existing rules |
-| R11 | request already confirmed | 200 `already_confirmed` with the original code |
-| R12 | replies on two channels | still idempotent (cross-channel neutralization) |
+| `1`..`4` (any 1-2 digit number) | `select` | hold that dispatched option |
+| `cancel`, `cancelled`, `canceled`, `stop` | `cancel` | cancel the live appointment |
+| `reschedule`, `change`, `move`, `new time` | `reschedule` | request -> `re_requested` |
+| anything else | `other` | `needs_reception` |
+
+**5. Statuses returned** (the six approved plus the ones lifecycle needs):
+
+| Status | Meaning |
+|---|---|
+| `held` | 15-minute hold created, `reply_text` names doctor/time/reference |
+| `already_confirmed` | a live booking exists; original `appointment_code` returned |
+| `out_of_range` | option number was not offered (or nothing offered yet) |
+| `expired` | the 60-minute offer window passed |
+| `duplicate_ignored` | provider retried the same message; **no** action, `reply_text` is `""` |
+| `unmatched` | no open request for this phone |
+| `needs_reception` | free text, or `cancel` with nothing to cancel |
+| `cancelled` | appointment cancelled (`cancelled_at`, reason `Cancelled by patient via <channel>`) |
+| `re_requested` | request in the priority tab + `PATIENT_RE_REQUESTED_TIMES` audit row |
+| `slot_conflict` | another patient took the time inside the lock |
+
+**6. Idempotency is the inbound row itself.** `provider_message_id` is stored as
+`InteractionLog.external_ref`, which is already unique, so `get_or_create` is the claim: a
+retry (or a race) gets `created=False` and answers `duplicate_ignored` without touching the
+database further. No new model, no migration. An empty `reply_text` is the contract signal
+"nothing to deliver" - n8n must not send just because it retried its HTTP call.
+
+**7. The patient's side of the conversation is recorded.** One `direction="inbound"` row per
+accepted message: provider inferred from the channel, `status="answered"`, normalized phone,
+request and appointment links filled once the outcome is known, and a `summary` built from the
+outcome - never from the patient's raw text, because free text may contain a phone number or
+clinical detail. `unmatched` writes nothing (there is nothing to attach, and R3 pins it).
+
+**8. Copy stays in Django, plain text.** `reply_text` is composed here (no HTML/Telegram
+markup), so there is one place to be wrong and one place to fix.
+
+**9. Telegram untouched.** Django already owns that conversation; forwarding Telegram updates
+here would handle the same tap twice.
+
+### Precedence decisions (and why)
+
+1. **`already_confirmed` before `out_of_range` and `expired`.** A patient who already holds a
+   slot and then texts `9` should hear "you already have a booking", not "option 9 does not
+   exist" - and must never get a second booking. R12 ("3" after "2" on another channel) pins
+   this. Unit R4 still sees `out_of_range` because it has no prior hold.
+2. **`out_of_range` before `expired`?** No: a valid number whose offer expired reports
+   `expired`; an invalid number reports `out_of_range` regardless of expiry.
+3. **`cancel` with no live appointment** is `needs_reception` with an honest sentence; it does
+   not silently mark the request rejected. Telegram's cancel targets an appointment id from a
+   button; here the target is the live appointment for the request.
+4. **`unmatched` writes nothing** - no row, no SSE, no audit.
+
+### Tests (R1-R12, written first)
+
+`PatientReplyWebhookTests`, 12 tests, **12 red first** (9 failures + 3 errors, all `404`
+because the route did not exist). Step-by-step green counts: 2/12 after the resolver + auth,
+7/12 after the select intent, 9/12 after idempotency, 11/12 after cancel/reschedule, 12/12
+after the inbound row. Suite total 206 -> 218, exit 0.
 
 ### Live proof
 
-Django-only, no partner credentials needed: create a request with three offers, POST `"2"`,
-assert the appointment row; replay the same `provider_message_id`; then `"9"`, `cancel`,
-`reschedule`, and a wrong secret. Clean up afterwards.
+`c1_live_proof.py` against `127.0.0.1:8000` with the real dev database: created a request with
+three offers, then `9` -> `out_of_range`, `2` -> `held` (right offer, reply names its time),
+same `provider_message_id` -> `duplicate_ignored` (one appointment, one inbound row),
+`cancel` -> `cancelled`, `reschedule` -> `re_requested` + audit row, free text ->
+`needs_reception`, wrong secret -> `401` with no rows, local phone `08090012345` -> same
+patient held, inbound summaries contain no phone number. **28/28, exit 0**, all proof rows
+deleted and verified gone.
 
-### Out of scope for C.1
+It caught one wrong assumption in the proof itself: after a hold exists, `already_confirmed`
+legitimately wins over the range check, so the proof now checks `9` on a request with no hold.
 
-- The n8n workflow itself (**C.2**: rebuild `04` around this endpoint).
-- Parsing VoiceBip's inbound payload format - still an open partner question, and the reason
-  the endpoint takes a neutral `{phone, text, channel, provider_message_id}` shape.
+### Files
+
+- New: `backend/appointments/services/patient_reply.py`,
+  `backend/appointments/services/slot_selection.py`,
+  `backend/appointments/views_patient_reply.py`
+- Changed: `backend/appointments/views_appointment.py` (shared select core, behaviour
+  identical), `backend/appointments/urls.py` (route),
+  `backend/appointments/tests.py` (`PatientReplyWebhookTests`)
+- Docs: `PROGRESS.md`, `TEST.md` (T-713), `n8n.md` (§5.8), `n8n/N8N_BUILD_SHEET.md` (§4, §6.1),
+  `API_REFERENCE.md`, `DATABASE_SCHEMA.md` (no migration; `external_ref` note only)
+
+No schema change, no new dependency, no frontend change.
+
+### Out of scope (unchanged)
+
+- The n8n workflow rebuild (**C.2**) - `04_patient_response_handler.json` is still the audited
+  skeleton.
+- VoiceBip's inbound payload format - still an open partner question, which is why the endpoint
+  takes a neutral `{phone, text, channel, provider_message_id}` shape.
 - Forwarding Meta inbound messages from `07` (WhatsApp is dormant).
 
-### Build order (small steps, verify between each)
+---
 
-1. **Tests red first.** New `PatientReplyWebhookTests` in `backend/appointments/tests.py`
-   covering R1-R12. Run them; every one fails because the route does not exist. Record the
-   red count.
-2. **The resolver only.** Add the phone -> open-request lookup as a small helper, plus the
-   endpoint skeleton returning the auth refusal and `unmatched`. Get R3, R8, R9 green
-   (resolution and auth need no booking logic).
-3. **The select intent.** Wire `1..4` through `SlotHoldRequestSerializer` and the existing
-   hold path, return `reply_text`. Get R1, R4, R5, R11 green.
-4. **Idempotency.** Key on `provider_message_id`. Get R2, R12 green.
-5. **`cancel` / `reschedule`.** Reuse the Telegram handler effects. Get R6, R7 green.
-6. **Inbound row.** One `InteractionLog` row, `direction='inbound'`. Get R10 green.
-7. **Full suite** - must stay at 206 + 12 (218), exit 0.
-8. **Live proof** against the running server, then clean up the data.
-9. **Docs**, then two commits (code, docs) on `partner-readiness/phase-1-2`, then push.
-   `origin/main` must still be `7f8bcd9`.
+## Next up - Workflow C / C.2 (NOT started)
+
+**Status: ready to start. C.1 (the Django endpoint) is done and live-proven.**
+
+Rebuild `n8n/04_patient_response_handler.json` around the C.1 endpoint. The audited defects to
+remove, not patch:
+
+1. `PATCH /appointments/{id}/status/` with `X-Webhook-Secret` - staff-JWT-only, and a
+   patient-facing webhook must never PATCH arbitrary ids. Replace with
+   `POST /webhooks/patient-reply/` (scoped by phone, validated server-side).
+2. Duplicated `/api/v1` in the URL - `DJANGO_API_BASE_URL` already includes `/api/v1`.
+3. Secret fallbacks (`$env.X || 'clinic_dev_...'`) - copy `05`'s fail-closed pattern.
+4. `re_request_slots_{id}` prefix - gone with the rebuild; reschedule is now the word
+   `reschedule`, interpreted by Django.
+5. No inbound `POST /interactions/` from n8n: C.1 writes the inbound row itself. Sending one
+   would duplicate the patient's message.
+6. Deliver `reply_text` verbatim on the same channel; if it is `""` (duplicate), send nothing.
+7. `needs_reception` / `out_of_range` / `expired` / `slot_conflict` need no client-side
+   decision - they already carry the sentence to send.
+
+Then Workflow B (the expiry sweeper), then Phase 5.
