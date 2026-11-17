@@ -2,9 +2,20 @@
 
 This directory contains the production-ready, modular workflow JSON templates for the **MedPulse Receptionist-Approved Clinic Booking System**.
 
+```
+n8n/
+├── README.md            ← you are here (manifest + setup guide)
+├── .env.example         ← annotated environment contract
+├── workflows/           ← the importable workflow JSONs (01–07)
+├── tests/               ← node-only harnesses (`node n8n/tests/test_sweeper.js`)
+└── docs/                ← N8N_BUILD_SHEET.md · PARTNER_HANDOVER.md · FLIP_LIVE_RUNBOOK.md
+```
+
 ---
 
 ## 📁 Workflow Manifest
+
+All JSON templates live in [`workflows/`](workflows/).
 
 | File | Name | Trigger | Action |
 | :--- | :--- | :--- | :--- |
@@ -16,7 +27,7 @@ This directory contains the production-ready, modular workflow JSON templates fo
 | `06_provider_simulator.json` | **Provider Simulator** (dev only) | Webhook (`POST /webhook/provider-sim/{channel}`) | Stands in for VoiceBip / Meta while `PROVIDER_MOCK=true`: returns a realistic success payload or HTTP 500 when `PROVIDER_MOCK_FAIL=true`. Delete once real credentials are live. |
 | `07_provider_callback.json` | **Provider Callback Receiver** | Webhook (`POST /webhook/provider-callback`) | Authenticates provider delivery reports / call outcomes, normalizes their vocabulary, and upserts `InteractionLog` rows (idempotent on `external_ref`, never downgrading a status). |
 
-**Flip-live procedure:** [`FLIP_LIVE_RUNBOOK.md`](FLIP_LIVE_RUNBOOK.md).
+**Flip-live procedure:** [`docs/FLIP_LIVE_RUNBOOK.md`](docs/FLIP_LIVE_RUNBOOK.md).
 **Full environment contract:** [`.env.example`](.env.example).
 
 ---
@@ -48,7 +59,7 @@ See [`.env.example`](.env.example) for the annotated, complete list.
 ### 2. Importing into n8n
 1. Open your n8n dashboard (e.g. `https://n8n.yourclinic.com`).
 2. Go to **Workflows** ➔ Click **Add Workflow** ➔ Click **Import from File...**
-3. Select each `.json` file from this directory:
+3. Select each `.json` file from [`workflows/`](workflows/):
    - `01_intake_webhook.json`
    - `02_hold_and_offer_expiry_cron.json`
    - `03_reminder_flows.json`

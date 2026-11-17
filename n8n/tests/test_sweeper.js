@@ -1,5 +1,5 @@
 // Workflow B / B.1 harness: run the SHIPPED sources from
-// `n8n/02_hold_and_offer_expiry_cron.json` and assert the rebuilt graph's contract.
+// `n8n/workflows/02_hold_and_offer_expiry_cron.json` and assert the rebuilt graph's contract.
 //
 // The rebuild has one job: every 60 seconds ask Django ("POST /webhooks/expiry-sweep/")
 // who expired, then DELIVER the message Django composed on the app Django chose.
@@ -13,8 +13,8 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const WF_PATH = path.join(__dirname, '..', '02_hold_and_offer_expiry_cron.json');
-const DISPATCH_PATH = path.join(__dirname, '..', '05_slot_offer_dispatcher.json');
+const WF_PATH = path.join(__dirname, '..', 'workflows', '02_hold_and_offer_expiry_cron.json');
+const DISPATCH_PATH = path.join(__dirname, '..', 'workflows', '05_slot_offer_dispatcher.json');
 
 const wf = JSON.parse(fs.readFileSync(WF_PATH, 'utf8'));
 const dispatch = JSON.parse(fs.readFileSync(DISPATCH_PATH, 'utf8'));

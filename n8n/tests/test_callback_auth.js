@@ -18,7 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const WF_PATH = path.join(__dirname, '..', '07_provider_callback.json');
+const WF_PATH = path.join(__dirname, '..', 'workflows', '07_provider_callback.json');
 const NODE_NAME = 'Verify & Normalize Provider Event';
 
 const workflow = JSON.parse(fs.readFileSync(WF_PATH, 'utf8'));

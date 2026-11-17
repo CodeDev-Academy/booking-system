@@ -41,7 +41,7 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
 ---
 
 ### Workflow 1: Patient Inbound Intake & Webhook Normalizer
-- **Template File**: `n8n/01_intake_webhook.json`
+- **Template File**: `n8n/workflows/01_intake_webhook.json`
 - **Purpose**: Ingest raw patient inquiries from all external channels, validate and sanitize the input, and register a new booking request in the receptionist queue.
 
 #### Node Pipeline & Data Flow:
@@ -73,7 +73,7 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
 ---
 
 ### Workflow 2: 60-Second Temporary Hold & Offer Expiry Sweeper
-- **Template File**: `n8n/02_hold_and_offer_expiry_cron.json`
+- **Template File**: `n8n/workflows/02_hold_and_offer_expiry_cron.json`
 - **Purpose**: Runs every 60 seconds as a high-reliability cron sweeper. It asks Django who expired, then **delivers the message Django composed, on the app Django chose**. n8n writes no patient-facing words and makes no channel decision (built 2026-11-16, Workflow B).
 
 > **Built & live.** Workflow ID `WgdycXudLDdqskEQ` (`02_Hold_And_Offer_Expiry_Sweeper`) — active, 12 nodes,
@@ -127,7 +127,7 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
 ---
 
 ### Workflow 3: Automated Pre-Visit Reminders & Follow-Ups
-- **Template File**: `n8n/03_reminder_flows.json`
+- **Template File**: `n8n/workflows/03_reminder_flows.json`
 - **Purpose**: Runs hourly (at :05) and asks Django who is due a 24h or 2h pre-visit reminder or a doctor follow-up recall, then **delivers the message Django composed, on the app Django chose**. n8n writes no patient-facing words and makes no channel decision (built 2026-11-17, Workflow A).
 
 > **Built & live.** Workflow ID `UHQzb7w5gOh2hxcW` (`03_Pre_Visit_Reminders_And_Followups`) — active, 12 nodes,
@@ -195,7 +195,7 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
 ---
 
 ### Workflow 4: Patient Response & Interactive Button Click Handler
-- **Template File**: `n8n/04_patient_response_handler.json`
+- **Template File**: `n8n/workflows/04_patient_response_handler.json`
 - **Purpose**: Ingests interactive callback clicks from Telegram Inline Keyboards and WhatsApp button clicks, and routes them to the correct transactional backend endpoint.
 
 > **✅ REBUILT (C.2, 2026-11-16).** The shipped JSON is no longer the Telegram-button
@@ -233,7 +233,7 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
 ---
 
 ### Workflow 5: Receptionist Approved Slot Dispatch Bridge
-- **Template File**: `n8n/05_slot_offer_dispatcher.json`
+- **Template File**: `n8n/workflows/05_slot_offer_dispatcher.json`
 - **Purpose**: Triggered when the receptionist clicks **`[Approve & Dispatch Options]`** on the dashboard. Formats the candidate slots into interactive buttons and delivers them to the patient.
 
 #### Node Pipeline & Data Flow:
@@ -587,11 +587,11 @@ Layer 4 contract — enforcement (opt-in, default OFF):
    `POST /api/v1/interactions/`).
 5. **Callback receiver** — one authenticated webhook for provider events; idempotent upsert by
    `external_ref`; status rank so late events never downgrade a row. ✅ Done (Stage D-4,
-   `07_Provider_Callback_Receiver` / `n8n/07_provider_callback.json`; rank guard lives in
+   `07_Provider_Callback_Receiver` / `n8n/workflows/07_provider_callback.json`; rank guard lives in
    Django so it holds even for replayed events).
 6. **Flip to live** — fill §5.5, set `PROVIDER_MOCK=false`, enable the provider nodes, re-run
    the sample payload, then one real call to a test number. ✅ Done (Stage D-5) — the
-   procedure is `n8n/FLIP_LIVE_RUNBOOK.md`; configuration template is `n8n/.env.example`.
+   procedure is `n8n/docs/FLIP_LIVE_RUNBOOK.md`; configuration template is `n8n/.env.example`.
    The flip is env-only: no node edits and no Django deploy.
 7. **Authenticate the dispatch webhook** — the one entry point that can make the clinic send
    real messages. ✅ Done (Phase 0). `05` now runs `Verify Dispatch Secret` → `IF Dispatch
@@ -850,7 +850,7 @@ no `clinic_dev_…` fallback — an unset `DJANGO_WEBHOOK_SECRET` rejects every 
 
 ### 5.10 Provider callback contract (Stage D-4)
 
-`07_Provider_Callback_Receiver` (`rmqf5Z5K3EfapVGo`, `n8n/07_provider_callback.json`) owns
+`07_Provider_Callback_Receiver` (`rmqf5Z5K3EfapVGo`, `n8n/workflows/07_provider_callback.json`) owns
 `POST /webhook/provider-callback`. Point the partner's delivery-report / call-outcome webhook
 at it and give them the shared token.
 
@@ -970,10 +970,10 @@ has no "unknown" value, so a row would require lying in the other direction.
 
 | Workflow Name | File Path | Trigger | Primary Action |
 | :--- | :--- | :--- | :--- |
-| **Intake Webhook** | `n8n/01_intake_webhook.json` | Webhook (`/webhook/intake`) | Ingest, sanitize, post to Django queue |
-| **Hold & Expiry Sweeper** | `n8n/02_hold_and_offer_expiry_cron.json` | Cron (`*/1 * * * *`) | B: asks Django who expired (`POST /webhooks/expiry-sweep/`) and delivers Django's words on Django's channel; claim-ref upserts keep every message single-shot |
-| **Reminder Flows** | `n8n/03_reminder_flows.json` | Cron (`5 * * * *`, hourly at :05) | A: asks Django who is due a 24h/2h pre-visit reminder or follow-up recall (`POST /webhooks/reminder-sweep/`) and delivers Django's words on Django's channel; shares 02's byte-identical adapter and the ONE WhatsApp template; claim-ref upserts keep every message single-shot |
-| **Patient Response Handler** | `n8n/04_patient_response_handler.json` | Webhook (`/webhook/whatsapp-inbound`, `/webhook/sms-inbound`) | C.2: asks Django what an SMS/WhatsApp reply means (`/webhooks/patient-reply/`) and delivers `reply_text` verbatim |
-| **Slot Offer Dispatcher** | `n8n/05_slot_offer_dispatcher.json` | Webhook (`/webhook/dispatch-offers`) | Format & send approved 1h slot buttons to patient |
-| **Provider Simulator** (dev only) | `n8n/06_provider_simulator.json` | Webhook (`/webhook/provider-sim/{channel}`) | Stand-in for VoiceBip/Meta: realistic success payload or HTTP 500 when `PROVIDER_MOCK_FAIL=true` |
-| **Provider Callback Receiver** | `n8n/07_provider_callback.json` | Webhook (`/webhook/provider-callback`) | Authenticate + normalize provider delivery reports / call outcomes, upsert `InteractionLog` |
+| **Intake Webhook** | `n8n/workflows/01_intake_webhook.json` | Webhook (`/webhook/intake`) | Ingest, sanitize, post to Django queue |
+| **Hold & Expiry Sweeper** | `n8n/workflows/02_hold_and_offer_expiry_cron.json` | Cron (`*/1 * * * *`) | B: asks Django who expired (`POST /webhooks/expiry-sweep/`) and delivers Django's words on Django's channel; claim-ref upserts keep every message single-shot |
+| **Reminder Flows** | `n8n/workflows/03_reminder_flows.json` | Cron (`5 * * * *`, hourly at :05) | A: asks Django who is due a 24h/2h pre-visit reminder or follow-up recall (`POST /webhooks/reminder-sweep/`) and delivers Django's words on Django's channel; shares 02's byte-identical adapter and the ONE WhatsApp template; claim-ref upserts keep every message single-shot |
+| **Patient Response Handler** | `n8n/workflows/04_patient_response_handler.json` | Webhook (`/webhook/whatsapp-inbound`, `/webhook/sms-inbound`) | C.2: asks Django what an SMS/WhatsApp reply means (`/webhooks/patient-reply/`) and delivers `reply_text` verbatim |
+| **Slot Offer Dispatcher** | `n8n/workflows/05_slot_offer_dispatcher.json` | Webhook (`/webhook/dispatch-offers`) | Format & send approved 1h slot buttons to patient |
+| **Provider Simulator** (dev only) | `n8n/workflows/06_provider_simulator.json` | Webhook (`/webhook/provider-sim/{channel}`) | Stand-in for VoiceBip/Meta: realistic success payload or HTTP 500 when `PROVIDER_MOCK_FAIL=true` |
+| **Provider Callback Receiver** | `n8n/workflows/07_provider_callback.json` | Webhook (`/webhook/provider-callback`) | Authenticate + normalize provider delivery reports / call outcomes, upsert `InteractionLog` |

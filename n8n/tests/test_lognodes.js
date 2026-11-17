@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const WF = path.join(__dirname, '..', '05_slot_offer_dispatcher.json');
+const WF = path.join(__dirname, '..', 'workflows', '05_slot_offer_dispatcher.json');
 const wf = JSON.parse(fs.readFileSync(WF, 'utf8'));
 
 const LOG_NODES = [

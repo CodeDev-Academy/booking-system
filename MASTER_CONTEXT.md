@@ -369,7 +369,7 @@ external providers (VoiceBip voice, WhatsApp, SMS, Meta, etc.).
 | `plans/voicebip-n8n/01–04*.md` | Messaging feature handover specs |
 | `backend/` | Django REST backend (`appointments/` = domain app, `services/` = business logic) |
 | `frontend/` | React 19 workstation (`stores/`, `services/`, `hooks/` = logic; `components/`, `views/` = design) |
-| `n8n/` | Workflow JSONs + agency quickstart README |
+| `n8n/` | Automation package: `workflows/` (JSONs 01–07), `tests/` (node harnesses), `docs/` (build sheet, partner handover, flip-live runbook), `README.md` (manifest + setup) |
 
 ---
 

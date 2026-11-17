@@ -274,7 +274,7 @@ Once SMS, voice and callbacks are green:
 1. In n8n, **deactivate** `06_Provider_Simulator`.
 2. Delete it (it is a dev-only workflow).
 3. Remove `PROVIDER_SIMULATOR_URL` / `PROVIDER_MOCK_FAIL` from the environment (optional).
-4. Keep `n8n/06_provider_simulator.json` in the repo — it is how the team re-tests without
+4. Keep `n8n/workflows/06_provider_simulator.json` in the repo — it is how the team re-tests without
    spending provider credit.
 
 ---

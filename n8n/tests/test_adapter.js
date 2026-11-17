@@ -6,7 +6,7 @@ const vm = require('vm');
 
 // The adapter is a Code node in the workflow export, which is the source of truth.
 // Never test a copy: a drifted copy is exactly what this harness is meant to catch.
-const WF = path.join(__dirname, '..', '05_slot_offer_dispatcher.json');
+const WF = path.join(__dirname, '..', 'workflows', '05_slot_offer_dispatcher.json');
 const wf = JSON.parse(fs.readFileSync(WF, 'utf8'));
 const adapterNode = wf.nodes.find((n) => n.name === 'Provider Config & Adapter');
 if (!adapterNode) { console.log('FAIL could not find the adapter node in the workflow JSON'); process.exit(1); }

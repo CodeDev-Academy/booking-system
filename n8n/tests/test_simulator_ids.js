@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const WF_PATH = path.join(__dirname, '..', '06_provider_simulator.json');
+const WF_PATH = path.join(__dirname, '..', 'workflows', '06_provider_simulator.json');
 const wf = JSON.parse(fs.readFileSync(WF_PATH, 'utf8'));
 
 const source = (name) => {

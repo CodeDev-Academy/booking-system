@@ -37,8 +37,8 @@ Counts are the harness's own output (`ok` lines), not an estimate.
 ## Golden rules
 
 1. **Never test a copy.** Every harness reads the node's `jsCode` straight out of the
-   workflow export it covers (`n8n/05_slot_offer_dispatcher.json`, or
-   `n8n/07_provider_callback.json` for the callback auth harness). `test_voice_guard.js`
+   workflow export it covers (`n8n/workflows/05_slot_offer_dispatcher.json`, or
+   `n8n/workflows/07_provider_callback.json` for the callback auth harness). `test_voice_guard.js`
    also asserts one graph edge, because the 3.8 bug was a missing wire rather than bad code.
    `test_adapter.js` used to read a dumped `adapter_v2.js` instead — and it happened to be
    byte-identical, which is luck, not a guarantee. A dump drifts the moment the node changes,

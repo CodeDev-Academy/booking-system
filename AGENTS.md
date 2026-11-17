@@ -116,13 +116,13 @@ clinic-booking-system/
 │   │   │   └── components/    # Component-specific CSS sheets
 │   │   └── main.jsx
 │   └── package.json
-└── n8n/                       # Ready-to-import n8n Workflow JSONs
-    ├── intake_webhook.json
-    ├── hold_and_offer_expiry_cron.json
-    ├── reminder_dispatcher.json
-    ├── patient_response_handler.json
-    └── tests/                 # Node-only harnesses that run the shipped node sources
-                               # (`node n8n/tests/test_lognodes.js`; never a dumped copy)
+└── n8n/                       # n8n automation package (see n8n/README.md)
+    ├── README.md               # Folder manifest + 15-minute agency setup guide
+    ├── .env.example            # Annotated environment contract
+    ├── workflows/              # Ready-to-import workflow JSONs (01–08)
+    ├── tests/                  # Node-only harnesses that run the shipped node sources
+    │                           # (`node n8n/tests/test_lognodes.js`; never a dumped copy)
+    └── docs/                   # N8N_BUILD_SHEET.md, PARTNER_HANDOVER.md, FLIP_LIVE_RUNBOOK.md
 ```
 
 ---

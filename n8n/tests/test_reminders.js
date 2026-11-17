@@ -1,5 +1,5 @@
 // Workflow A / A.1 harness: run the SHIPPED sources from
-// `n8n/03_reminder_flows.json` and assert the rebuilt graph's contract.
+// `n8n/workflows/03_reminder_flows.json` and assert the rebuilt graph's contract.
 //
 // The rebuild has one job: every hour ask Django ("POST /webhooks/reminder-sweep/")
 // who is due a 24h or 2h pre-visit reminder or a follow-up recall, then DELIVER
@@ -17,9 +17,9 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const WF_PATH = path.join(__dirname, '..', '03_reminder_flows.json');
-const SWEEPER_PATH = path.join(__dirname, '..', '02_hold_and_offer_expiry_cron.json');
-const DISPATCH_PATH = path.join(__dirname, '..', '05_slot_offer_dispatcher.json');
+const WF_PATH = path.join(__dirname, '..', 'workflows', '03_reminder_flows.json');
+const SWEEPER_PATH = path.join(__dirname, '..', 'workflows', '02_hold_and_offer_expiry_cron.json');
+const DISPATCH_PATH = path.join(__dirname, '..', 'workflows', '05_slot_offer_dispatcher.json');
 
 const wf = JSON.parse(fs.readFileSync(WF_PATH, 'utf8'));
 const sweeper = JSON.parse(fs.readFileSync(SWEEPER_PATH, 'utf8'));

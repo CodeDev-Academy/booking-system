@@ -1,5 +1,5 @@
 // Workflow C / C.2 harness: run the SHIPPED sources from
-// `n8n/04_patient_response_handler.json` and assert the rebuilt graph's contract.
+// `n8n/workflows/04_patient_response_handler.json` and assert the rebuilt graph's contract.
 //
 // The rebuild has one job: take an inbound SMS/WhatsApp message, ask Django
 // (`POST /webhooks/patient-reply/`) what it means, and deliver the `reply_text`
@@ -12,8 +12,8 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const WF_PATH = path.join(__dirname, '..', '04_patient_response_handler.json');
-const DISPATCH_PATH = path.join(__dirname, '..', '05_slot_offer_dispatcher.json');
+const WF_PATH = path.join(__dirname, '..', 'workflows', '04_patient_response_handler.json');
+const DISPATCH_PATH = path.join(__dirname, '..', 'workflows', '05_slot_offer_dispatcher.json');
 
 const wf = JSON.parse(fs.readFileSync(WF_PATH, 'utf8'));
 const dispatch = JSON.parse(fs.readFileSync(DISPATCH_PATH, 'utf8'));

@@ -107,7 +107,7 @@
 
 ## 🔄 PHASE 4 — n8n Workflows (User Builds In-House)
 
-> **Build guide:** `n8n/N8N_BUILD_SHEET.md` — per-workflow node-by-node specs with verified Django
+> **Build guide:** `n8n/docs/N8N_BUILD_SHEET.md` — per-workflow node-by-node specs with verified Django
 > contracts, interaction-logging requirements, and a recommended build/test order (2026-11-12).
 
 > **Architecture (user-approved 2026-11-13): Option A — Feature-Sliced.** Each feature owns its
@@ -135,7 +135,7 @@
 
 ## 🤝 PHASE 5 — Partner Handover & Telephony Connection
 
-### Task 5.1: Package We Give the Partner `[x]` (2026-11-17, `n8n/PARTNER_HANDOVER.md`)
+### Task 5.1: Package We Give the Partner `[x]` (2026-11-17, `n8n/docs/PARTNER_HANDOVER.md`)
 - [x] VoiceBip event webhook URL (n8n) + WhatsApp inbound webhook URL (n8n) — §2 of the package: `POST /webhook/provider-callback` (VoiceBip header token; Meta registers the same URL with the query token + GET handshake, statuses only — inbound messages ack-ignored `inbound_message_not_a_status_event`), `POST /webhook/sms-inbound` (VoiceBip inbound relay, header secret), `POST /webhook/whatsapp-inbound` (dormant at launch: Meta-direct cannot pass its `X-Webhook-Secret`; Telegram is the launch interactive channel)
 - [x] Shared webhook verification token — §3: three secrets with owners and two-sided rotation (`DJANGO_WEBHOOK_SECRET`/`WEBHOOK_SECRET`, `PROVIDER_CALLBACK_TOKEN`, `WHATSAPP_VERIFY_TOKEN`)
 - [x] Live staging dashboard link for joint end-to-end testing — §4c deployment table (Vercel/Railway URLs to fill at deploy; checklist inline)
