@@ -3791,6 +3791,360 @@ class SweeperMessagingTests(APITestCase):
         self.assertEqual(appt.status, 'hold_expired')
 
 
+class ReminderMessagingTests(APITestCase):
+    """
+    Workflow A / A.0 - pre-visit reminders (24h & 2h) and doctor follow-up
+    recalls. Same split as B.0: the sweep endpoint is the messaging brain - it
+    decides WHO is due, on WHICH app, with WHICH words - and n8n only delivers.
+
+    Contract:
+    - One POST returns ALL due items (no per-kind parameter): 24h reminders,
+      2h reminders, follow-up recalls.
+    - Windows: 24h = start in (now, now+24h]; 2h = start in (now, now+2h].
+      Only `confirmed` appointments are reminded (never held/cancelled/etc).
+    - Channels mirror the patient's own outbound log (the booking request's
+      rows, plus rows linked to the appointment itself). Walk-ins and patients
+      with no dispatch record fall back to plain SMS. Voice is never a
+      reminder channel.
+    - Copy always states the actual date and time - never "tomorrow" - so the
+      words stay truthful for any window.
+    - The claim row IS the dedupe (status 'queued'); n8n's outcome POST upserts
+      the same external_ref. One message per channel per reminder kind, ever.
+    - Clinic flags gate the batches: enable_24h_reminder (default on) and
+      enable_2h_reminder (default off).
+    - Follow-up tasks (is_completed=False, reminder_sent=False, due today or
+      overdue) are emitted once, then marked reminder_sent=True. An
+      unresolvable channel writes no claim and no mark, so a later sweep
+      retries (Workflow B's posture).
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+
+        self.service = Service.objects.create(
+            name='Reminder Consultation',
+            category='General',
+            duration_minutes=30,
+            buffer_minutes=5,
+            price=5000.00,
+        )
+        self.doctor = Doctor.objects.create(
+            name='Dr. Reminder Test',
+            specialty='General Medicine',
+            working_days=[1, 2, 3, 4, 5, 6, 7],
+            shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(17, 0),
+            is_active=True,
+        )
+
+    def make_booking_request(self, phone='+2348099988888', notes=''):
+        return BookingRequest.objects.create(
+            patient_name='Reminder Test Patient',
+            patient_phone=phone,
+            service=self.service,
+            status='converted',
+            patient_notes=notes,
+        )
+
+    def log_row(self, booking_request, channel):
+        """Simulate the patient having been reached on one channel before."""
+        return InteractionLog.objects.create(
+            provider='voicebip' if channel in ('sms', 'voice') else ('meta_whatsapp' if channel == 'whatsapp' else 'telegram'),
+            channel=channel,
+            direction='outbound',
+            status='sent',
+            patient_name=booking_request.patient_name,
+            patient_phone=booking_request.patient_phone,
+            booking_request=booking_request,
+            external_ref=f'mock-{channel}-row-{booking_request.request_code}',
+            summary='Prior outbound interaction',
+        )
+
+    def make_appointment(self, hours_ahead=23, status='confirmed', booking_request=None, phone='+2348099988888'):
+        start = timezone.now() + datetime.timedelta(hours=hours_ahead)
+        return Appointment.objects.create(
+            patient_name='Reminder Test Patient',
+            patient_phone=phone,
+            doctor=self.doctor,
+            service=self.service,
+            booking_request=booking_request,
+            start_datetime=start,
+            end_datetime=start + datetime.timedelta(minutes=30),
+            status=status,
+        )
+
+    def make_follow_up(self, appointment, days_ahead=0, is_completed=False, reminder_sent=False):
+        return FollowUpTask.objects.create(
+            appointment=appointment,
+            doctor=self.doctor,
+            follow_up_date=timezone.localdate() + datetime.timedelta(days=days_ahead),
+            notes='Suture check',
+            reminder_sent=reminder_sent,
+            is_completed=is_completed,
+        )
+
+    def sweep(self, secret='clinic_dev_secret_2026'):
+        return self.client.post(
+            '/api/v1/webhooks/reminder-sweep/',
+            {'triggered_by': 'n8n_cron'}, format='json',
+            HTTP_X_WEBHOOK_SECRET=secret,
+        )
+
+    # --- 24h reminders -------------------------------------------------------
+
+    def test_24h_reminder_mirrors_the_booking_channels(self):
+        req = self.make_booking_request()
+        self.log_row(req, 'sms')
+        self.log_row(req, 'whatsapp')
+        appt = self.make_appointment(hours_ahead=23, booking_request=req)
+
+        res = self.sweep()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['reminder_24h_count'], 2)
+        self.assertEqual(res.data['reminder_2h_count'], 0)
+        self.assertEqual(res.data['followup_count'], 0)
+        items = res.data['reminder_items']
+        self.assertEqual(sorted(i['channel'] for i in items), ['sms', 'whatsapp'])
+        local_start = timezone.localtime(appt.start_datetime)
+        date_str = local_start.strftime('%a %d %b')
+        for item in items:
+            self.assertEqual(item['kind'], '24h')
+            self.assertEqual(item['request_id'], appt.appointment_code)
+            self.assertEqual(item['patient_phone'], appt.patient_phone)
+            self.assertIn('Reminder Consultation', item['message'])
+            self.assertIn(date_str, item['message'])
+        self.assertEqual(
+            sorted(i['claim_ref'] for i in items),
+            sorted([f"rem24-{appt.appointment_code}-sms", f"rem24-{appt.appointment_code}-whatsapp"]),
+        )
+
+    def test_24h_reminder_words_state_the_real_date_never_tomorrow(self):
+        """The 24h window is (now, now+24h] - an appointment 3 hours out is not
+        'tomorrow', so the copy must carry the actual date and time."""
+        appt = self.make_appointment(hours_ahead=3)
+
+        res = self.sweep()
+        items = res.data['reminder_items']
+        self.assertEqual(len(items), 1)
+        message = items[0]['message']
+        self.assertNotIn('omorrow', message)
+        local_start = timezone.localtime(appt.start_datetime)
+        self.assertIn(local_start.strftime('%a %d %b'), message)
+        self.assertIn(local_start.strftime('%I:%M %p'), message)
+
+    def test_24h_reminder_falls_back_to_sms_for_walk_in(self):
+        appt = self.make_appointment(hours_ahead=23, booking_request=None)
+
+        res = self.sweep()
+        items = res.data['reminder_items']
+        self.assertEqual([i['channel'] for i in items], ['sms'])
+        self.assertTrue(items[0]['message'].strip())
+
+    def test_24h_reminder_never_uses_voice(self):
+        req = self.make_booking_request()
+        self.log_row(req, 'voice')
+        self.make_appointment(hours_ahead=23, booking_request=req)
+
+        res = self.sweep()
+        self.assertEqual([i['channel'] for i in res.data['reminder_items']], ['sms'])
+
+    def test_reminders_skip_non_confirmed_appointments(self):
+        self.make_appointment(hours_ahead=23, status='held')
+        self.make_appointment(hours_ahead=23, status='cancelled', phone='+2348099988899')
+        self.make_appointment(hours_ahead=23, status='completed', phone='+2348099988887')
+
+        res = self.sweep()
+        self.assertEqual(res.data['reminder_24h_count'], 0)
+        self.assertEqual(res.data['reminder_items'], [])
+
+    def test_out_of_window_appointments_are_silent(self):
+        self.make_appointment(hours_ahead=30)   # beyond the 24h window
+        self.make_appointment(hours_ahead=-1, phone='+2348099988898')  # already started
+
+        res = self.sweep()
+        self.assertEqual(res.data['reminder_24h_count'], 0)
+        self.assertEqual(res.data['reminder_2h_count'], 0)
+
+    def test_24h_flag_off_silences_the_batch(self):
+        self.clinic.enable_24h_reminder = False
+        self.clinic.save()
+        self.make_appointment(hours_ahead=23)
+
+        res = self.sweep()
+        self.assertEqual(res.data['reminder_24h_count'], 0)
+        self.assertEqual(res.data['reminder_items'], [])
+
+    # --- 2h reminders --------------------------------------------------------
+
+    def test_2h_reminder_is_off_by_default(self):
+        self.make_appointment(hours_ahead=1.5)
+
+        res = self.sweep()
+        self.assertEqual(res.data['reminder_2h_count'], 0)
+        self.assertFalse(any(i['kind'] == '2h' for i in res.data['reminder_items']))
+
+    def test_2h_reminder_fires_when_flag_enabled(self):
+        self.clinic.enable_2h_reminder = True
+        self.clinic.save()
+        appt = self.make_appointment(hours_ahead=1.5)
+
+        res = self.sweep()
+        self.assertEqual(res.data['reminder_2h_count'], 1)
+        item = [i for i in res.data['reminder_items'] if i['kind'] == '2h'][0]
+        self.assertEqual(item['channel'], 'sms')
+        self.assertEqual(item['claim_ref'], f"rem2h-{appt.appointment_code}-sms")
+
+    def test_2h_window_boundary_is_enforced(self):
+        self.clinic.enable_2h_reminder = True
+        self.clinic.save()
+        self.make_appointment(hours_ahead=3)   # outside the 2h window
+        self.make_appointment(hours_ahead=1.5, phone='+2348099988897')  # inside
+
+        res = self.sweep()
+        twos = [i for i in res.data['reminder_items'] if i['kind'] == '2h']
+        self.assertEqual(len(twos), 1)
+
+    def test_an_appointment_inside_both_windows_gets_each_reminder_once(self):
+        self.clinic.enable_2h_reminder = True
+        self.clinic.save()
+        appt = self.make_appointment(hours_ahead=1.5)
+
+        res = self.sweep()
+        self.assertEqual(res.data['reminder_24h_count'], 1)
+        self.assertEqual(res.data['reminder_2h_count'], 1)
+        refs = sorted(i['claim_ref'] for i in res.data['reminder_items'])
+        self.assertEqual(refs, [f"rem24-{appt.appointment_code}-sms", f"rem2h-{appt.appointment_code}-sms"])
+
+    # --- telegram leg ----------------------------------------------------------
+
+    def test_telegram_24h_item_carries_chat_id_and_wired_keyboard(self):
+        req = self.make_booking_request(notes='telegram_chat_id: 55991')
+        self.log_row(req, 'telegram')
+        appt = self.make_appointment(hours_ahead=23, booking_request=req)
+
+        res = self.sweep()
+        items = [i for i in res.data['reminder_items'] if i['channel'] == 'telegram']
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item['telegram_chat_id'], '55991')
+        keyboard = item['reply_markup']['inline_keyboard']
+        callbacks = [b['callback_data'] for row in keyboard for b in row]
+        self.assertTrue(any(c.startswith('confirm_attend_') for c in callbacks))
+        self.assertTrue(any(c.startswith('cancel_') for c in callbacks))
+        # Only wired callbacks: a dead button would silently do nothing.
+        self.assertFalse(any(c.startswith('reschedule_') for c in callbacks))
+        self.assertIn(appt.appointment_code, item['message'])
+
+    def test_telegram_row_without_resolvable_chat_writes_no_claim(self):
+        """A Telegram interaction with no resolvable chat id can never be
+        delivered: no claim, no mark - the next sweep retries (B's posture)."""
+        req = self.make_booking_request()
+        self.log_row(req, 'telegram')
+        self.make_appointment(hours_ahead=23, booking_request=req)
+
+        res = self.sweep()
+        self.assertEqual(res.data['reminder_24h_count'], 0)
+        self.assertFalse(InteractionLog.objects.filter(external_ref__startswith='rem24-').exists())
+
+    # --- single-shot -----------------------------------------------------------
+
+    def test_reminders_are_single_shot_across_sweeps(self):
+        req = self.make_booking_request()
+        self.log_row(req, 'sms')
+        appt = self.make_appointment(hours_ahead=23, booking_request=req)
+
+        first = self.sweep()
+        self.assertEqual(first.data['reminder_24h_count'], 1)
+
+        second = self.sweep()
+        self.assertEqual(second.data['reminder_24h_count'], 0)
+        claim = InteractionLog.objects.get(external_ref=f"rem24-{appt.appointment_code}-sms")
+        self.assertEqual(claim.status, 'queued')
+        self.assertEqual(claim.direction, 'outbound')
+        self.assertEqual(claim.appointment_id, appt.id)
+
+    # --- follow-up recalls -----------------------------------------------------
+
+    def test_followup_recall_emits_and_marks_the_task_once(self):
+        req = self.make_booking_request()
+        self.log_row(req, 'whatsapp')
+        appt = self.make_appointment(hours_ahead=-20, booking_request=req)  # visit already happened
+        task = self.make_follow_up(appt, days_ahead=0)
+
+        res = self.sweep()
+        self.assertEqual(res.data['followup_count'], 1)
+        item = res.data['followup_items'][0]
+        self.assertEqual(item['kind'], 'followup')
+        self.assertEqual(item['channel'], 'whatsapp')
+        self.assertEqual(item['claim_ref'], f"followup-{task.id}-whatsapp")
+        self.assertIn('Reminder Consultation', item['message'])
+
+        task.refresh_from_db()
+        self.assertTrue(task.reminder_sent)
+        self.assertIsNotNone(task.reminder_sent_at)
+
+        second = self.sweep()
+        self.assertEqual(second.data['followup_count'], 0)
+
+    def test_followup_falls_back_to_sms_for_walk_in(self):
+        appt = self.make_appointment(hours_ahead=-20, booking_request=None)
+        task = self.make_follow_up(appt, days_ahead=-1)  # overdue
+
+        res = self.sweep()
+        self.assertEqual(res.data['followup_count'], 1)
+        item = res.data['followup_items'][0]
+        self.assertEqual(item['channel'], 'sms')
+        self.assertEqual(item['claim_ref'], f"followup-{task.id}-sms")
+
+    def test_followup_ignores_completed_or_already_sent_tasks(self):
+        appt = self.make_appointment(hours_ahead=-20)
+        self.make_follow_up(appt, days_ahead=0, is_completed=True)
+        self.make_follow_up(appt, days_ahead=0, reminder_sent=True)
+
+        res = self.sweep()
+        self.assertEqual(res.data['followup_count'], 0)
+        self.assertEqual(res.data['followup_items'], [])
+
+    # --- full contract ---------------------------------------------------------
+
+    def test_full_item_and_response_contract(self):
+        appt = self.make_appointment(hours_ahead=23)
+        self.make_follow_up(appt, days_ahead=0)
+
+        res = self.sweep()
+        self.assertEqual(res.data['reminder_24h_count'], 1)
+        self.assertEqual(res.data['followup_count'], 1)
+        for key in ('timestamp', 'reminder_24h_count', 'reminder_2h_count', 'followup_count', 'reminder_items', 'followup_items'):
+            self.assertIn(key, res.data)
+
+        rem = res.data['reminder_items'][0]
+        for key in ('request_id', 'id', 'kind', 'channel', 'claim_ref', 'patient_name',
+                    'patient_phone', 'service_name', 'doctor_name', 'start_datetime', 'message'):
+            self.assertIn(key, rem)
+        self.assertEqual(rem['request_id'], appt.appointment_code)
+        self.assertEqual(rem['id'], str(appt.id))
+        self.assertEqual(rem['doctor_name'], 'Dr. Reminder Test')
+
+        fu = res.data['followup_items'][0]
+        for key in ('request_id', 'kind', 'channel', 'claim_ref', 'patient_name', 'message'):
+            self.assertIn(key, fu)
+        self.assertEqual(fu['request_id'], appt.appointment_code)
+
+    # --- house auth ------------------------------------------------------------
+
+    def test_webhook_requires_valid_secret(self):
+        res = self.sweep(secret=None)
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(res.data['error'], 'INVALID_WEBHOOK_SECRET')
+
+        res = self.sweep(secret='wrong_secret')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(res.data['error'], 'INVALID_WEBHOOK_SECRET')
+
+
 class RBACTighteningTests(APITestCase):
     """
     Phase 1 / Task 1.2 — Partner Readiness Roadmap:
@@ -4203,6 +4557,18 @@ class InteractionLogAPITests(APITestCase):
         # FK resolved from request_code
         self.assertEqual(log.booking_request, self.booking)
         self.assertEqual(res.data['request_code'], 'REQ-2026-0042')
+
+    def test_post_with_appointment_code_as_request_code_links_appointment(self):
+        """Workflow A: reminder claims identify the APPOINTMENT by code. The
+        outcome POST must resolve an appointment code too (BookingRequest
+        first, then Appointment) - a hard 400 here left every reminder claim
+        stuck 'queued' in the A.3 live proof."""
+        payload = dict(self.valid_payload, request_code='AP-1042', external_ref='REM-PROBE-1')
+        res = self._post_with_secret(payload)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        log = InteractionLog.objects.get(external_ref='REM-PROBE-1')
+        self.assertEqual(log.appointment, self.appointment)
+        self.assertIsNone(log.booking_request)
 
     def test_post_with_staff_jwt_creates_log(self):
         self.client.force_authenticate(user=self.receptionist)

@@ -14,6 +14,7 @@ from ..models import (
     BookingRequest,
     SlotOffer,
     Appointment,
+    FollowUpTask,
     AuditLog,
     IdempotencyKey,
     Service,
@@ -228,17 +229,25 @@ class TelegramService:
 
     @staticmethod
     def format_24h_reminder(appointment: Appointment, clinic: ClinicSetting) -> tuple[str, dict]:
-        """24-Hour Pre-Visit reminder with interactive confirmation/reschedule buttons."""
+        """24-Hour Pre-Visit reminder with interactive attendance buttons.
+
+        The copy states the actual date and time - never "tomorrow" - because
+        the 24h window is (now, now+24h] and an appointment 3 hours out is not
+        tomorrow. Buttons use only callbacks the reply handler actually wires
+        (confirm_attend_ / cancel_); a dead button would silently do nothing.
+        """
         patient_name = html.escape(appointment.patient_name)
         doc_name = html.escape(appointment.doctor.name)
         clinic_name = html.escape(clinic.clinic_name)
         local_start = timezone.localtime(appointment.start_datetime)
+        date_str = local_start.strftime("%a %d %b")
         time_str = local_start.strftime("%I:%M %p")
 
         text = (
-            f"🔔 <b>Appointment Reminder for Tomorrow</b>\n\n"
-            f"Hello <b>{patient_name}</b>, this is a reminder of your appointment tomorrow at <b>{clinic_name}</b>:\n\n"
+            f"🔔 <b>Appointment Reminder</b>\n\n"
+            f"Hello <b>{patient_name}</b>, your appointment at <b>{clinic_name}</b> is coming up:\n\n"
             f"👨‍⚕️ <b>Doctor:</b> {doc_name}\n"
+            f"📅 <b>Date:</b> {date_str}\n"
             f"⏰ <b>Time:</b> {time_str}\n"
             f"📌 <b>Code:</b> <code>{appointment.appointment_code}</code>\n\n"
             f"Please let us know if you'll make it:"
@@ -246,11 +255,53 @@ class TelegramService:
 
         keyboard = [
             [{"text": "✅ I'll Be There", "callback_data": f"confirm_attend_{appointment.id}"}],
-            [
-                {"text": "🔄 Reschedule", "callback_data": f"reschedule_{appointment.id}"},
-                {"text": "❌ Cancel", "callback_data": f"cancel_{appointment.id}"}
-            ]
+            [{"text": "❌ Cancel", "callback_data": f"cancel_{appointment.id}"}]
         ]
+        return text, {"inline_keyboard": keyboard}
+
+    @staticmethod
+    def format_2h_reminder(appointment: Appointment, clinic: ClinicSetting) -> tuple[str, dict]:
+        """2-Hour Pre-Visit reminder. Same wired attendance buttons as the 24h
+        reminder; copy states the actual date and time."""
+        patient_name = html.escape(appointment.patient_name)
+        doc_name = html.escape(appointment.doctor.name)
+        clinic_name = html.escape(clinic.clinic_name)
+        local_start = timezone.localtime(appointment.start_datetime)
+        date_str = local_start.strftime("%a %d %b")
+        time_str = local_start.strftime("%I:%M %p")
+
+        text = (
+            f"⏰ <b>Your Appointment Starts Soon</b>\n\n"
+            f"Hello <b>{patient_name}</b>, your appointment at <b>{clinic_name}</b> "
+            f"is on <b>{date_str}</b> at <b>{time_str}</b>:\n\n"
+            f"👨‍⚕️ <b>Doctor:</b> {doc_name}\n"
+            f"📌 <b>Code:</b> <code>{appointment.appointment_code}</code>\n\n"
+            f"Please let us know if you'll make it:"
+        )
+
+        keyboard = [
+            [{"text": "✅ I'll Be There", "callback_data": f"confirm_attend_{appointment.id}"}],
+            [{"text": "❌ Cancel", "callback_data": f"cancel_{appointment.id}"}]
+        ]
+        return text, {"inline_keyboard": keyboard}
+
+    @staticmethod
+    def format_followup_recall(appointment: Appointment, task: FollowUpTask, clinic: ClinicSetting) -> tuple[str, dict]:
+        """Doctor-directed follow-up recall. The button uses the wired
+        book_svc_ grammar so the patient lands straight in re-booking."""
+        patient_name = html.escape(appointment.patient_name)
+        doc_name = html.escape(appointment.doctor.name)
+        service_name = html.escape(appointment.service.name)
+        clinic_name = html.escape(clinic.clinic_name)
+        date_str = task.follow_up_date.strftime("%a %d %b")
+
+        text = (
+            f"📋 <b>Follow-Up Visit Due {date_str}</b>\n\n"
+            f"Hello <b>{patient_name}</b>, Dr. {doc_name} would like to see you "
+            f"for a {service_name} follow-up at <b>{clinic_name}</b>.\n\n"
+            f"Tap below to pick a time that suits you:"
+        )
+        keyboard = [[{"text": "📅 Book Follow-Up Visit", "callback_data": f"book_svc_{appointment.service_id}"}]]
         return text, {"inline_keyboard": keyboard}
 
     @staticmethod

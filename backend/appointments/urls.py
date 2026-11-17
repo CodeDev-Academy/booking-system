@@ -51,6 +51,7 @@ from .views_realtime import (
     PresenceBroadcastView,
     InboundWebhookView,
     ExpirySweepWebhookView,
+    ReminderSweepWebhookView,
 )
 from .views_patient_reply import PatientReplyWebhookView
 from .views_interactions import InteractionListCreateView
@@ -170,6 +171,7 @@ urlpatterns = [
     path('webhooks/telegram/', InboundWebhookView.as_view(), name='webhook-telegram'),
     path('webhooks/whatsapp/inbound/', InboundWebhookView.as_view(), name='webhook-whatsapp-inbound'),
     path('webhooks/expiry-sweep/', ExpirySweepWebhookView.as_view(), name='webhook-expiry-sweep'),
+    path('webhooks/reminder-sweep/', ReminderSweepWebhookView.as_view(), name='webhook-reminder-sweep'),
     # Workflow C / C.1: channel-neutral patient replies (SMS / WhatsApp) —
     # phone -> open request resolution and intent interpretation live in Django.
     path('webhooks/patient-reply/', PatientReplyWebhookView.as_view(), name='webhook-patient-reply'),

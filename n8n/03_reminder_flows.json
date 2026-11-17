@@ -7,53 +7,74 @@
           "interval": [
             {
               "field": "cronExpression",
-              "expression": "0 8,18 * * *"
+              "expression": "5 * * * *"
             }
           ]
         }
       },
-      "id": "node-schedule-cron-reminders",
-      "name": "Twice Daily Reminder Schedule (8am, 6pm)",
+      "id": "ccc9d6cf-5a1e-490c-a7ce-cfef11a1e208",
+      "name": "Hourly Reminder Schedule",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [160, 300]
+      "position": [
+        -160,
+        0
+      ]
     },
     {
       "parameters": {
-        "method": "GET",
-        "url": "={{ ($env.DJANGO_API_BASE_URL || 'http://backend:8000') + '/api/v1/appointments/upcoming-reminders/' }}",
+        "method": "POST",
+        "url": "={{ $env.DJANGO_API_BASE_URL + '/webhooks/reminder-sweep/' }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
-              "name": "Content-Type",
-              "value": "application/json"
-            },
-            {
               "name": "X-Webhook-Secret",
-              "value": "={{ $env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026' }}"
+              "value": "={{ $env.DJANGO_WEBHOOK_SECRET }}"
             }
           ]
         },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ triggered_by: 'n8n_cron_reminders' }) }}",
         "options": {
           "timeout": 15000
         }
       },
-      "id": "node-fetch-due-reminders",
-      "name": "Fetch Due Reminders from Django",
+      "id": "af161bd4-3ad8-4f0d-95cc-0959729ba3f7",
+      "name": "Trigger Django Reminder Sweep",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [380, 300]
+      "position": [
+        60,
+        0
+      ]
     },
     {
       "parameters": {
-        "jsCode": "// Extract reminders and follow-up tasks array from Django response\nconst res = $input.item.json;\nconst appointments = Array.isArray(res) ? res : (res.reminders || res.appointments || []);\nconst followUps = res.follow_ups || [];\n\nconst items = [];\n\nfor (const appt of appointments) {\n  items.push({\n    json: {\n      type: '24h_pre_visit',\n      appointment_id: appt.appointment_id || appt.id,\n      patient_name: appt.patient_name || 'Patient',\n      patient_phone: appt.patient_phone || appt.phone,\n      telegram_chat_id: appt.telegram_chat_id,\n      doctor_name: appt.doctor_name || (appt.doctor && appt.doctor.name) || 'Attending Physician',\n      service_name: appt.service_name || (appt.service && appt.service.name) || 'Consultation',\n      start_datetime: appt.start_datetime,\n      time_display: appt.time_display || new Date(appt.start_datetime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),\n      date_display: appt.date_display || new Date(appt.start_datetime).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })\n    }\n  });\n}\n\nfor (const task of followUps) {\n  items.push({\n    json: {\n      type: 'doctor_followup_recall',\n      task_id: task.id,\n      appointment_id: task.appointment_id,\n      patient_name: task.patient_name || 'Patient',\n      patient_phone: task.patient_phone,\n      telegram_chat_id: task.telegram_chat_id,\n      doctor_name: task.doctor_name || 'Doctor',\n      clinical_notes: task.notes || 'Recommended follow-up visit',\n      due_date: task.follow_up_date\n    }\n  });\n}\n\nreturn items.length > 0 ? items : [{ json: { type: 'none_pending', checked_at: new Date().toISOString() } }];"
+        "jsCode": "// Workflow A - Stage 1: split Django's reminder-sweep response into deliverable items.\n// Django (A.0) is the messaging brain: every item already carries the app\n// (channel), the exact words (message) and the claim marker (claim_ref) that\n// keeps a reminder from ever going out twice. This node only reshapes the\n// response; it writes no words and makes no choices.\nconst res = $input.first().json || {};\n\nconst items = [];\nconst collect = (list, fallbackKind) => {\n  for (const raw of (Array.isArray(list) ? list : [])) {\n    const channel = String((raw && raw.channel) || '').trim();\n    const message = String((raw && raw.message) || '').trim();\n    const claimRef = String((raw && raw.claim_ref) || '').trim();\n    // A Django item without any of the three cannot be delivered responsibly:\n    // no claim means a possible duplicate later, no words means nothing to send.\n    if (!channel || !message || !claimRef) continue;\n    items.push({ json: { ...raw, kind: String((raw && raw.kind) || '').trim() || fallbackKind } });\n  }\n};\n\n// Pre-visit reminders first (the visit is imminent for those patients), then\n// follow-up recalls. Django itself labels every item's kind ('24h'/'2h').\ncollect(res.reminder_items, 'reminder');\ncollect(res.followup_items, 'followup');\n\n// An all-clear sweep returns zero items: the branch ends cleanly, no sends,\n// no log writes. The hourly silence IS the healthy state.\nreturn items;"
       },
-      "id": "node-parse-reminders",
-      "name": "Split into Reminder Items",
+      "id": "4dcb3131-6dcf-4e67-ac14-342bef6d2fc9",
+      "name": "Parse Reminder Sweep Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [600, 300]
+      "position": [
+        280,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Workflow B - Stage 2: turn each deliverable item into a provider request.\n// Reads deployment config from $env - no node hardcodes a URL, key or token.\n// Mock mode (PROVIDER_MOCK unset or true) points SMS/WhatsApp at the in-cluster\n// Provider Simulator (06) so the real HTTP nodes, bodies and failure paths are\n// exercised today. Telegram has no simulator leg, so it uses the real Bot API in\n// both modes (a deliberate fake chat id exercises the failed-row path).\n// Flip-live = PROVIDER_MOCK=false + real VOICEBIP_* / WHATSAPP_* / TELEGRAM_* values.\nconst env = (name, fallback = '') => {\n  try { const v = $env[name]; return (v === undefined || v === null) ? fallback : String(v); }\n  catch (e) { return fallback; }\n};\nconst truthy = (v) => ['1', 'true', 'yes', 'on'].includes(String(v).trim().toLowerCase());\n\nconst providerMock = env('PROVIDER_MOCK') === '' ? true : truthy(env('PROVIDER_MOCK'));\nconst simulatorUrl = env('PROVIDER_SIMULATOR_URL', 'http://127.0.0.1:5678/webhook/provider-sim');\n\nconst cfg = {\n  telegramToken: env('TELEGRAM_BOT_TOKEN'),\n  voicebipApiUrl: env('VOICEBIP_API_URL'),\n  voicebipApiKey: env('VOICEBIP_API_KEY'),\n  smsSenderId: env('VOICEBIP_SMS_SENDER_ID', 'Cedarcare'),\n  whatsappApiUrl: env('WHATSAPP_API_URL', 'https://graph.facebook.com/v19.0/'),\n  whatsappPhoneId: env('WHATSAPP_PHONE_NUMBER_ID'),\n  whatsappToken: env('WHATSAPP_ACCESS_TOKEN'),\n};\n// Meta rejects business-initiated free-form text outside the 24-hour customer\n// service window (error 131047) - an expiry message is ALWAYS template mode.\n// The approved template wraps Django's words as its single body parameter, so\n// the clinic owns the wording even on WhatsApp. Mock mode uses a placeholder\n// name so the simulator still exercises the template body.\nconst waTemplateName = providerMock\n  ? env('WHATSAPP_TEMPLATE_NAME', 'mock_clinic_expiry_notice')\n  : env('WHATSAPP_TEMPLATE_NAME');\nconst waTemplateLang = env('WHATSAPP_TEMPLATE_LANG', 'en_US') || 'en_US';\n\nconst liveConfigured = {\n  telegram: Boolean(cfg.telegramToken),\n  sms: Boolean(cfg.voicebipApiUrl && cfg.voicebipApiKey),\n  whatsapp: Boolean(cfg.whatsappPhoneId && cfg.whatsappToken),\n};\n// Mock mode never skips for credentials: the simulator stands in for every\n// configured provider (Telegram has no simulator, so it still needs a token).\nconst configured = providerMock\n  ? { telegram: Boolean(cfg.telegramToken), sms: true, whatsapp: true }\n  : liveConfigured;\n\nconst digitsOnly = (phone) => String(phone || '').replace(new RegExp('[^0-9]', 'g'), '');\n\nconst buildRequest = (item) => {\n  const channel = item.channel;\n  const to = digitsOnly(item.patient_phone);\n  if (channel === 'telegram') {\n    return {\n      url: 'https://api.telegram.org/bot' + cfg.telegramToken + '/sendMessage',\n      headers: {},\n      body: {\n        chat_id: item.telegram_chat_id,\n        text: item.message,\n        parse_mode: 'HTML',\n        ...(item.reply_markup ? { reply_markup: item.reply_markup } : {}),\n      },\n    };\n  }\n  if (channel === 'sms') {\n    return {\n      url: providerMock ? simulatorUrl + '/sms' : cfg.voicebipApiUrl + '/sms',\n      headers: { Authorization: providerMock ? 'Bearer mock' : 'Bearer ' + cfg.voicebipApiKey },\n      body: { to, message: item.message, sender_id: cfg.smsSenderId,\n        metadata: { request_code: item.request_id, channel: 'sms' } },\n    };\n  }\n  // whatsapp: template body in both modes; the words ride as the body parameter.\n  return {\n    url: providerMock ? simulatorUrl + '/whatsapp' : cfg.whatsappApiUrl + cfg.whatsappPhoneId + '/messages',\n    headers: { Authorization: providerMock ? 'Bearer mock' : 'Bearer ' + cfg.whatsappToken },\n    body: {\n      messaging_product: 'whatsapp',\n      to,\n      type: 'template',\n      template: {\n        name: waTemplateName,\n        language: { code: waTemplateLang },\n        components: [{ type: 'body', parameters: [{ type: 'text', text: String(item.message || '') }] }],\n      },\n      // Meta echoes this in every status callback, which links a real wamid\n      // back to the BookingRequest (nothing else survives the round trip).\n      biz_opaque_callback_data: item.request_id,\n    },\n  };\n};\n\nconst out = [];\nfor (const wrapped of $input.all()) {\n  const src = wrapped.json || {};\n  const channel = String(src.channel || '').trim();\n  const provider = channel === 'sms' ? 'voicebip'\n    : (channel === 'whatsapp' ? 'meta_whatsapp' : 'telegram');\n  const context = {\n    claim_ref: src.claim_ref || '',\n    request_id: src.request_id || '',\n    patient_name: src.patient_name || '',\n    patient_phone: src.patient_phone || '',\n    service_name: src.service_name || '',\n    channel,\n    provider,\n    kind: src.kind || '',\n  };\n\n  // Why a leg will not fire, most fundamental first. A skipped leg still\n  // carries its context so the skip log can upsert the claim row visibly.\n  let skipReason = null;\n  if (channel === 'telegram' && !src.telegram_chat_id) skipReason = 'missing_chat_id';\n  else if (!configured[channel]) skipReason = 'provider_not_configured';\n  else if ((channel === 'sms' || channel === 'whatsapp') && !context.patient_phone) skipReason = 'missing_phone';\n  else if (channel === 'whatsapp' && !waTemplateName) skipReason = 'whatsapp_template_not_configured';\n\n  // Never build a request for a channel that will not send: a skipped leg has\n  // no URL, and nothing downstream can accidentally use one.\n  const request = skipReason ? { url: '', headers: {}, body: null } : buildRequest({ ...src, channel });\n  out.push({ json: {\n    provider_channel: channel,\n    provider_request: {\n      route: skipReason ? 'skip' : channel,\n      skip_reason: skipReason,\n      method: 'POST',\n      ...request,\n    },\n    context,\n    adapter_meta: { channel, provider, provider_mock: providerMock, request_id: context.request_id },\n  } });\n}\nreturn out;"
+      },
+      "id": "d1e797ae-d501-46c4-a339-0f39f1e7bff4",
+      "name": "Build Provider Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        0
+      ]
     },
     {
       "parameters": {
@@ -68,9 +89,9 @@
                 },
                 "conditions": [
                   {
-                    "id": "cond-24h",
-                    "leftValue": "={{ $json.type }}",
-                    "rightValue": "24h_pre_visit",
+                    "id": "rule-route-telegram",
+                    "leftValue": "={{ $json.provider_request.route }}",
+                    "rightValue": "telegram",
                     "operator": {
                       "type": "string",
                       "operation": "equals"
@@ -89,9 +110,51 @@
                 },
                 "conditions": [
                   {
-                    "id": "cond-recall",
-                    "leftValue": "={{ $json.type }}",
-                    "rightValue": "doctor_followup_recall",
+                    "id": "rule-route-sms",
+                    "leftValue": "={{ $json.provider_request.route }}",
+                    "rightValue": "sms",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "rule-route-whatsapp",
+                    "leftValue": "={{ $json.provider_request.route }}",
+                    "rightValue": "whatsapp",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "rule-route-skip",
+                    "leftValue": "={{ $json.provider_request.route }}",
+                    "rightValue": "skip",
                     "operator": {
                       "type": "string",
                       "operation": "equals"
@@ -104,16 +167,19 @@
           ]
         }
       },
-      "id": "node-switch-reminder-type",
-      "name": "Route by Reminder Type",
+      "id": "512d1a19-8ed2-4202-ba62-4640a74d0505",
+      "name": "Route by Channel",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
-      "position": [820, 300]
+      "position": [
+        720,
+        0
+      ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ 'https://api.telegram.org/bot' + ($env.TELEGRAM_BOT_TOKEN || '') + '/sendMessage' }}",
+        "url": "={{ $json.provider_request.url }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -125,86 +191,267 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"chat_id\": \"{{ $json.telegram_chat_id || $json.patient_phone }}\",\n  \"text\": \"🩺 <b>Appointment Reminder</b>\\n\\nHello <b>{{ $json.patient_name }}</b>, this is a friendly reminder for your upcoming appointment:\\n\\n📅 <b>When:</b> {{ $json.date_display }} at {{ $json.time_display }}\\n👨‍⚕️ <b>Doctor:</b> Dr. {{ $json.doctor_name }}\\n🏥 <b>Service:</b> {{ $json.service_name }}\\n🔖 <b>Ref:</b> <code>{{ $json.appointment_id }}</code>\\n\\nPlease let us know if you can attend tomorrow:\",\n  \"parse_mode\": \"HTML\",\n  \"reply_markup\": {\n    \"inline_keyboard\": [\n      [\n        {\n          \"text\": \"✅ I'll Be There\",\n          \"callback_data\": \"confirm_attend_{{ $json.appointment_id }}\"\n        }\n      ],\n      [\n        {\n          \"text\": \"🔄 Reschedule\",\n          \"callback_data\": \"reschedule_{{ $json.appointment_id }}\"\n        },\n        {\n          \"text\": \"❌ Cancel\",\n          \"callback_data\": \"cancel_{{ $json.appointment_id }}\"\n        }\n      ]\n    ]\n  }\n}",
-        "options": {}
+        "jsonBody": "={{ JSON.stringify($json.provider_request.body) }}",
+        "options": {
+          "timeout": 15000
+        }
       },
-      "id": "node-send-24h-reminder",
-      "name": "Send 24h Interactive Reminder",
+      "id": "946dba45-8eb7-4644-85f1-ebd8c6c5d820",
+      "name": "Send Telegram Message",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1080, 200]
+      "position": [
+        960,
+        -260
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ 'https://api.telegram.org/bot' + ($env.TELEGRAM_BOT_TOKEN || '') + '/sendMessage' }}",
+        "url": "={{ $json.provider_request.url }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Content-Type",
               "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ $json.provider_request.headers.Authorization }}"
             }
           ]
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"chat_id\": \"{{ $json.telegram_chat_id || $json.patient_phone }}\",\n  \"text\": \"🌟 <b>Doctor Recall Recommendation</b>\\n\\nHello <b>{{ $json.patient_name }}</b>, Dr. <b>{{ $json.doctor_name }}</b> recommended a follow-up consultation for you:\\n\\n📝 <i>\\\"{{ $json.clinical_notes }}\\\"</i>\\n\\nTap below to book a convenient time:\",\n  \"parse_mode\": \"HTML\",\n  \"reply_markup\": {\n    \"inline_keyboard\": [\n      [\n        {\n          \"text\": \"📅 Book Follow-Up Now\",\n          \"callback_data\": \"book_followup_{{ $json.task_id }}\"\n        }\n      ]\n    ]\n  }\n}",
-        "options": {}
+        "jsonBody": "={{ JSON.stringify($json.provider_request.body) }}",
+        "options": {
+          "timeout": 15000
+        }
       },
-      "id": "node-send-recall-msg",
-      "name": "Send Follow-Up Recall Notice",
+      "id": "508ff8e1-c773-48a7-b839-e34ba8264dfe",
+      "name": "Send SMS (VoiceBip)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1080, 420]
+      "position": [
+        960,
+        -80
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.provider_request.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ $json.provider_request.headers.Authorization }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.provider_request.body) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "447e2f19-f457-4050-81ec-f72e9eb827f7",
+      "name": "Send WhatsApp Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        100
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Workflow B - skip visibility: a leg Django queued that n8n could not fire\n// (no provider credentials in live mode, no approved WhatsApp template, no\n// Telegram chat id) must be visible to reception, not vanish. Runs ONCE for\n// every skipped leg in the run (n8n Code node default mode); each leg carries\n// its own context. The claim row Django wrote is upserted to 'failed' with the\n// reason, so the Needs Attention tab shows exactly which message was held back\n// and why. Best-effort by design.\nconst out = [];\nfor (const wrapped of $input.all()) {\n  const incoming = (wrapped && wrapped.json) || {};\n  const context = incoming.context || {};\n\n  if (!context.claim_ref) {\n    out.push({ json: { context, interaction_log: { ok: false, error: 'skipped leg carried no claim ref; nothing posted' } } });\n    continue;\n  }\n\n  const payload = {\n    provider: context.provider || 'system',\n    channel: context.channel || 'sms',\n    direction: 'outbound',\n    status: 'failed',\n    patient_name: context.patient_name || '',\n    patient_phone: context.patient_phone || '',\n    request_code: context.request_id || '',\n    external_ref: context.claim_ref || '',\n    summary: 'Not sent (' + String(incoming.skip_reason || 'unknown') + '): queued for this channel, but the leg could not fire.',\n    error_detail: 'Skip reason: ' + String(incoming.skip_reason || 'unknown'),\n  };\n\n  let logged = { ok: false };\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'POST',\n      url: $env.DJANGO_API_BASE_URL + '/interactions/',\n      headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': $env.DJANGO_WEBHOOK_SECRET || '' },\n      body: payload,\n      json: true,\n    });\n    logged = { ok: true, id: res.id, status: res.status };\n  } catch (e) {\n    logged = { ok: false, error: (e.message || String(e)).slice(0, 300) };\n  }\n\n  out.push({ json: { context, interaction_log: { ...logged, payload } } });\n}\n\nreturn out;"
+      },
+      "id": "ed254895-557e-4948-8d16-a0ecd5d2c829",
+      "name": "Log Skipped Leg",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Workflow B - Stage 3: record the delivery outcome on the claim row Django\n// created. Runs ONCE for all of this channel's send responses in the run\n// (n8n Code node default mode) - a run can carry several messages for the\n// same app, e.g. two patients' SMS nudges. The switch preserves order, so\n// response i is zipped to the i-th adapter item of this channel BY POSITION.\n// The claim_ref IS the dedupe contract: upserting the SAME external_ref flips\n// queued -> sent/failed instead of adding a second row. Best-effort by design:\n// a Django outage while logging must never take the sweep down.\nconst responses = $input.all();\nconst adapterItems = $('Build Provider Requests').all().map((i) => i.json)\n  .filter((j) => j && j.provider_channel === 'telegram');\n\n// >>> provider-error-classification (canonical copy — byte-identical in all three\n// Log * Interaction nodes; test_lognodes.js asserts that) >>>\n// n8n hands a failed HTTP call to this node as { message, name, stack } — plus a\n// `code` for transport errors. There is NO error.status: the status only exists as\n// the message prefix, and the response body is embedded as a JSON *string literal*:\n//   404 - \"{\\\"code\\\":404,\\\"message\\\":\\\"...\\\"}\"\n// So the status must be read from the prefix and the body needs a real two-step parse.\nconst STATUS_LABEL = {\n  400: 'Provider rejected the request',\n  401: 'Provider authentication failed',\n  403: 'Provider refused access',\n  404: 'Provider endpoint not found',\n  409: 'Provider reported a conflict',\n  422: 'Provider rejected the request',\n  429: 'Provider rate limit reached',\n};\nconst TRANSPORT_LABEL = {\n  ECONNREFUSED: 'Provider endpoint refused the connection',\n  ENOTFOUND: 'Provider host could not be resolved',\n  ETIMEDOUT: 'Provider did not respond in time',\n  ECONNABORTED: 'Provider did not respond in time',\n  ECONNRESET: 'Provider closed the connection',\n};\n\n// Display-only clean-up: one line, no escape residue, no wrapping quotes.\nconst tidy = (value) => {\n  if (typeof value === 'number') return String(value);\n  if (typeof value !== 'string') return '';\n  return value\n    .replace(/\\\\[nrt]/g, ' ')\n    .replace(/\\\\\"/g, '\"')\n    .replace(/^[\"']|[\"']$/g, '')\n    .replace(/\\s+/g, ' ')\n    .trim();\n};\n\n// Decode the embedded body: JSON string literal -> JSON payload. A hand-rolled\n// .replace(/\\\\\"/g, '\"') is NOT equivalent: it corrupts nested escaped quotes and\n// the parse then throws, which is how the raw wrapper used to reach reception.\nconst asObject = (body) => {\n  let value = String(body == null ? '' : body).trim();\n  for (let i = 0; i < 3; i += 1) {\n    if (value[0] === '{') {\n      try { return JSON.parse(value); } catch (e) { return null; }\n    }\n    if (value[0] !== '\"') return null;\n    const end = value.lastIndexOf('\"');\n    if (end <= 0) return null;\n    try { value = JSON.parse(value.slice(0, end + 1)); } catch (e) { return null; }\n  }\n  return null;\n};\n\nconst firstText = (list) => {\n  if (!Array.isArray(list)) return '';\n  for (const item of list) {\n    const text = tidy(typeof item === 'string' ? item : (item && (item.message || item.detail || item.msg)));\n    if (text) return text;\n  }\n  return '';\n};\n\n// The provider's own sentence, in the order providers actually use it.\nconst providerSentence = (body) => {\n  const parsed = asObject(body);\n  if (!parsed) return tidy(body);\n  const err = parsed.error;\n  const candidates = [\n    parsed.detail, parsed.message, parsed.error_description, parsed.description, parsed.hint,\n    typeof err === 'string' ? err : '',\n    err && err.message, err && err.title,\n    err && err.error_data && err.error_data.details,\n    firstText(parsed.errors),\n  ];\n  for (const candidate of candidates) {\n    const text = tidy(candidate);\n    if (text) return text;\n  }\n  return tidy(body);\n};\n\n// -> { status: number|null, detail: string (<=300) } — one sentence reception can act on.\nconst classifyProviderError = (err) => {\n  // Parse from the RAW message: tidy() unescapes quotes and must never run first,\n  // or the JSON string literal stops being a valid literal.\n  const message = (err && typeof err.message === 'string') ? err.message : '';\n  const explicit = Number(err && (err.status || err.httpCode || err.statusCode));\n  const prefixed = message.match(/^\\s*(\\d{3})\\s*-\\s*([\\s\\S]*)$/);\n  const status = (Number.isFinite(explicit) && explicit >= 400) ? explicit\n    : (prefixed ? Number(prefixed[1]) : null);\n  if (status) {\n    const label = STATUS_LABEL[status] || (status >= 500 ? 'Provider server error' : 'Provider returned an error');\n    const sentence = providerSentence(prefixed ? prefixed[2] : '');\n    return { status, detail: (label + (sentence ? ': ' + sentence : '')).slice(0, 300) };\n  }\n  const code = tidy(err && err.code).toUpperCase();\n  if (TRANSPORT_LABEL[code]) return { status: null, detail: TRANSPORT_LABEL[code].slice(0, 300) };\n  return { status: null, detail: (tidy(message) || tidy(err) || 'Provider call failed').slice(0, 300) };\n};\n// <<< provider-error-classification\n\nconst out = [];\nfor (let idx = 0; idx < responses.length; idx++) {\n  const incoming = (responses[idx] && responses[idx].json) || {};\n  const adapter = adapterItems[idx] || {};\n  const context = adapter.context || {};\n  const isError = Boolean(incoming.error);\n  const resp = isError ? {} : incoming;\n  const providerStatus = String(resp.status || '').toLowerCase();\n  const failed = isError || providerStatus === 'failed' || resp.ok === false;\n\n  // A failed call is classified into one readable sentence; a provider that answers\n  // ok:false (no exception) keeps its own message verbatim.\n  const classified = isError ? classifyProviderError(incoming.error) : null;\n  const errorDetail = isError\n    ? classified.detail\n    : (failed ? String(resp.error_message || resp.error || resp.detail || 'Provider reported a failure').slice(0, 300) : '');\n\n  // No paired context means an ordering bug upstream, never a postable row:\n  // Django would reject the empty claim ref. Say so instead of guessing.\n  if (!context.claim_ref) {\n    out.push({ json: { context, provider_response: resp, interaction_log: { ok: false, error: 'no paired adapter context for this response; nothing posted' } } });\n    continue;\n  }\n\n  const KIND_LABELS = { nudge: 'Expiry nudge', recovery: 'Expiry recovery message', '24h': '24h reminder', '2h': '2h reminder', followup: 'Follow-up recall' };\nconst kindLabel = KIND_LABELS[context.kind] || 'Expiry recovery message';\n  const payload = {\n    provider: context.provider || 'telegram',\n    channel: context.channel || 'telegram',\n    direction: 'outbound',\n    status: failed ? 'failed' : 'sent',\n    patient_name: context.patient_name || '',\n    patient_phone: context.patient_phone || '',\n    request_code: context.request_id || '',\n    external_ref: context.claim_ref || '',\n    summary: failed ? (kindLabel + ' not delivered: ' + errorDetail) : (kindLabel + ' delivered via ' + (context.channel || 'telegram')),\n    error_detail: errorDetail,\n  };\n\n  let logged = { ok: false };\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'POST',\n      url: $env.DJANGO_API_BASE_URL + '/interactions/',\n      headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': $env.DJANGO_WEBHOOK_SECRET || '' },\n      body: payload,\n      json: true,\n    });\n    logged = { ok: true, id: res.id, status: res.status };\n  } catch (e) {\n    logged = { ok: false, error: (e.message || String(e)).slice(0, 300) };\n  }\n\n  out.push({ json: { context, provider_response: resp, interaction_log: { ...logged, payload } } });\n}\n\nreturn out;"
+      },
+      "id": "90a16f8c-68ec-47ee-a35a-121218a72fc3",
+      "name": "Log Telegram Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Workflow B - Stage 3: record the delivery outcome on the claim row Django\n// created. Runs ONCE for all of this channel's send responses in the run\n// (n8n Code node default mode) - a run can carry several messages for the\n// same app, e.g. two patients' SMS nudges. The switch preserves order, so\n// response i is zipped to the i-th adapter item of this channel BY POSITION.\n// The claim_ref IS the dedupe contract: upserting the SAME external_ref flips\n// queued -> sent/failed instead of adding a second row. Best-effort by design:\n// a Django outage while logging must never take the sweep down.\nconst responses = $input.all();\nconst adapterItems = $('Build Provider Requests').all().map((i) => i.json)\n  .filter((j) => j && j.provider_channel === 'sms');\n\n// >>> provider-error-classification (canonical copy — byte-identical in all three\n// Log * Interaction nodes; test_lognodes.js asserts that) >>>\n// n8n hands a failed HTTP call to this node as { message, name, stack } — plus a\n// `code` for transport errors. There is NO error.status: the status only exists as\n// the message prefix, and the response body is embedded as a JSON *string literal*:\n//   404 - \"{\\\"code\\\":404,\\\"message\\\":\\\"...\\\"}\"\n// So the status must be read from the prefix and the body needs a real two-step parse.\nconst STATUS_LABEL = {\n  400: 'Provider rejected the request',\n  401: 'Provider authentication failed',\n  403: 'Provider refused access',\n  404: 'Provider endpoint not found',\n  409: 'Provider reported a conflict',\n  422: 'Provider rejected the request',\n  429: 'Provider rate limit reached',\n};\nconst TRANSPORT_LABEL = {\n  ECONNREFUSED: 'Provider endpoint refused the connection',\n  ENOTFOUND: 'Provider host could not be resolved',\n  ETIMEDOUT: 'Provider did not respond in time',\n  ECONNABORTED: 'Provider did not respond in time',\n  ECONNRESET: 'Provider closed the connection',\n};\n\n// Display-only clean-up: one line, no escape residue, no wrapping quotes.\nconst tidy = (value) => {\n  if (typeof value === 'number') return String(value);\n  if (typeof value !== 'string') return '';\n  return value\n    .replace(/\\\\[nrt]/g, ' ')\n    .replace(/\\\\\"/g, '\"')\n    .replace(/^[\"']|[\"']$/g, '')\n    .replace(/\\s+/g, ' ')\n    .trim();\n};\n\n// Decode the embedded body: JSON string literal -> JSON payload. A hand-rolled\n// .replace(/\\\\\"/g, '\"') is NOT equivalent: it corrupts nested escaped quotes and\n// the parse then throws, which is how the raw wrapper used to reach reception.\nconst asObject = (body) => {\n  let value = String(body == null ? '' : body).trim();\n  for (let i = 0; i < 3; i += 1) {\n    if (value[0] === '{') {\n      try { return JSON.parse(value); } catch (e) { return null; }\n    }\n    if (value[0] !== '\"') return null;\n    const end = value.lastIndexOf('\"');\n    if (end <= 0) return null;\n    try { value = JSON.parse(value.slice(0, end + 1)); } catch (e) { return null; }\n  }\n  return null;\n};\n\nconst firstText = (list) => {\n  if (!Array.isArray(list)) return '';\n  for (const item of list) {\n    const text = tidy(typeof item === 'string' ? item : (item && (item.message || item.detail || item.msg)));\n    if (text) return text;\n  }\n  return '';\n};\n\n// The provider's own sentence, in the order providers actually use it.\nconst providerSentence = (body) => {\n  const parsed = asObject(body);\n  if (!parsed) return tidy(body);\n  const err = parsed.error;\n  const candidates = [\n    parsed.detail, parsed.message, parsed.error_description, parsed.description, parsed.hint,\n    typeof err === 'string' ? err : '',\n    err && err.message, err && err.title,\n    err && err.error_data && err.error_data.details,\n    firstText(parsed.errors),\n  ];\n  for (const candidate of candidates) {\n    const text = tidy(candidate);\n    if (text) return text;\n  }\n  return tidy(body);\n};\n\n// -> { status: number|null, detail: string (<=300) } — one sentence reception can act on.\nconst classifyProviderError = (err) => {\n  // Parse from the RAW message: tidy() unescapes quotes and must never run first,\n  // or the JSON string literal stops being a valid literal.\n  const message = (err && typeof err.message === 'string') ? err.message : '';\n  const explicit = Number(err && (err.status || err.httpCode || err.statusCode));\n  const prefixed = message.match(/^\\s*(\\d{3})\\s*-\\s*([\\s\\S]*)$/);\n  const status = (Number.isFinite(explicit) && explicit >= 400) ? explicit\n    : (prefixed ? Number(prefixed[1]) : null);\n  if (status) {\n    const label = STATUS_LABEL[status] || (status >= 500 ? 'Provider server error' : 'Provider returned an error');\n    const sentence = providerSentence(prefixed ? prefixed[2] : '');\n    return { status, detail: (label + (sentence ? ': ' + sentence : '')).slice(0, 300) };\n  }\n  const code = tidy(err && err.code).toUpperCase();\n  if (TRANSPORT_LABEL[code]) return { status: null, detail: TRANSPORT_LABEL[code].slice(0, 300) };\n  return { status: null, detail: (tidy(message) || tidy(err) || 'Provider call failed').slice(0, 300) };\n};\n// <<< provider-error-classification\n\nconst out = [];\nfor (let idx = 0; idx < responses.length; idx++) {\n  const incoming = (responses[idx] && responses[idx].json) || {};\n  const adapter = adapterItems[idx] || {};\n  const context = adapter.context || {};\n  const isError = Boolean(incoming.error);\n  const resp = isError ? {} : incoming;\n  const providerStatus = String(resp.status || '').toLowerCase();\n  const failed = isError || providerStatus === 'failed' || resp.ok === false;\n\n  // A failed call is classified into one readable sentence; a provider that answers\n  // ok:false (no exception) keeps its own message verbatim.\n  const classified = isError ? classifyProviderError(incoming.error) : null;\n  const errorDetail = isError\n    ? classified.detail\n    : (failed ? String(resp.error_message || resp.error || resp.detail || 'Provider reported a failure').slice(0, 300) : '');\n\n  // No paired context means an ordering bug upstream, never a postable row:\n  // Django would reject the empty claim ref. Say so instead of guessing.\n  if (!context.claim_ref) {\n    out.push({ json: { context, provider_response: resp, interaction_log: { ok: false, error: 'no paired adapter context for this response; nothing posted' } } });\n    continue;\n  }\n\n  const KIND_LABELS = { nudge: 'Expiry nudge', recovery: 'Expiry recovery message', '24h': '24h reminder', '2h': '2h reminder', followup: 'Follow-up recall' };\nconst kindLabel = KIND_LABELS[context.kind] || 'Expiry recovery message';\n  const payload = {\n    provider: context.provider || 'voicebip',\n    channel: context.channel || 'sms',\n    direction: 'outbound',\n    status: failed ? 'failed' : 'sent',\n    patient_name: context.patient_name || '',\n    patient_phone: context.patient_phone || '',\n    request_code: context.request_id || '',\n    external_ref: context.claim_ref || '',\n    summary: failed ? (kindLabel + ' not delivered: ' + errorDetail) : (kindLabel + ' delivered via ' + (context.channel || 'sms')),\n    error_detail: errorDetail,\n  };\n\n  let logged = { ok: false };\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'POST',\n      url: $env.DJANGO_API_BASE_URL + '/interactions/',\n      headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': $env.DJANGO_WEBHOOK_SECRET || '' },\n      body: payload,\n      json: true,\n    });\n    logged = { ok: true, id: res.id, status: res.status };\n  } catch (e) {\n    logged = { ok: false, error: (e.message || String(e)).slice(0, 300) };\n  }\n\n  out.push({ json: { context, provider_response: resp, interaction_log: { ...logged, payload } } });\n}\n\nreturn out;"
+      },
+      "id": "390f21a0-f1ac-4beb-b03f-98bf7cabef41",
+      "name": "Log SMS Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Workflow B - Stage 3: record the delivery outcome on the claim row Django\n// created. Runs ONCE for all of this channel's send responses in the run\n// (n8n Code node default mode) - a run can carry several messages for the\n// same app, e.g. two patients' SMS nudges. The switch preserves order, so\n// response i is zipped to the i-th adapter item of this channel BY POSITION.\n// The claim_ref IS the dedupe contract: upserting the SAME external_ref flips\n// queued -> sent/failed instead of adding a second row. Best-effort by design:\n// a Django outage while logging must never take the sweep down.\nconst responses = $input.all();\nconst adapterItems = $('Build Provider Requests').all().map((i) => i.json)\n  .filter((j) => j && j.provider_channel === 'whatsapp');\n\n// >>> provider-error-classification (canonical copy — byte-identical in all three\n// Log * Interaction nodes; test_lognodes.js asserts that) >>>\n// n8n hands a failed HTTP call to this node as { message, name, stack } — plus a\n// `code` for transport errors. There is NO error.status: the status only exists as\n// the message prefix, and the response body is embedded as a JSON *string literal*:\n//   404 - \"{\\\"code\\\":404,\\\"message\\\":\\\"...\\\"}\"\n// So the status must be read from the prefix and the body needs a real two-step parse.\nconst STATUS_LABEL = {\n  400: 'Provider rejected the request',\n  401: 'Provider authentication failed',\n  403: 'Provider refused access',\n  404: 'Provider endpoint not found',\n  409: 'Provider reported a conflict',\n  422: 'Provider rejected the request',\n  429: 'Provider rate limit reached',\n};\nconst TRANSPORT_LABEL = {\n  ECONNREFUSED: 'Provider endpoint refused the connection',\n  ENOTFOUND: 'Provider host could not be resolved',\n  ETIMEDOUT: 'Provider did not respond in time',\n  ECONNABORTED: 'Provider did not respond in time',\n  ECONNRESET: 'Provider closed the connection',\n};\n\n// Display-only clean-up: one line, no escape residue, no wrapping quotes.\nconst tidy = (value) => {\n  if (typeof value === 'number') return String(value);\n  if (typeof value !== 'string') return '';\n  return value\n    .replace(/\\\\[nrt]/g, ' ')\n    .replace(/\\\\\"/g, '\"')\n    .replace(/^[\"']|[\"']$/g, '')\n    .replace(/\\s+/g, ' ')\n    .trim();\n};\n\n// Decode the embedded body: JSON string literal -> JSON payload. A hand-rolled\n// .replace(/\\\\\"/g, '\"') is NOT equivalent: it corrupts nested escaped quotes and\n// the parse then throws, which is how the raw wrapper used to reach reception.\nconst asObject = (body) => {\n  let value = String(body == null ? '' : body).trim();\n  for (let i = 0; i < 3; i += 1) {\n    if (value[0] === '{') {\n      try { return JSON.parse(value); } catch (e) { return null; }\n    }\n    if (value[0] !== '\"') return null;\n    const end = value.lastIndexOf('\"');\n    if (end <= 0) return null;\n    try { value = JSON.parse(value.slice(0, end + 1)); } catch (e) { return null; }\n  }\n  return null;\n};\n\nconst firstText = (list) => {\n  if (!Array.isArray(list)) return '';\n  for (const item of list) {\n    const text = tidy(typeof item === 'string' ? item : (item && (item.message || item.detail || item.msg)));\n    if (text) return text;\n  }\n  return '';\n};\n\n// The provider's own sentence, in the order providers actually use it.\nconst providerSentence = (body) => {\n  const parsed = asObject(body);\n  if (!parsed) return tidy(body);\n  const err = parsed.error;\n  const candidates = [\n    parsed.detail, parsed.message, parsed.error_description, parsed.description, parsed.hint,\n    typeof err === 'string' ? err : '',\n    err && err.message, err && err.title,\n    err && err.error_data && err.error_data.details,\n    firstText(parsed.errors),\n  ];\n  for (const candidate of candidates) {\n    const text = tidy(candidate);\n    if (text) return text;\n  }\n  return tidy(body);\n};\n\n// -> { status: number|null, detail: string (<=300) } — one sentence reception can act on.\nconst classifyProviderError = (err) => {\n  // Parse from the RAW message: tidy() unescapes quotes and must never run first,\n  // or the JSON string literal stops being a valid literal.\n  const message = (err && typeof err.message === 'string') ? err.message : '';\n  const explicit = Number(err && (err.status || err.httpCode || err.statusCode));\n  const prefixed = message.match(/^\\s*(\\d{3})\\s*-\\s*([\\s\\S]*)$/);\n  const status = (Number.isFinite(explicit) && explicit >= 400) ? explicit\n    : (prefixed ? Number(prefixed[1]) : null);\n  if (status) {\n    const label = STATUS_LABEL[status] || (status >= 500 ? 'Provider server error' : 'Provider returned an error');\n    const sentence = providerSentence(prefixed ? prefixed[2] : '');\n    return { status, detail: (label + (sentence ? ': ' + sentence : '')).slice(0, 300) };\n  }\n  const code = tidy(err && err.code).toUpperCase();\n  if (TRANSPORT_LABEL[code]) return { status: null, detail: TRANSPORT_LABEL[code].slice(0, 300) };\n  return { status: null, detail: (tidy(message) || tidy(err) || 'Provider call failed').slice(0, 300) };\n};\n// <<< provider-error-classification\n\nconst out = [];\nfor (let idx = 0; idx < responses.length; idx++) {\n  const incoming = (responses[idx] && responses[idx].json) || {};\n  const adapter = adapterItems[idx] || {};\n  const context = adapter.context || {};\n  const isError = Boolean(incoming.error);\n  const resp = isError ? {} : incoming;\n  const providerStatus = String(resp.status || '').toLowerCase();\n  const failed = isError || providerStatus === 'failed' || resp.ok === false;\n\n  // A failed call is classified into one readable sentence; a provider that answers\n  // ok:false (no exception) keeps its own message verbatim.\n  const classified = isError ? classifyProviderError(incoming.error) : null;\n  const errorDetail = isError\n    ? classified.detail\n    : (failed ? String(resp.error_message || resp.error || resp.detail || 'Provider reported a failure').slice(0, 300) : '');\n\n  // No paired context means an ordering bug upstream, never a postable row:\n  // Django would reject the empty claim ref. Say so instead of guessing.\n  if (!context.claim_ref) {\n    out.push({ json: { context, provider_response: resp, interaction_log: { ok: false, error: 'no paired adapter context for this response; nothing posted' } } });\n    continue;\n  }\n\n  const KIND_LABELS = { nudge: 'Expiry nudge', recovery: 'Expiry recovery message', '24h': '24h reminder', '2h': '2h reminder', followup: 'Follow-up recall' };\nconst kindLabel = KIND_LABELS[context.kind] || 'Expiry recovery message';\n  const payload = {\n    provider: context.provider || 'meta_whatsapp',\n    channel: context.channel || 'whatsapp',\n    direction: 'outbound',\n    status: failed ? 'failed' : 'sent',\n    patient_name: context.patient_name || '',\n    patient_phone: context.patient_phone || '',\n    request_code: context.request_id || '',\n    external_ref: context.claim_ref || '',\n    summary: failed ? (kindLabel + ' not delivered: ' + errorDetail) : (kindLabel + ' delivered via ' + (context.channel || 'whatsapp')),\n    error_detail: errorDetail,\n  };\n\n  let logged = { ok: false };\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'POST',\n      url: $env.DJANGO_API_BASE_URL + '/interactions/',\n      headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': $env.DJANGO_WEBHOOK_SECRET || '' },\n      body: payload,\n      json: true,\n    });\n    logged = { ok: true, id: res.id, status: res.status };\n  } catch (e) {\n    logged = { ok: false, error: (e.message || String(e)).slice(0, 300) };\n  }\n\n  out.push({ json: { context, provider_response: resp, interaction_log: { ...logged, payload } } });\n}\n\nreturn out;"
+      },
+      "id": "7db4808f-8529-4e91-afb7-c4a6375a3858",
+      "name": "Log WhatsApp Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        100
+      ]
     }
   ],
   "connections": {
-    "Twice Daily Reminder Schedule (8am, 6pm)": {
+    "Hourly Reminder Schedule": {
       "main": [
         [
           {
-            "node": "Fetch Due Reminders from Django",
+            "node": "Trigger Django Reminder Sweep",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Fetch Due Reminders from Django": {
+    "Trigger Django Reminder Sweep": {
       "main": [
         [
           {
-            "node": "Split into Reminder Items",
+            "node": "Parse Reminder Sweep Response",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Split into Reminder Items": {
+    "Parse Reminder Sweep Response": {
       "main": [
         [
           {
-            "node": "Route by Reminder Type",
+            "node": "Build Provider Requests",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Route by Reminder Type": {
+    "Build Provider Requests": {
       "main": [
         [
           {
-            "node": "Send 24h Interactive Reminder",
+            "node": "Route by Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Channel": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Message",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Send Follow-Up Recall Notice",
+            "node": "Send SMS (VoiceBip)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send WhatsApp Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Skipped Leg",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Telegram Message": {
+      "main": [
+        [
+          {
+            "node": "Log Telegram Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Telegram Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send SMS (VoiceBip)": {
+      "main": [
+        [
+          {
+            "node": "Log SMS Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log SMS Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp Message": {
+      "main": [
+        [
+          {
+            "node": "Log WhatsApp Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log WhatsApp Outcome",
             "type": "main",
             "index": 0
           }
@@ -216,12 +463,10 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "versionId": "medpulse-v1-03",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "medpulse-clinic-booking"
   },
-  "id": "medpulse-03-reminder-flows",
   "tags": [
     {
       "name": "Clinic Booking"
@@ -232,5 +477,7 @@
     {
       "name": "Follow-Up"
     }
-  ]
+  ],
+  "id": "UHQzb7w5gOh2hxcW",
+  "versionId": "8e01f0ce-e840-48be-8f6c-da8723470282"
 }

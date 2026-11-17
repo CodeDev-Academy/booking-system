@@ -17,6 +17,7 @@ from rest_framework.renderers import BaseRenderer, JSONRenderer
 from .services.sse_bus import bus, broadcast_event, sse_event_stream
 from .services.telegram_service import TelegramService
 from .services.sweep_service import SweepService
+from .services.reminder_service import ReminderService
 from .services.webhook_security import verify_webhook_secret
 from .serializers_realtime import PresenceUpdateSerializer, InboundWebhookSerializer
 
@@ -232,4 +233,26 @@ class ExpirySweepWebhookView(APIView):
         actor = f"n8n:{request.data.get('triggered_by', 'cron_sweeper')}"
         sweep_result = SweepService.run_sweep(performed_by=actor)
         return Response(sweep_result, status=status.HTTP_200_OK)
+
+
+class ReminderSweepWebhookView(APIView):
+    """
+    POST /api/v1/webhooks/reminder-sweep/
+    Triggered by n8n hourly cron (03_reminder_flows.json) or external scheduler.
+    One call returns ALL due messaging items - 24h & 2h pre-visit reminders and
+    doctor follow-up recalls - each carrying the channel, the exact words and a
+    claim ref. Django is the messaging brain; n8n only delivers. Unlike the
+    expiry sweep there are no state transitions here: claims keep every message
+    single-shot. Guarded by X-Webhook-Secret.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        # Phase 1 / Task 1.1: constant-time X-Webhook-Secret verification
+        # (resolution: ClinicSetting.webhook_secret -> custom_config -> env -> DEBUG-only dev fallback).
+        if not verify_webhook_secret(request):
+            return Response({'error': 'INVALID_WEBHOOK_SECRET'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        result = ReminderService.run_sweep()
+        return Response(result, status=status.HTTP_200_OK)
 

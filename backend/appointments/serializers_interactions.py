@@ -100,7 +100,14 @@ class InteractionWriteSerializer(serializers.Serializer):
             if req:
                 validated['booking_request'] = req
             else:
-                errors['request_code'] = f'BookingRequest {code} not found.'
+                # Workflow A: reminder claims identify the APPOINTMENT by code
+                # (the message is about the visit). BookingRequest wins when
+                # both exist; an unknown code is still a hard error.
+                appt = Appointment.objects.filter(appointment_code=code).first()
+                if appt:
+                    validated['appointment'] = appt
+                else:
+                    errors['request_code'] = f'BookingRequest {code} not found.'
 
         code = validated.pop('appointment_code', '') or ''
         if code:
