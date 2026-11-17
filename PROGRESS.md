@@ -1963,7 +1963,12 @@ single-shot by claim row. Same split as B: Django decides everything, n8n only d
 
 ## Next up - Phase 5 (partner handover)
 
-**Status: ready to start.** All message-carrying workflows are now real and proven: `05` (dispatch),
-`04` (replies), `02` (expiry sweeper), `03` (reminders & follow-ups). Remaining per the roadmap:
-partner handover only (5.1 package: env checklist, `FLIP_LIVE_RUNBOOK.md`, credentials, deployment;
-5.2 blocked on the partner; 5.3 joint live run).
+**Status: 5.1 done (2026-11-17); 5.2 blocked on the partner; 5.3 next.** All message-carrying
+workflows are real and proven: `05` (dispatch), `04` (replies), `02` (expiry sweeper),
+`03` (reminders & follow-ups). The handover package is **`n8n/PARTNER_HANDOVER.md`**: the
+webhook registration table (verified against the shipped JSONs), the three-secret token
+table with rotation rules, the env checklist for Django / n8n / partner, the deployment
+table (Vercel + Railway URLs to fill at deploy), and the 5.2 questions the partner must
+answer. Also fixed a stale `.env.example` intake path (`intake-event` → `/webhook/intake`,
+the shipped truth per workflow `01`). Remaining: deploy staging (fill the §4c URLs), collect
+the partner's 5.2 credentials, then the joint acceptance run (5.3, runbook §6-§7).
