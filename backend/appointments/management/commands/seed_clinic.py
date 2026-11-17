@@ -103,7 +103,7 @@ class Command(BaseCommand):
             },
         ]
         for s in staff_data:
-            staff, _ = StaffUser.objects.update_or_create(
+            staff, created = StaffUser.objects.update_or_create(
                 email=s['email'],
                 defaults={
                     'full_name': s['full_name'],
@@ -111,10 +111,20 @@ class Command(BaseCommand):
                     'is_active': True,
                 }
             )
-            staff.set_password(s['password'])
-            staff.set_pin(s['pin'])
+            # Demo credentials are set ONCE — on creation, or when a hash is
+            # blank (e.g. rows built by fixtures). Re-seeding on a server
+            # restart must never wipe credentials changed from the dashboard
+            # (pre-launch defect: every restart reset the admin password back
+            # to the seed value, silently undoing admin resets).
+            seed_password = created or not staff.password_hash
+            seed_pin = created or not staff.quick_pin_hash
+            if seed_password:
+                staff.set_password(s['password'])
+            if seed_pin:
+                staff.set_pin(s['pin'])
             staff.save()
-            self.stdout.write(self.style.SUCCESS(f"[OK] Staff Account: {staff.full_name} ({staff.email} | PIN: {s['pin']})"))
+            cred_note = 'credentials seeded' if (seed_password or seed_pin) else 'credentials preserved'
+            self.stdout.write(self.style.SUCCESS(f"[OK] Staff Account: {staff.full_name} ({staff.email} | {cred_note})"))
 
         # 3. Doctors
         doc_bello, _ = Doctor.objects.update_or_create(

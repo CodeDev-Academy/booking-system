@@ -5771,6 +5771,41 @@ class NeedsAttentionFieldsTests(APITestCase):
         self.assertFalse(item['attention_open'])
 
 
+class SeedClinicPasswordPersistenceTests(TestCase):
+    """
+    Receptionist-approved credential persistence: seed_clinic sets demo
+    passwords/PINs only for NEWLY created staff (or blank hashes). A re-seed
+    on server restart must never wipe credentials changed from the dashboard
+    (the pre-launch defect: every restart reset the admin password back to
+    the seed value, silently undoing admin resets).
+    """
+
+    def test_first_seed_still_sets_demo_passwords(self):
+        from django.core.management import call_command
+
+        call_command('seed_clinic', verbosity=0)
+        admin = StaffUser.objects.get(email='admin@clinic.com')
+        self.assertTrue(admin.check_password('adminpassword123'))
+        self.assertTrue(admin.check_pin('9900'))
+
+    def test_reseed_preserves_changed_password_and_pin(self):
+        from django.core.management import call_command
+
+        call_command('seed_clinic', verbosity=0)
+        admin = StaffUser.objects.get(email='admin@clinic.com')
+        self.assertTrue(admin.check_password('adminpassword123'))
+
+        admin.set_password('NewVaultPass456!')
+        admin.set_pin('2468')
+        admin.save()
+
+        call_command('seed_clinic', verbosity=0)  # simulates a server restart
+        admin = StaffUser.objects.get(email='admin@clinic.com')
+        self.assertTrue(admin.check_password('NewVaultPass456!'))
+        self.assertTrue(admin.check_pin('2468'))
+        self.assertFalse(admin.check_password('adminpassword123'))
+
+
 class DispatchContractEnrichmentTests(APITestCase):
     """
     Task 3.5 — Workflow D contract enrichment:
