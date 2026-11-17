@@ -5806,6 +5806,294 @@ class SeedClinicPasswordPersistenceTests(TestCase):
         self.assertFalse(admin.check_password('adminpassword123'))
 
 
+class AutoResolveDisruptionTests(TestCase):
+    """
+    Item B.1 — one-click doctor-leave auto-resolver (DisruptionService.auto_resolve_disruption).
+
+    Receptionist-approved pattern: ONE call declares the leave and places EVERY
+    impacted patient in priority order — (1) a qualified colleague free at the
+    EXACT same time, (2) any free colleague slot the SAME day, (3) the NEXT day
+    — under the same zero-double-booking guarantees as HoldService, then queues
+    WhatsApp + SMS notice messages whose words are written by Django.
+    """
+
+    def setUp(self):
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+        self.doctor = Doctor.objects.create(
+            name='Dr. Bello Ibrahim',
+            specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0),
+            shift_end=datetime.time(17, 0),
+            max_daily_appointments=12,
+        )
+        self.colleague = Doctor.objects.create(
+            name='Dr. Chinwe Okafor',
+            specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6],
+            shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(16, 0),
+            max_daily_appointments=14,
+        )
+        self.service = Service.objects.create(
+            name='Dental Examination',
+            category='Dental Care',
+            duration_minutes=30,
+            buffer_minutes=10,
+            price=15000.00,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.service)
+        DoctorService.objects.create(doctor=self.colleague, service=self.service)
+
+    def _next_monday(self):
+        today = timezone.now().date()
+        return today + datetime.timedelta(days=(1 - today.isoweekday()) % 7 + 7)
+
+    def _book(self, doctor, day, hour, minute=0, name='Amina Auto', phone='+2348055557700'):
+        start = timezone.make_aware(datetime.datetime.combine(day, datetime.time(hour, minute)))
+        return HoldService.acquire_slot(
+            doctor_id=doctor.id,
+            service_id=self.service.id,
+            start_datetime=start,
+            end_datetime=start + datetime.timedelta(minutes=30),
+            patient_name=name,
+            patient_phone=phone,
+            is_hold=False,
+        )
+
+    def test_same_day_same_time_colleague_wins(self):
+        appt = self._book(self.doctor, self._next_monday(), 11, 0)
+        original_start = appt.start_datetime
+        report = DisruptionService.auto_resolve_disruption(
+            doctor_id=self.doctor.id,
+            leave_start_dt=original_start - datetime.timedelta(hours=1),
+        )
+        appt.refresh_from_db()
+        self.assertEqual(appt.doctor.id, self.colleague.id)
+        self.assertEqual(appt.start_datetime, original_start)  # same wall clock slot
+        result = report['results'][0]
+        self.assertEqual(result['outcome'], 'reassigned')
+        self.assertEqual(result['placement'], 'same_day_same_time')
+        self.assertEqual(result['new_doctor'], 'Dr. Chinwe Okafor')
+
+    def test_same_day_new_time_when_exact_time_taken(self):
+        self._book(self.colleague, self._next_monday(), 11, 0, name='Colleague Busy', phone='+2348055557701')
+        appt = self._book(self.doctor, self._next_monday(), 11, 0, phone='+2348055557702')
+        original_start = appt.start_datetime
+        report = DisruptionService.auto_resolve_disruption(
+            doctor_id=self.doctor.id,
+            leave_start_dt=original_start - datetime.timedelta(hours=1),
+        )
+        appt.refresh_from_db()
+        self.assertEqual(appt.doctor.id, self.colleague.id)
+        self.assertEqual(timezone.localtime(appt.start_datetime).date(), self._next_monday())
+        self.assertNotEqual(appt.start_datetime, original_start)
+        self.assertEqual(report['results'][0]['placement'], 'same_day_new_time')
+
+    def test_next_day_when_same_day_full(self):
+        self.colleague.max_daily_appointments = 1
+        self.colleague.save()
+        self._book(self.colleague, self._next_monday(), 11, 0, name='Ceiling Filler', phone='+2348055557703')
+        appt = self._book(self.doctor, self._next_monday(), 11, 0, phone='+2348055557704')
+        report = DisruptionService.auto_resolve_disruption(
+            doctor_id=self.doctor.id,
+            leave_start_dt=appt.start_datetime - datetime.timedelta(hours=1),
+        )
+        appt.refresh_from_db()
+        self.assertEqual(appt.doctor.id, self.colleague.id)
+        self.assertGreater(timezone.localtime(appt.start_datetime).date(), self._next_monday())
+        self.assertEqual(report['results'][0]['placement'], 'next_day_or_later')
+
+    def test_zero_double_booking_after_auto_resolve(self):
+        self._book(self.colleague, self._next_monday(), 11, 0, name='Existing Busy', phone='+2348055557705')
+        for hour, phone in ((10, '+2348055557706'), (11, '+2348055557707'), (14, '+2348055557708')):
+            self._book(self.doctor, self._next_monday(), hour, 0, phone=phone)
+        DisruptionService.auto_resolve_disruption(
+            doctor_id=self.doctor.id,
+            leave_start_dt=timezone.make_aware(
+                datetime.datetime.combine(self._next_monday(), datetime.time(8, 0))
+            ),
+            leave_end_dt=timezone.make_aware(
+                datetime.datetime.combine(self._next_monday(), datetime.time(23, 59))
+            ),
+        )
+        for doc in (self.doctor, self.colleague):
+            booked = sorted(
+                Appointment.objects.filter(doctor=doc).exclude(status__in=['cancelled', 'no_show', 'hold_expired']),
+                key=lambda a: a.start_datetime,
+            )
+            for earlier, later in zip(booked, booked[1:]):
+                self.assertLess(
+                    earlier.end_datetime + datetime.timedelta(minutes=self.service.buffer_minutes),
+                    later.start_datetime,
+                    f"overlap for {doc.name}: {earlier.appointment_code} vs {later.appointment_code}",
+                )
+
+    def test_messages_queued_with_django_words(self):
+        appt = self._book(self.doctor, self._next_monday(), 11, 0, name='Amina Words', phone='+2348055557709')
+        report = DisruptionService.auto_resolve_disruption(
+            doctor_id=self.doctor.id,
+            leave_start_dt=appt.start_datetime - datetime.timedelta(hours=1),
+        )
+        messages = report['results'][0]['messages']
+        self.assertEqual(sorted(m['channel'] for m in messages), ['sms', 'whatsapp'])
+        words = messages[0]['message']
+        self.assertIn('Dr. Bello Ibrahim', words)      # the doctor they expected
+        self.assertIn('Dr. Chinwe Okafor', words)      # the doctor they now have
+        self.assertIn('emergency', words.lower())
+        self.assertIn(appt.appointment_code, words)
+        # claim rows exist and are single-shot
+        for m in messages:
+            claim = InteractionLog.objects.get(external_ref=m['claim_ref'])
+            self.assertEqual(claim.status, 'queued')
+            self.assertEqual(claim.appointment_id, appt.id)
+            self.assertEqual(claim.direction, 'outbound')
+
+    def test_unplaced_flagged_without_message(self):
+        DoctorService.objects.filter(doctor=self.colleague).delete()
+        appt = self._book(self.doctor, self._next_monday(), 11, 0, name='Stuck Patient', phone='+2348055557710')
+        report = DisruptionService.auto_resolve_disruption(
+            doctor_id=self.doctor.id,
+            leave_start_dt=appt.start_datetime - datetime.timedelta(hours=1),
+        )
+        appt.refresh_from_db()
+        self.assertEqual(appt.doctor.id, self.doctor.id)  # untouched
+        result = report['results'][0]
+        self.assertEqual(result['outcome'], 'unplaced')
+        self.assertEqual(result['messages'], [])
+        self.assertFalse(InteractionLog.objects.filter(appointment=appt).exists())
+
+    def test_doctor_marked_on_leave_and_audit_logged(self):
+        appt = self._book(self.doctor, self._next_monday(), 11, 0, phone='+2348055557711')
+        DisruptionService.auto_resolve_disruption(
+            doctor_id=self.doctor.id,
+            leave_start_dt=appt.start_datetime - datetime.timedelta(hours=1),
+        )
+        self.doctor.refresh_from_db()
+        self.assertTrue(self.doctor.is_on_leave)
+        self.assertTrue(AuditLog.objects.filter(action='DISRUPTION_AUTO_RESOLVED').exists())
+
+
+class AutoResolveEndpointTests(APITestCase):
+    """
+    Item B.2 — POST /api/v1/disruptions/{doctor_id}/auto-resolve/
+    Staff-only one-click resolver. After resolving, Django fire-and-forget
+    pushes the queued notice items to n8n's disruption webhook (workflow 08,
+    env-driven URL + X-Webhook-Secret). Unset URL is fail-safe: nothing
+    fires and the queued items are never lost.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Auto', email='sarah.auto@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+        self.doctor = Doctor.objects.create(
+            name='Dr. Bello Auto', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5], shift_start=datetime.time(9, 0),
+            shift_end=datetime.time(17, 0), max_daily_appointments=12,
+        )
+        self.colleague = Doctor.objects.create(
+            name='Dr. Chinwe Auto', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6], shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(16, 0), max_daily_appointments=14,
+        )
+        self.service = Service.objects.create(
+            name='Dental Examination', category='Dental Care',
+            duration_minutes=30, buffer_minutes=10, price=15000.00,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.service)
+        DoctorService.objects.create(doctor=self.colleague, service=self.service)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _next_monday(self):
+        today = timezone.now().date()
+        return today + datetime.timedelta(days=(1 - today.isoweekday()) % 7 + 7)
+
+    def _leave_window(self):
+        day = self._next_monday()
+        return {
+            'leave_start': timezone.make_aware(datetime.datetime.combine(day, datetime.time(8, 0))).isoformat(),
+            'leave_end': timezone.make_aware(datetime.datetime.combine(day, datetime.time(23, 59))).isoformat(),
+        }
+
+    def _book(self, doctor, phone):
+        start = timezone.make_aware(datetime.datetime.combine(self._next_monday(), datetime.time(11, 0)))
+        return HoldService.acquire_slot(
+            doctor_id=doctor.id, service_id=self.service.id,
+            start_datetime=start, end_datetime=start + datetime.timedelta(minutes=30),
+            patient_name='Amina Endpoint', patient_phone=phone, is_hold=False)
+
+    def _post(self, doctor_id=None):
+        import os
+        from unittest.mock import patch  # noqa: F401 — used by individual tests via module patching
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.client.post(
+                f"/api/v1/disruptions/{doctor_id or self.doctor.id}/auto-resolve/",
+                {'reason': 'Acute Malaria', **self._leave_window()}, format='json')
+
+    def test_requires_staff_auth(self):
+        res = self._post()
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_resolves_and_reports(self):
+        appt = self._book(self.doctor, '+2348055557801')
+        self.client.force_authenticate(user=self.receptionist)
+        res = self._post()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['auto_resolved_count'], 1)
+        self.assertEqual(res.data['results'][0]['appointment_id'], str(appt.id))
+        appt.refresh_from_db()
+        self.assertEqual(appt.doctor.id, self.colleague.id)
+
+    def test_pushes_items_to_n8n_when_configured(self):
+        import os
+        from unittest.mock import patch
+        self._book(self.doctor, '+2348055557802')
+        self.client.force_authenticate(user=self.receptionist)
+        with patch.dict(os.environ, {'N8N_DISRUPTION_WEBHOOK_URL': 'https://n8n.example.com/disruption-alerts'}), \
+                patch('appointments.views_appointment.fire_and_forget_webhook') as mock_fire:
+            res = self._post()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(mock_fire.call_count, 1)
+        self.assertEqual(mock_fire.call_args[0][0], 'https://n8n.example.com/disruption-alerts')
+        payload = mock_fire.call_args[0][1]
+        self.assertEqual(payload['doctor_name'], 'Dr. Bello Auto')
+        items = payload['items']
+        self.assertEqual(sorted(i['channel'] for i in items), ['sms', 'whatsapp'])
+        self.assertTrue(all(i['message'].strip() for i in items))
+        # workflow 08 authenticates the push with the shared clinic secret
+        self.assertEqual(mock_fire.call_args.kwargs.get('secret'), 'clinic_dev_secret_2026')
+
+    def test_unconfigured_url_is_fail_safe(self):
+        import os
+        from unittest.mock import patch
+        self._book(self.doctor, '+2348055557803')
+        self.client.force_authenticate(user=self.receptionist)
+        with patch.dict(os.environ, {'N8N_DISRUPTION_WEBHOOK_URL': ''}), \
+                patch('appointments.views_appointment.fire_and_forget_webhook') as mock_fire:
+            res = self._post()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        mock_fire.assert_not_called()
+        # the notice items stay queued — nothing is lost, delivery can be configured later
+        self.assertEqual(InteractionLog.objects.filter(status='queued').count(), 2)
+
+    def test_unknown_doctor_404(self):
+        self.client.force_authenticate(user=self.receptionist)
+        res = self._post(doctor_id='00000000-0000-0000-0000-000000000000')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
 class DispatchContractEnrichmentTests(APITestCase):
     """
     Task 3.5 — Workflow D contract enrichment:

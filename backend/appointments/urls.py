@@ -26,6 +26,7 @@ from .views_appointment import (
     AppointmentStatusUpdateView,
     FollowUpTaskCreateView,
     ReassignLeaveView,
+    DisruptionAutoResolveView,
     RescheduleAppointmentView,
     AppointmentActionView,
     WalkInRegistrationView,
@@ -141,6 +142,7 @@ urlpatterns = [
     path('appointments/<str:id>/reschedule/', RescheduleAppointmentView.as_view(), name='appointment-reschedule'),
     path('appointments/<str:id>/follow-up/', FollowUpTaskCreateView.as_view(), name='appointment-follow-up'),
     path('appointments/<str:id>/reassign-leave/', ReassignLeaveView.as_view(), name='appointment-reassign-leave'),
+    path('disruptions/<uuid:doctor_id>/auto-resolve/', DisruptionAutoResolveView.as_view(), name='disruption-auto-resolve'),
     path('appointments/<str:id>/<str:action>/', AppointmentActionView.as_view(), name='appointment-action'),
 
     # Admin CSV Exports

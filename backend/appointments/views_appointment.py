@@ -1,4 +1,5 @@
 import csv
+import os
 import uuid
 import datetime
 from django.db import transaction
@@ -15,7 +16,8 @@ from .permissions import IsStaffAuthenticated
 from .services.hold_service import HoldService, SlotConflictException
 from .services.slot_selection import select_slot_offer
 from .services.disruption_service import DisruptionService
-from .services.webhook_security import has_staff_or_webhook_access, verify_webhook_secret
+from .services.dispatch_service import fire_and_forget_webhook
+from .services.webhook_security import has_staff_or_webhook_access, resolve_webhook_secret, verify_webhook_secret
 from .services.sse_bus import broadcast_event
 from .serializers_appointment import (
     SlotHoldRequestSerializer,
@@ -270,6 +272,86 @@ class ReassignLeaveView(APIView):
             )
 
         return Response(AppointmentDetailSerializer(updated_appt).data, status=status.HTTP_200_OK)
+
+
+class DisruptionAutoResolveView(APIView):
+    """
+    POST /api/v1/disruptions/{doctor_id}/auto-resolve/
+    Item B.2 — the ONE-CLICK emergency leave resolution. Declares the leave,
+    places EVERY impacted patient in priority order (same-time colleague →
+    same-day free slot → next day) under the zero-double-booking guarantees,
+    queues WhatsApp + SMS notices with Django's words, then fire-and-forget
+    pushes the queued items to n8n Workflow 08 (env-driven
+    N8N_DISRUPTION_WEBHOOK_URL, authenticated with the shared webhook secret).
+    An unset URL is fail-safe: nothing fires, the queued items are never lost.
+    """
+    permission_classes = [IsStaffAuthenticated]
+
+    def post(self, request, doctor_id):
+        reason = request.data.get('reason') or 'Emergency Leave'
+
+        def parse_dt(value, field):
+            if not value:
+                return None
+            try:
+                parsed = datetime.datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+            except (ValueError, TypeError):
+                raise ValueError(field)
+            if timezone.is_naive(parsed):
+                parsed = timezone.make_aware(parsed)
+            return parsed
+
+        try:
+            leave_start = parse_dt(request.data.get('leave_start'), 'leave_start')
+            leave_end = parse_dt(request.data.get('leave_end'), 'leave_end')
+        except ValueError as field_err:
+            return Response(
+                {'error': 'INVALID_DATETIME', 'detail': f'Unparseable {field_err} value.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            report = DisruptionService.auto_resolve_disruption(
+                doctor_id=doctor_id,
+                leave_start_dt=leave_start,
+                leave_end_dt=leave_end,
+                reason=reason,
+                performed_by=request.user.email,
+            )
+        except Doctor.DoesNotExist:
+            return Response(
+                {'error': 'DOCTOR_NOT_FOUND', 'detail': 'No doctor matches this id.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        items = [message for result in report['results'] for message in result['messages']]
+        report['delivery_pushed'] = False
+
+        def _post_commit_push():
+            n8n_url = os.environ.get('N8N_DISRUPTION_WEBHOOK_URL')
+            if not n8n_url or not items:
+                # Fail-safe: no configured workflow (or nothing to send) — the
+                # queued claim rows remain the record; the operator can wire
+                # delivery without losing a patient.
+                return
+            # Resolve the secret here (request thread) so the daemon thread
+            # stays database-free — same posture as dispatch-offers.
+            fire_and_forget_webhook(
+                n8n_url,
+                {
+                    'doctor_id': report['doctor_id'],
+                    'doctor_name': report['doctor_name'],
+                    'reason': reason,
+                    'clinic_name': ClinicSetting.get_settings().clinic_name,
+                    'items': items,
+                },
+                secret=resolve_webhook_secret(),
+            )
+
+        transaction.on_commit(_post_commit_push)
+        report['delivery_pushed'] = bool(items) and bool(os.environ.get('N8N_DISRUPTION_WEBHOOK_URL'))
+
+        return Response(report, status=status.HTTP_200_OK)
 
 
 class RescheduleAppointmentView(APIView):
