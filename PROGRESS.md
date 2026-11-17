@@ -1961,6 +1961,27 @@ single-shot by claim row. Same split as B: Django decides everything, n8n only d
 
 ---
 
+## Partner-readiness QA batch (2026-11-17, user's live dashboard session)
+
+Three defects found by hands-on receptionist testing, all fixed red-first and pushed on
+`partner-readiness/phase-1-2`:
+
+- **T-716 Needs Attention never resolved.** The tab keyed on the all-time failure count;
+  a successful re-send kept the patient stuck. New backend `attention_open` field (newest
+  failure newer than newest success = open); the tab now filters on it. Commits `fa981fe`.
+- **T-717 Simulator ghost requests.** Web intake sent `date_of_birth: ''` (400), fell back
+  silently to a local-only row; recalculate/dispatch then 404'd ("none of the channels
+  could be reached" was this, not a channel outage). Fixed: null DOB, loud live-mode
+  failure toast, live sync drops backend-unknown ghosts. Commits `fa981fe`.
+- **T-718 Seeder wiped credentials on every restart.** `seed_clinic` re-hashed all staff
+  passwords/PINs at boot (wsgi auto-seed), silently undoing dashboard resets. Credentials
+  now set once (creation or blank hash). Commits `c1e14c0`.
+
+Full suite **253/253**; logins verified live: `admin@clinic.com` / `adminpassword123`
+(PIN `9900`), `sarah@clinic.com` / `password123` (PIN `1234`).
+
+---
+
 ## Next up - Phase 5 (partner handover)
 
 **Status: 5.1 done (2026-11-17); 5.2 blocked on the partner; 5.3 next.** All message-carrying
