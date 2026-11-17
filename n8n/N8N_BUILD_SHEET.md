@@ -79,6 +79,17 @@ Full read API (for debugging what you logged): `GET /api/v1/interactions/?patien
 
 ## 2. Workflow A — `03_reminder_flows.json` (build FIRST — simplest, validates your setup)
 
+> **BUILT & LIVE (2026-11-17, supersedes the spec below).** As built, `03_Pre_Visit_Reminders_And_Followups`
+> (instance `UHQzb7w5gOh2hxcW`, active, 12 nodes) is Workflow B's proven graph: **one hourly cron**
+> (`5 * * * *`) replaces the two-cron plan (a single call returns all due items — 24h, 2h, follow-up recall —
+> Django decides what's due), and it POSTs Django's new `POST /webhooks/reminder-sweep/` (one call, full item
+> contract) instead of `GET /upcoming-reminders/`. **n8n writes no copy**: every message is composed in
+> Django (`reminder_service.py`) and delivered verbatim; the WhatsApp leg wraps Django's words as the body
+> parameter of the ONE shared template (`WHATSAPP_TEMPLATE_NAME`). Claim refs `rem24-/rem2h-/followup-` keep
+> every message single-shot; channels mirror the patient's own outbound log with plain-SMS fallback, never
+> voice; only `confirmed` appointments are reminded; copy states the actual date/time, never "tomorrow".
+> Details: `n8n.md` Workflow 3 (as built). The original spec below is kept for the partner's context only.
+
 **Purpose:** 24-hour and 2-hour pre-visit reminders. Dual WhatsApp + SMS. **Zero calls.**
 
 | Step | Node | Detail |

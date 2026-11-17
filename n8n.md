@@ -128,30 +128,69 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
 
 ### Workflow 3: Automated Pre-Visit Reminders & Follow-Ups
 - **Template File**: `n8n/03_reminder_flows.json`
-- **Purpose**: Runs on scheduled cron to check for appointments occurring tomorrow (24h reminder) or in 2 hours, and sends interactive confirmation buttons.
+- **Purpose**: Runs hourly (at :05) and asks Django who is due a 24h or 2h pre-visit reminder or a doctor follow-up recall, then **delivers the message Django composed, on the app Django chose**. n8n writes no patient-facing words and makes no channel decision (built 2026-11-17, Workflow A).
 
-#### Node Pipeline & Data Flow:
+> **Built & live.** Workflow ID `UHQzb7w5gOh2hxcW` (`03_Pre_Visit_Reminders_And_Followups`) — active, 12 nodes,
+> `valid: true` (0 errors / 0 warnings). Harness `n8n/tests/test_reminders.js` (81 assertions); live proof
+> `a3_live_proof.py` all checks pass. The graph is Workflow B's proven shape with one adapter — the
+> `Build Provider Requests` code is **byte-identical to 02's**, so both workflows share the ONE WhatsApp
+> template (`WHATSAPP_TEMPLATE_NAME`; Django's words are the template body parameter). Contract: one
+> `POST /webhooks/reminder-sweep/` returns ALL due items — no per-kind parameter — each carrying `kind`
+> (`24h` / `2h` / `followup`) + `channel` + `message` + `claim_ref`; claim refs are
+> `rem24-<AP>-<channel>` / `rem2h-<AP>-<channel>` / `followup-<TASK>-<channel>`, upserted by the same
+> positional-zip log nodes. Windows: 24h = start in (now, now+24h]; 2h = (now, now+2h]; only
+> `status="confirmed"` appointments are reminded. Channels mirror the patient's own outbound log
+> (booking-request rows + appointment rows); walk-ins and patients with no dispatch record fall back to
+> plain SMS; voice is never a reminder channel. Copy always states the **actual date and time** — never
+> "tomorrow" — so any window is truthful. Telegram keyboards carry only wired callbacks
+> (`confirm_attend_` / `cancel_`; the blueprint's dead `reschedule_` button was dropped when the
+> previously-dead `format_24h_reminder` was activated). Follow-up recalls mark the task
+> `reminder_sent=True` once at least one claim exists (no claim, no mark — the next sweep retries);
+> uncompletable Telegram (no resolvable chat id) writes no claim rather than a doomed row.
+> Clinic flags gate the batches: `enable_24h_reminder` (default on), `enable_2h_reminder` (default off).
+> Unlike the expiry sweep there are **no state transitions, no AuditLog rows and no extra system rows** —
+> the reminder IS the interaction, and `InteractionLog` is already the record.
+> `/api/v1/interactions/` now resolves a `request_code` as a **BookingRequest first, then an Appointment**
+> (reminder claims identify the appointment by code; the upsert never downgrades an existing link).
+
+#### Node Pipeline & Data Flow (as built):
 ```
-[Schedule Trigger Node] (Cron: 0 8,18 * * * — Twice daily at 8am and 6pm)
-       │
-       ▼
-[HTTP Request Node: Fetch Due Reminders]
-  • GET http://backend:8000/api/v1/appointments/upcoming-reminders/
-       │
-       ▼
-[Item Lists Node: Split Items into Individual Appointments]
-       │
-       ▼
-[IF Node: Reminder Type]
-       ├── Branch 1: 24-Hour Notice
-       │     └─► [Telegram / WhatsApp Node]
-       │           Send Template 7: "Appointment Reminder for Tomorrow with Dr. {{doctor_name}} at {{time}}"
-       │           Inline Keyboard: [✅ I'll Be There]  [🔄 Reschedule]  [❌ Cancel]
-       │
-       └── Branch 2: Doctor-Directed Follow-up Recall (e.g. 6-Month Dental Checkup)
-             └─► [Telegram / WhatsApp Node]
-                   Send Recall Template: "Dr. Bello recommended a routine checkup this month. Click to book."
+[Hourly Reminder Schedule] (Cron: 5 * * * * — hourly at :05)
+       |
+       v
+[Trigger Django Reminder Sweep]
+  |  POST $env.DJANGO_API_BASE_URL + '/webhooks/reminder-sweep/'   (env already ends in /api/v1)
+  |  X-Webhook-Secret from $env — fail closed, no fallbacks; body {"triggered_by":"n8n_cron_reminders"}
+       |
+       v
+[Parse Reminder Sweep Response]
+  |  reminder_items (24h + 2h) then followup_items -> deliverable items
+  |  drops any item missing channel / message / claim_ref (fail-safe); an empty sweep is a clean no-op
+       |
+       v
+[Build Provider Requests]   (byte-identical to Workflow B's adapter)
+  |  mock (PROVIDER_MOCK unset/true): SMS/WhatsApp -> Provider Simulator (/provider-sim/{sms|whatsapp})
+  |  Telegram -> real Bot API sendMessage (chat_id + inline keyboard from the item)
+  |  live gates: VoiceBip creds / Meta creds + WHATSAPP_TEMPLATE_NAME -> else route:"skip" with a named reason
+       |
+       v
+[Route by Channel]  (switch on provider_request.route)
+  |--> telegram  -> [Send Telegram Message]   -> [Log Telegram Outcome]
+  |--> sms       -> [Send SMS (VoiceBip)]     -> [Log SMS Outcome]
+  |--> whatsapp  -> [Send WhatsApp Message]   -> [Log WhatsApp Outcome]
+  |--> skip      -> [Log Skipped Leg]         (upserts the claim row as failed with the reason)
+                    All three send nodes: onError -> continueErrorOutput (failures reach the same log).
+                    Log nodes: one POST /interactions/ per response, zipped to its claim_ref BY POSITION.
 ```
+
+#### Emission & dedupe rules:
+- **Claim rows are the only dedupe**: one outbound row per item at emit time (`queued`), upserted to
+  `sent`/`failed` by the outcome POST on the same `external_ref`. A 24h window spans 24 hourly fires —
+  without the claim a patient would be reminded once per hour.
+- **Follow-up tasks** are marked `reminder_sent=True` + `reminder_sent_at` only when at least one claim
+  was written; an unresolvable channel writes no claim and no mark, so a later sweep retries.
+- A skipped leg (no credentials in live mode, no approved WhatsApp template, no Telegram chat id) is
+  **visible**: `Log Skipped Leg` upserts the claim row to `failed` with the reason.
 
 ---
 
@@ -933,7 +972,7 @@ has no "unknown" value, so a row would require lying in the other direction.
 | :--- | :--- | :--- | :--- |
 | **Intake Webhook** | `n8n/01_intake_webhook.json` | Webhook (`/webhook/intake`) | Ingest, sanitize, post to Django queue |
 | **Hold & Expiry Sweeper** | `n8n/02_hold_and_offer_expiry_cron.json` | Cron (`*/1 * * * *`) | B: asks Django who expired (`POST /webhooks/expiry-sweep/`) and delivers Django's words on Django's channel; claim-ref upserts keep every message single-shot |
-| **Reminder Flows** | `n8n/03_reminder_flows.json` | Cron (Twice daily) | Dispatch 24h & 2h pre-visit interactive buttons |
+| **Reminder Flows** | `n8n/03_reminder_flows.json` | Cron (`5 * * * *`, hourly at :05) | A: asks Django who is due a 24h/2h pre-visit reminder or follow-up recall (`POST /webhooks/reminder-sweep/`) and delivers Django's words on Django's channel; shares 02's byte-identical adapter and the ONE WhatsApp template; claim-ref upserts keep every message single-shot |
 | **Patient Response Handler** | `n8n/04_patient_response_handler.json` | Webhook (`/webhook/whatsapp-inbound`, `/webhook/sms-inbound`) | C.2: asks Django what an SMS/WhatsApp reply means (`/webhooks/patient-reply/`) and delivers `reply_text` verbatim |
 | **Slot Offer Dispatcher** | `n8n/05_slot_offer_dispatcher.json` | Webhook (`/webhook/dispatch-offers`) | Format & send approved 1h slot buttons to patient |
 | **Provider Simulator** (dev only) | `n8n/06_provider_simulator.json` | Webhook (`/webhook/provider-sim/{channel}`) | Stand-in for VoiceBip/Meta: realistic success payload or HTTP 500 when `PROVIDER_MOCK_FAIL=true` |

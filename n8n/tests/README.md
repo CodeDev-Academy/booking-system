@@ -14,6 +14,7 @@ node n8n/tests/test_voice_guard.js
 node n8n/tests/test_reply_handler.js
 node n8n/tests/test_simulator_ids.js
 node n8n/tests/test_sweeper.js
+node n8n/tests/test_reminders.js
 ```
 
 Exit code `0` = every assertion passed, `1` = at least one failed. Each assertion prints
@@ -29,6 +30,7 @@ Exit code `0` = every assertion passed, `1` = at least one failed. Each assertio
 | `test_reply_handler.js` | `04` (C.2) › `Verify Reply Secret`, `Normalize Patient Reply`, `Prepare Reply Delivery`, `Log Reply Outcome`, plus graph drift guards — fail-closed auth, Meta + VoiceBip payload shapes, the one-call rule, the duplicate skip, delivery routing, the outbound row | 91 |
 | `test_simulator_ids.js` | `06` › the three `Build * Response` nodes — one provider id per message, readable ids that keep the `REQ-` code, Meta's real shape, the 500 switch | 19 |
 | `test_sweeper.js` | `02` (B) › the cron POST (env-resolved URL, fail-closed secret, no literal secrets), parse guards (malformed items dropped, empty sweep is a no-op), adapter mock/live gates + skip reasons, switch + onError wiring, claim-ref upserts (**one run, many responses, zipped by position** — F12 pins the live-proof defect; F13b an unpaired response posts nothing), canonical block drift guard, and that n8n writes no patient-facing words | 78 |
+| `test_reminders.js` | `03` (A) › the same graph as `02` renamed for reminders — hourly cron pin (`5 * * * *`), the reminder-sweep POST (actor `n8n_cron_reminders`), parse guards over `reminder_items` + `followup_items` (kind/channel/message/claim_ref), **C19: the adapter is byte-identical to `02`'s** (ONE shared WhatsApp template), switch + onError wiring, claim-ref upserts with kind-named summaries (F9b/F12b), canonical block drift guard, no patient-facing words | 81 |
 
 Counts are the harness's own output (`ok` lines), not an estimate.
 

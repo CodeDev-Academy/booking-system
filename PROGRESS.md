@@ -1895,8 +1895,75 @@ everything (who, which app, which words), n8n only delivers, and every message i
 
 ---
 
+## Workflow A - complete end to end (2026-11-17)
+
+**Status: done.** The pre-visit reminder & follow-up recall workflow is real, active and proven:
+one hourly sweep asks Django who is due, and every message is Django's words on Django's app,
+single-shot by claim row. Same split as B: Django decides everything, n8n only delivers.
+
+- **A.0 (Django owns the message contract).** New `reminder_service.py` + `POST /api/v1/webhooks/reminder-sweep/`
+  (401 house auth, same `{"error": "INVALID_WEBHOOK_SECRET"}` body). **One call returns ALL due items** -
+  24h reminders (start in (now, now+24h]), 2h reminders ((now, now+2h]), follow-up recalls
+  (`is_completed=False, reminder_sent=False, follow_up_date <= today`) - no per-kind parameter. Every item
+  carries `kind` (`24h`/`2h`/`followup`) + `channel` + `message` + `claim_ref` (`rem24-<AP>-<ch>` /
+  `rem2h-<AP>-<ch>` / `followup-<TASK>-<ch>`; `request_id` = appointment code); Telegram items add
+  `telegram_chat_id` + `reply_markup`. Claim rows (`status="queued"`) keep each message single-shot across
+  the 24 hourly fires a 24h window spans. Channels **mirror the patient's own outbound log** (booking-request
+  rows + appointment rows); walk-ins and no-record patients fall back to plain SMS; never voice. Copy states
+  the **actual date and time - never "tomorrow"** (an appointment 3 hours out is inside the 24h window too).
+  Clinic flags gate the batches: `enable_24h_reminder` (default on), `enable_2h_reminder` (default off).
+  Follow-ups mark `reminder_sent=True` + `reminder_sent_at` only when >= 1 claim was written (no claim, no
+  mark - the next sweep retries). Unlike B: **no state transitions, no AuditLog rows, no extra system rows** -
+  the reminder IS the interaction. Dead code activated with fixes: `format_24h_reminder` said "tomorrow" and
+  carried a **dead `reschedule_` callback** (nothing wires it) - now states the real date and uses only wired
+  callbacks (`confirm_attend_`/`cancel_`); new `format_2h_reminder` + `format_followup_recall` (the follow-up
+  button uses the wired `book_svc_<service_id>` grammar). `ReminderMessagingTests` **19 red first** (17 errors
+  + 2 failures on 404), then green; full suite **247/247, exit 0** at that point.
+- **A.1 (harness first).** `n8n/tests/test_reminders.js`: **27/30 red** against the 6-node skeleton (which
+  hardcoded reminder copy in n8n, used `||` fallback URLs, and carried the dead `reschedule_`/`book_new`
+  callbacks). After the rebuild: **81 green** - A env-driven POST + fail-closed secret + shipped-cron pin,
+  B parse guards, C adapter gates + C19 (the adapter must be **byte-identical to 02's**, so both workflows
+  share the ONE WhatsApp template), D wiring, E onError wiring, F claim-ref upserts + canonical-block drift
+  guard + F9b/F12b (log summaries name the reminder kind, never "Expiry recovery message"), G no
+  patient-facing words.
+- **A.2 (rebuild + upload).** 12 nodes - the same graph as `02` with three renamed nodes: cron `5 * * * *`
+  (hourly at :05; supersedes the two-cron spec - a single sweep returns all kinds) -> `Trigger Django Reminder
+  Sweep` (actor `n8n_cron_reminders`) -> `Parse Reminder Sweep Response` -> `Build Provider Requests` ->
+  `Route by Channel` -> 3 send nodes + `Log Skipped Leg` -> 3 `Log * Outcome` nodes. Instance
+  `UHQzb7w5gOh2hxcW` (`03_Pre_Visit_Reminders_And_Followups`) **active**, `valid: true` 0 errors / 0 warnings,
+  repo JSON in sync.
+- **A.3 (live proof - caught one real defect, then all checks passed).** The proof temporarily tightens the
+  instance cron to `*/1 * * * *` and restores `5 * * * *` in `finally` (re-verified active; A10 pins the
+  shipped schedule). First run: Django emitted every claim correctly but **all claims stayed `queued`** -
+  9x `400 {"request_code":"BookingRequest AP-0000 not found."}`. Root cause: the outcome POSTs carry the
+  **appointment** code as `request_code`, and `/api/v1/interactions/` resolved it against BookingRequest only.
+  Fixed red-first (test `400 != 201` -> green): `resolve_links` tries **BookingRequest first, then
+  Appointment** (additive; the upsert never downgrades an existing link). The shared log-node `kindLabel` also
+  learned `24h`/`2h`/`followup` labels (only in `03`; `02` untouched). Second run failed on the **stale
+  `--noreload` dev server** (the fix was live in the process only after restart - the documented trap) and the
+  third run: **all checks passed** - wrong secret 401 + zero writes; the real cron delivered the 24h reminder
+  on the sms+whatsapp mirrors; the walk-in got the SMS fallback in **both** windows (24h + 2h with the flag
+  on); the follow-up recall delivered on whatsapp and marked the task once; the Telegram fake-chat-id leg
+  (`55990`) ended **failed with a readable reason** (the host has no bot token, and the simulator has no
+  Telegram leg); the +30h appointment produced no claims; no AuditLog rows; only fixture+claim rows per phone;
+  extra sweeps re-emitted nothing. Proof rows deleted and verified; seeded demo-data reminders
+  (`rem24-AP-1043-sms`, `rem24-AP-1044-sms`, `followup-601abc5d-...-sms`) fired once each during the window -
+  single-shot held, untouched. Full suite **248/248, exit 0** (the new serializer test); all 9 n8n harnesses
+  green.
+- **A.4 (docs).** `n8n.md` Workflow 3 rewritten as built (+ A6 matrix row), `n8n/N8N_BUILD_SHEET.md` A2 banner
+  (hourly single-cron as-built note), `TEST.md` T-715/T-715b + run-log rows, this file.
+- **Files:** `backend/appointments/services/reminder_service.py` (new),
+  `backend/appointments/services/telegram_service.py`, `backend/appointments/serializers_interactions.py`,
+  `backend/appointments/views_realtime.py`, `backend/appointments/urls.py`, `backend/appointments/tests.py`,
+  `n8n/03_reminder_flows.json`, `n8n/tests/test_reminders.js` (new). Docs: `PROGRESS.md`, `TEST.md`
+  (T-715, T-715b), `n8n.md` (Workflow 3 + A6 matrix row), `n8n/N8N_BUILD_SHEET.md` A2 banner,
+  `n8n/tests/README.md`.
+
+---
+
 ## Next up - Phase 5 (partner handover)
 
 **Status: ready to start.** All message-carrying workflows are now real and proven: `05` (dispatch),
-`04` (replies), `02` (expiry sweeper). Remaining per the roadmap: partner handover (env checklist,
-`FLIP_LIVE_RUNBOOK.md`, credentials, deployment).
+`04` (replies), `02` (expiry sweeper), `03` (reminders & follow-ups). Remaining per the roadmap:
+partner handover only (5.1 package: env checklist, `FLIP_LIVE_RUNBOOK.md`, credentials, deployment;
+5.2 blocked on the partner; 5.3 joint live run).
