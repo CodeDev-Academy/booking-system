@@ -1961,6 +1961,15 @@ single-shot by claim row. Same split as B: Django decides everything, n8n only d
 
 ---
 
+## n8n package restructure (2026-11-17, Item A)
+
+- `n8n/workflows/` (01-07), `n8n/tests/` (paths updated), `n8n/docs/` (build sheet, handover,
+  runbook), `README.md` documents the tree. `git mv` history preserved; all 9 harnesses green
+  after the move; live pointers in `n8n.md`, `AGENTS.md`, `MASTER_CONTEXT.md`, roadmap synced.
+- Workflow 08 (`disruption_notifier`, Item B) will be born into `workflows/`.
+
+---
+
 ## Partner-readiness QA batch (2026-11-17, user's live dashboard session)
 
 Three defects found by hands-on receptionist testing, all fixed red-first and pushed on
