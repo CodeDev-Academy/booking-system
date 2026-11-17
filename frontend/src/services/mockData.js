@@ -188,6 +188,7 @@ export const buildMockRequests = () => [
     // Task 3.4 demo seed: a delivery failure so the Needs Attention tab has
     // something to show in the pitch simulator (live mode comes from InteractionLog).
     deliveryFailures: 1,
+    attentionOpen: true,
     lastFailure: {
       channel: 'whatsapp',
       status: 'failed',

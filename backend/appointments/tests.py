@@ -5717,6 +5717,59 @@ class NeedsAttentionFieldsTests(APITestCase):
         self.assertEqual(item['delivery_failures'], 0)
         self.assertIsNone(item['last_failure'])
 
+    # --- Receptionist-approved resolution rule (Needs Attention exit) -----
+    # A request must LEAVE the Needs Attention tab once a LATER outbound
+    # send succeeds (sent / delivered / answered), and only return if a
+    # NEWER failure lands. attention_open = newest failure is newer than
+    # the newest successful outbound outcome.
+
+    def test_attention_open_true_when_failure_is_latest_outcome(self):
+        InteractionLog.objects.create(
+            provider='meta_whatsapp', channel='whatsapp', status='sent',
+            patient_phone='+2348055550001', booking_request=self.booking,
+        )
+        failure = InteractionLog.objects.create(
+            provider='meta_whatsapp', channel='whatsapp', status='failed',
+            patient_phone='+2348055550001', booking_request=self.booking,
+            error_detail='Template not approved',
+        )
+        InteractionLog.objects.filter(pk=failure.pk).update(
+            created_at=timezone.now() + datetime.timedelta(minutes=1)
+        )
+        item = self._queue_item()
+        self.assertTrue(item['attention_open'])
+
+    def test_attention_open_clears_after_successful_resend(self):
+        failure = InteractionLog.objects.create(
+            provider='meta_whatsapp', channel='whatsapp', status='failed',
+            patient_phone='+2348055550001', booking_request=self.booking,
+            error_detail='Template not approved',
+        )
+        InteractionLog.objects.filter(pk=failure.pk).update(
+            created_at=timezone.now() - datetime.timedelta(minutes=10)
+        )
+        success = InteractionLog.objects.create(
+            provider='voicebip', channel='sms', status='delivered',
+            patient_phone='+2348055550001', booking_request=self.booking,
+            summary='Slots re-sent via SMS after the failed attempt.',
+        )
+        InteractionLog.objects.filter(pk=success.pk).update(
+            created_at=timezone.now()
+        )
+        item = self._queue_item()
+        self.assertFalse(item['attention_open'])
+        # The historical count is untouched — the card chip still shows it.
+        self.assertEqual(item['delivery_failures'], 1)
+
+    def test_attention_open_false_when_no_failure_ever(self):
+        InteractionLog.objects.create(
+            provider='telegram', channel='telegram', direction='outbound',
+            status='delivered', patient_phone='+2348055550001',
+            booking_request=self.booking,
+        )
+        item = self._queue_item()
+        self.assertFalse(item['attention_open'])
+
 
 class DispatchContractEnrichmentTests(APITestCase):
     """

@@ -4,6 +4,7 @@ import { useCalendarStore } from '../stores/useCalendarStore';
 import { useStaffStore } from '../stores/useStaffStore';
 import { soundService } from '../services/soundService';
 import { apiService } from '../services/apiService';
+import { useAppModeStore } from '../stores/appModeStore';
 import {
   SERVICES,
   DOCTORS,
@@ -266,7 +267,9 @@ export const usePitchSimulator = () => {
         channel: 'web',
         patient_notes: newRequest.symptoms,
         gender: newRequest.gender,
-        date_of_birth: newRequest.dateOfBirth,
+        // Empty string is an invalid date format for the backend (400) — the
+        // field is optional, so an unfilled DOB must be null, not ''.
+        date_of_birth: newRequest.dateOfBirth || null,
         is_emergency: newRequest.isEmergency,
       });
 
@@ -277,6 +280,14 @@ export const usePitchSimulator = () => {
       }
     } catch (err) {
       console.warn('Backend createBookingRequest fallback to local state:', err);
+      // Live mode must never pretend a local-only row is real: recalculate and
+      // dispatch hit the backend by id and would 404 against a local ghost.
+      if (!useAppModeStore.getState().isDemoMode) {
+        setToast({
+          tone: 'error',
+          text: `⚠ ${newRequest.patientName} could not be saved to the live backend — this request exists on this screen only. Fix intake and resubmit.`,
+        });
+      }
     }
 
     injectRequest(newRequest);
@@ -610,6 +621,13 @@ export const usePitchSimulator = () => {
             }
           }).catch((err) => {
             console.warn('Backend createBookingRequest fallback to local state:', err);
+            // Live mode must never pretend a local-only row is real.
+            if (!useAppModeStore.getState().isDemoMode) {
+              setToast({
+                tone: 'error',
+                text: `⚠ ${newRequest.patientName} could not be saved to the live backend — this request exists on this screen only.`,
+              });
+            }
           });
         } catch (err) {
           console.warn('Backend createBookingRequest error:', err);

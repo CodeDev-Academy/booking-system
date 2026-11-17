@@ -94,10 +94,12 @@ export const useTriageQueue = () => {
   const buckets = useMemo(() => {
     const awaiting = requests.filter((r) => r.status === 'awaiting_review');
     const byAge = (a, b) => a.createdAt - b.createdAt; // strict FIFO
-    // Task 3.4: any request with a logged delivery failure (failed / no_answer /
-    // expired interaction) needs a human — regardless of its queue status.
+    // Task 3.4: a request needs a human only while its NEWEST outbound
+    // outcome is a failure (attention_open from the backend). A successful
+    // resend after a failure clears it, so recovered patients leave this
+    // tab; a newer failure returns them.
     const needsAttention = requests
-      .filter((r) => (r.deliveryFailures || 0) > 0)
+      .filter((r) => r.attentionOpen === true)
       .sort((a, b) => {
         const fa = a.lastFailure ? new Date(a.lastFailure.created_at).getTime() : a.createdAt;
         const fb = b.lastFailure ? new Date(b.lastFailure.created_at).getTime() : b.createdAt;

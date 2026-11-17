@@ -216,6 +216,11 @@ class BookingRequestDetailSerializer(serializers.ModelSerializer):
     # there, and the dashboard queue surfaces them without new models.
     delivery_failures = serializers.SerializerMethodField()
     last_failure = serializers.SerializerMethodField()
+    # Receptionist-approved resolution rule: attention_open is True only while
+    # the NEWEST outbound outcome is a failure. A later successful send
+    # (sent / delivered / answered) clears it, so a recovered patient leaves
+    # the Needs Attention tab; a newer failure puts them back.
+    attention_open = serializers.SerializerMethodField()
     slot_offers = SlotOfferSerializer(many=True, read_only=True)
     request_id = serializers.CharField(source='request_code', read_only=True)
 
@@ -251,6 +256,7 @@ class BookingRequestDetailSerializer(serializers.ModelSerializer):
             'patient_dossier',
             'delivery_failures',
             'last_failure',
+            'attention_open',
             'slot_offers',
             'created_at',
             'updated_at',
@@ -262,6 +268,7 @@ class BookingRequestDetailSerializer(serializers.ModelSerializer):
 
     # --- Task 3.4: Needs Attention fields -------------------------------
     FAILURE_STATUSES = ('failed', 'no_answer', 'expired')
+    SUCCESS_STATUSES = ('sent', 'delivered', 'answered')
 
     def _failure_queryset(self, obj):
         return obj.interactions.filter(status__in=self.FAILURE_STATUSES)
@@ -280,3 +287,16 @@ class BookingRequestDetailSerializer(serializers.ModelSerializer):
             'error_detail': latest.error_detail or '',
             'created_at': latest.created_at.isoformat(),
         }
+
+    def get_attention_open(self, obj):
+        latest_failure = self._failure_queryset(obj).order_by('-created_at').first()
+        if latest_failure is None:
+            return False
+        latest_success = obj.interactions.filter(
+            direction='outbound', status__in=self.SUCCESS_STATUSES,
+        ).order_by('-created_at').first()
+        if latest_success is None:
+            return True
+        # Tie on timestamp keeps attention open — never silently close on a
+        # failure that at least matched the last good send.
+        return latest_failure.created_at > latest_success.created_at

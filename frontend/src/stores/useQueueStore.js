@@ -174,6 +174,10 @@ export const useQueueStore = create(
           // Task 3.4: delivery-failure visibility (Needs Attention tab).
           deliveryFailures: item.delivery_failures || 0,
           lastFailure: item.last_failure || null,
+          // Resolution rule: True only while the newest outbound outcome is a
+          // failure — a later successful send clears it (recovered patients
+          // leave the Needs Attention tab; a newer failure puts them back).
+          attentionOpen: item.attention_open === true,
         };
       });
 
@@ -185,7 +189,16 @@ export const useQueueStore = create(
             ...rem,
           });
         });
-        return { requests: Array.from(existingByCode.values()) };
+        // Live reconciliation: the backend is the source of truth. Rows that
+        // never reached the backend (no backendUuid — e.g. a simulator intake
+        // that failed to save) are local ghosts; keeping them would 404 on
+        // every recalculate/dispatch call. Local overlays on rows that DO
+        // exist remotely survive the merge above.
+        const remoteCodes = new Set(mappedRemote.map((rem) => rem.code || rem.id));
+        const reconciled = Array.from(existingByCode.values()).filter(
+          (r) => remoteCodes.has(r.code || r.id) || Boolean(r.backendUuid)
+        );
+        return { requests: reconciled };
       });
     } catch (err) {
       console.warn('Queue syncFromBackend fallback:', err);
