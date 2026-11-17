@@ -1,0 +1,471 @@
+{
+  "name": "08_Disruption_Notifier",
+  "nodes": [
+    {
+      "id": "cd950465-db6c-4431-a7be-f0b5d24ef2df",
+      "name": "Disruption Alerts Webhook from Django",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "disruption-alerts",
+        "options": {},
+        "responseMode": "responseNode"
+      }
+    },
+    {
+      "id": "21d66e71-f95a-4257-afaa-4baeac954af5",
+      "name": "Verify Disruption Secret",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Phase 0 — the dispatch webhook is the only n8n entry point that can make the\n// clinic send real messages and place real calls, so it is authenticated before\n// anything else runs. Fail closed: an unset DJANGO_WEBHOOK_SECRET rejects every\n// request (an unconfigured receiver never accepts traffic).\n//\n// Django sends the same value it uses for every X-Webhook-Secret call\n// (ClinicSetting.webhook_secret -> settings.WEBHOOK_SECRET -> dev fallback).\nconst src = $input.first().json || {};\nconst headers = src.headers || {};\n\nconst env = (name) => { try { const v = $env[name]; return v == null ? '' : String(v); } catch (e) { return ''; } };\n\nconst expected = env('DJANGO_WEBHOOK_SECRET');\nconst provided = String(headers['x-webhook-secret'] || '').trim();\nconst authorized = Boolean(expected) && provided === expected;\n\nreturn [{ json: {\n  ...src,\n  dispatch_auth: {\n    authorized: authorized,\n    reason: authorized ? null : (expected ? 'bad_secret' : 'secret_not_configured'),\n  },\n} }];"
+      }
+    },
+    {
+      "id": "a58f5515-2954-40c8-bcec-847d8738c4fd",
+      "name": "IF Disruption Authorized",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-d0-auth",
+              "leftValue": "={{ $json.dispatch_auth.authorized }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c4275b55-c885-4fd3-9b39-26586a185285",
+      "name": "Respond Disruption Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        660,
+        -120
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, accepted: true, doctor_id: ($json.body && $json.body.doctor_id) || null, items: (($json.body && $json.body.items) || []).length } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "07808d9b-c295-4f20-82e2-7ba4760f4628",
+      "name": "Respond Disruption Unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        660,
+        120
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: false, error: 'unauthorized', reason: $json.dispatch_auth.reason } }}",
+        "options": {
+          "responseCode": 401
+        }
+      }
+    },
+    {
+      "id": "b5bb955b-a58d-415d-949b-3743a878b470",
+      "name": "Parse Disruption Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "// Workflow 08 · Parse Disruption Items — the boundary between Django's words and\n// the provider adapter. Django's auto-resolver queues one item per channel\n// (claim_ref disrupt-<code>-<channel>) carrying its OWN words; this node flattens\n// the webhook body into one adapter input per item and sets the want_* flags from\n// the item's channel. Django's words pass through VERBATIM — nothing here\n// rewrites, truncates or re-templates patient copy.\n//\n// Fail-closed hygiene: an item missing a required field (message, claim_ref, a\n// known channel, a destination phone) is DROPPED here, never half-delivered. A\n// dropped item stays 'queued' in Django's log — visible to reception, retryable\n// by re-push — so nothing is silently lost.\nconst req = $input.first().json || {};\nconst body = req.body || req;\nconst items = Array.isArray(body.items) ? body.items : [];\n\nconst KNOWN = ['sms', 'whatsapp'];\nconst out = [];\nfor (const item of items) {\n  if (!item || typeof item !== 'object') continue;\n  const channel = item.channel;\n  if (!KNOWN.includes(channel)) continue;                          // unknown channel: nothing safe to send\n  if (!item.claim_ref || !String(item.claim_ref).trim()) continue; // no claim: cannot stay single-shot\n  if (!item.message || !String(item.message).trim()) continue;     // no words: never invent any\n  if (!item.patient_phone || !String(item.patient_phone).trim()) continue; // no destination\n  out.push({ json: {\n    request_id: item.request_id || item.id || '', // the appointment code — what log nodes + callbacks key on\n    patient_name: item.patient_name || '',\n    patient_phone: String(item.patient_phone),\n    service_name: item.service_name || '',\n    doctor_name: item.doctor_name || body.doctor_name || '',\n    clinic_name: body.clinic_name || '',\n    reason: body.reason || '',\n    start_datetime: item.start_datetime || '',\n    channel: channel,\n    claim_ref: String(item.claim_ref),\n    message: String(item.message),\n    chat_id: null,\n    want_sms: channel === 'sms',\n    want_whatsapp: channel === 'whatsapp',\n    want_voice: false,\n  } });\n}\nreturn out;\n"
+      }
+    },
+    {
+      "id": "8d81a880-8a88-4cf8-bc7f-26dc00d22933",
+      "name": "Provider Config & Adapter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "// Workflow 08 · Provider Config & Adapter (disruption notices) — single source of\n// provider config. Reads deployment config from $env — no node hardcodes a URL,\n// key or sender id. Django queues one claim row per channel, so Parse Disruption\n// Items emits one input per channel and this node adapts each 1:1.\n//\n// Mock mode (PROVIDER_MOCK unset or true) does NOT skip the send nodes: it points\n// every provider URL at the in-cluster Provider Simulator (06_Provider_Simulator),\n// so the real HTTP nodes, their bodies and the real failure path are exercised\n// today. Flip-live = PROVIDER_MOCK=false + real VOICEBIP_* / WHATSAPP_* values.\n//\n// NO voice leg here by decision (2026-11-17): a disruption notice is a message,\n// not a call — no voice nudge for disruptions.\nconst src = $input.all()[0].json;\n\nconst env = (name, fallback = '') => {\n  try { const v = $env[name]; return (v === undefined || v === null) ? fallback : String(v); }\n  catch (e) { return fallback; }\n};\nconst truthy = (v) => ['1', 'true', 'yes', 'on'].includes(String(v).trim().toLowerCase());\n\nconst providerMock = env('PROVIDER_MOCK') === '' ? true : truthy(env('PROVIDER_MOCK'));\n\n// ---- WhatsApp message mode -------------------------------------------------\n// Meta rejects business-initiated free-form text outside the 24-hour customer\n// service window, and a disruption notice always goes to a patient who has not\n// messaged us recently. So 'template' is the only correct live mode. Django's\n// disruption words are one full sentence — they do not fit the slot-offer\n// template's six positional params — so this workflow has its OWN approved\n// template name (WHATSAPP_DISRUPTION_TEMPLATE_NAME) whose body is a single\n// {{1}} placeholder filled with Django's sentence, VERBATIM.\nconst waMode = (env('WHATSAPP_TEMPLATE_MODE', 'template') || 'template').trim().toLowerCase() === 'text'\n  ? 'text' : 'template';\n// In mock mode a placeholder name is assumed so the template body is still\n// exercised by the simulator. Live mode stays empty until the template exists.\nconst waTemplateName = providerMock\n  ? env('WHATSAPP_DISRUPTION_TEMPLATE_NAME', 'mock_clinic_disruption_notice')\n  : env('WHATSAPP_DISRUPTION_TEMPLATE_NAME');\nconst waTemplateLang = env('WHATSAPP_TEMPLATE_LANG', 'en_US') || 'en_US';\n\nconst cfg = {\n  voicebipApiUrl: env('VOICEBIP_API_URL'),\n  voicebipApiKey: env('VOICEBIP_API_KEY'),\n  smsSenderId: env('VOICEBIP_SMS_SENDER_ID', 'Cedarcare'),\n  whatsappApiUrl: env('WHATSAPP_API_URL', 'https://graph.facebook.com/v19.0/'),\n  whatsappPhoneId: env('WHATSAPP_PHONE_NUMBER_ID'),\n  whatsappToken: env('WHATSAPP_ACCESS_TOKEN'),\n  simulatorUrl: env('PROVIDER_SIMULATOR_URL', 'http://127.0.0.1:5678/webhook/provider-sim'),\n};\n\nconst requestId = src.request_id || ''; // the appointment code (AP-...)\nconst patientPhone = src.patient_phone || '';\n\n// Meta wants E.164 without the plus; Django re-normalizes whatever comes back.\nconst waTo = String(patientPhone).replace(new RegExp('[^0-9]', 'g'), '');\n\n// Django sends one item per channel (its claim rows are the single-shot guard),\n// so each input item activates exactly one channel.\nconst active = [];\nif (src.want_whatsapp && !src.chat_id) active.push('whatsapp');\nif (src.want_sms) active.push('sms');\n\nconst configured = providerMock\n  ? { whatsapp: true, sms: true }\n  : {\n      sms: Boolean(cfg.voicebipApiUrl && cfg.voicebipApiKey),\n      whatsapp: Boolean(cfg.whatsappPhoneId && cfg.whatsappToken),\n    };\n\n// Dedupe guard (best-effort; static data is not persisted in manual test runs -\n// Django's claim rows remain authoritative).\nconst seen = {};\nlet seenStore = null;\ntry {\n  const sd = $getWorkflowStaticData('global');\n  sd.seen = sd.seen || {};\n  seenStore = sd.seen;\n  const now = Date.now();\n  for (const k of Object.keys(seenStore)) { if (now - seenStore[k] > 600000) delete seenStore[k]; }\n  for (const ch of active) seen[ch] = Boolean(seenStore[requestId + ':' + ch]);\n} catch (e) { /* static data unavailable */ }\n\n// ---- WhatsApp body ----------------------------------------------------------\n// The approved disruption template's body is ONE placeholder: {{1}} = Django's\n// full sentence, verbatim. No quick-reply buttons — a disruption notice asks\n// nothing (2026-11-17 decision: no new reply grammar).\nconst buildWhatsAppBody = () => {\n  if (waMode === 'text') {\n    return {\n      messaging_product: 'whatsapp',\n      to: waTo,\n      type: 'text',\n      text: { body: src.message || '' },\n      biz_opaque_callback_data: requestId,\n    };\n  }\n  return {\n    messaging_product: 'whatsapp',\n    to: waTo,\n    type: 'template',\n    template: {\n      name: waTemplateName,\n      language: { code: waTemplateLang },\n      components: [{\n        type: 'body',\n        parameters: [{ type: 'text', text: src.message || '' }],\n      }],\n    },\n    // Meta echoes this in every status callback, which is how a real wamid is\n    // linked back to the appointment (nothing else survives the round trip).\n    biz_opaque_callback_data: requestId,\n  };\n};\n\nconst buildRequest = (channel) => {\n  if (channel === 'whatsapp') {\n    const headers = providerMock\n      ? { Authorization: 'Bearer mock' }\n      : { Authorization: 'Bearer ' + cfg.whatsappToken };\n    const url = providerMock\n      ? cfg.simulatorUrl + '/whatsapp'\n      : cfg.whatsappApiUrl + cfg.whatsappPhoneId + '/messages';\n    return { url, headers, body: buildWhatsAppBody() };\n  }\n\n  if (providerMock) {\n    // Same request shape, different destination: the simulator answers in-cluster.\n    return {\n      url: cfg.simulatorUrl + '/' + channel,\n      headers: { Authorization: 'Bearer mock' },\n      body: { to: patientPhone, message: src.message || '', sender_id: cfg.smsSenderId,\n              metadata: { request_code: requestId, channel } },\n    };\n  }\n\n  return {\n    url: cfg.voicebipApiUrl + '/sms',\n    headers: { Authorization: 'Bearer ' + cfg.voicebipApiKey },\n    body: { to: patientPhone, message: src.message || '', sender_id: cfg.smsSenderId,\n            metadata: { request_code: requestId, channel: 'sms' } },\n  };\n};\n\n// Why a channel will not fire, most fundamental first: a repeat (duplicate), a\n// patient with no number (nothing can be sent), a channel whose credentials are\n// absent, and finally a configured WhatsApp leg with no approved template.\nconst skipReasonFor = (channel) => {\n  if (seen[channel]) return 'duplicate_dispatch';\n  if (!patientPhone) return 'missing_phone';\n  if (!configured[channel]) return 'provider_not_configured';\n  if (channel === 'whatsapp' && waMode === 'template' && !waTemplateName) return 'whatsapp_template_not_configured';\n  return null;\n};\n\nconst out = active.map((channel) => {\n  const skipReason = skipReasonFor(channel);\n  const route = skipReason ? 'skip' : channel;\n  // Never build a request for a channel that will not send: a skipped leg has no\n  // URL, and nothing downstream can accidentally use one.\n  const request = skipReason ? { url: '', headers: {}, body: null } : buildRequest(channel);\n\n  return { json: {\n    ...src,\n    provider_channel: channel,\n    provider_request: {\n      route,\n      skip_reason: skipReason,\n      method: 'POST',\n      ...request,\n    },\n    adapter_meta: {\n      channel,\n      provider_mock: providerMock,\n      configured: configured[channel],\n      duplicate: Boolean(seen[channel]),\n      request_id: requestId,\n      claim_ref: src.claim_ref || '',\n      whatsapp_mode: channel === 'whatsapp' ? waMode : null,\n      whatsapp_template: channel === 'whatsapp' && waMode === 'template' ? waTemplateName : null,\n      external_ref_hint: channel === 'whatsapp'\n        ? ('wamid.mock-whatsapp-' + requestId)\n        : ('mock-' + channel + '-' + requestId),\n      missing_env: providerMock ? [] : Object.entries({\n        VOICEBIP_API_URL: cfg.voicebipApiUrl,\n        VOICEBIP_API_KEY: cfg.voicebipApiKey,\n        WHATSAPP_PHONE_NUMBER_ID: cfg.whatsappPhoneId,\n        WHATSAPP_ACCESS_TOKEN: cfg.whatsappToken,\n        WHATSAPP_DISRUPTION_TEMPLATE_NAME: waTemplateName,\n        DJANGO_WEBHOOK_SECRET: env('DJANGO_WEBHOOK_SECRET'),\n      }).filter(([, v]) => !v).map(([k]) => k),\n    },\n  } };\n});\n\n// Stamp the dedupe window only for the legs that will actually fire. A skip means\n// no provider was contacted, so the window stays open for the retry that fixes it.\nif (seenStore) {\n  const stampedAt = Date.now();\n  for (const item of out) {\n    const channel = item.json.provider_channel;\n    const request = item.json.provider_request;\n    if (channel && request && request.skip_reason === null) {\n      seenStore[requestId + ':' + channel] = stampedAt;\n    }\n  }\n}\n\nreturn out.length ? out : [{ json: { ...src, provider_channel: null, provider_request: { route: 'no_active_channel', skip_reason: 'no_active_channel', method: 'POST', url: '', headers: {}, body: null }, adapter_meta: { channel: null, provider_mock: providerMock, configured: false, duplicate: false, request_id: requestId, claim_ref: src.claim_ref || '', whatsapp_mode: null, whatsapp_template: null, external_ref_hint: null, missing_env: [] } } }];\n"
+      }
+    },
+    {
+      "id": "5b5252e7-42b9-4480-b292-1e9da2dafdc0",
+      "name": "Route Provider Request",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1320,
+        -120
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.provider_request.route }}",
+                    "rightValue": "whatsapp",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "whatsapp"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.provider_request.route }}",
+                    "rightValue": "sms",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "sms"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.provider_request.route }}",
+                    "rightValue": "skip",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "skip"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "3e419539-faf3-4af5-a336-aec9d0a7d315",
+      "name": "Send WhatsApp Interactive Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueErrorOutput",
+      "position": [
+        1540,
+        -200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.provider_request.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ $json.provider_request.headers.Authorization }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.provider_request.body) }}",
+        "options": {
+          "timeout": 15000
+        }
+      }
+    },
+    {
+      "id": "ec547700-584e-4eda-ac02-2eaa264eb64b",
+      "name": "Send SMS (VoiceBip)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueErrorOutput",
+      "position": [
+        1540,
+        40
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.provider_request.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ $json.provider_request.headers.Authorization }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.provider_request.body) }}",
+        "options": {
+          "timeout": 15000
+        }
+      }
+    },
+    {
+      "id": "b2f62b18-9ba4-49b8-ab44-400e58de7df2",
+      "name": "Log WhatsApp Interaction",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        -200
+      ],
+      "parameters": {
+        "jsCode": "// Workflow 08 · Stage D-3 — log the provider outcome to Django (authoritative record).\n// One disruption push carries EVERY impacted patient, so unlike Workflow D this\n// node zips EVERY response with the adapter's same-channel items BY POSITION\n// (the send nodes preserve order). The provider-error-classification block below\n// is the canonical copy shared with Workflow D (test_lognodes.js asserts that).\nconst responses = $input.all();\nconst bases = $('Provider Config & Adapter').all()\n  .map(i => i.json)\n  .filter(j => j && j.provider_channel === 'whatsapp');\n\n// >>> provider-error-classification (canonical copy — byte-identical in all three\n// Log * Interaction nodes; test_lognodes.js asserts that) >>>\n// n8n hands a failed HTTP call to this node as { message, name, stack } — plus a\n// `code` for transport errors. There is NO error.status: the status only exists as\n// the message prefix, and the response body is embedded as a JSON *string literal*:\n//   404 - \"{\\\"code\\\":404,\\\"message\\\":\\\"...\\\"}\"\n// So the status must be read from the prefix and the body needs a real two-step parse.\nconst STATUS_LABEL = {\n  400: 'Provider rejected the request',\n  401: 'Provider authentication failed',\n  403: 'Provider refused access',\n  404: 'Provider endpoint not found',\n  409: 'Provider reported a conflict',\n  422: 'Provider rejected the request',\n  429: 'Provider rate limit reached',\n};\nconst TRANSPORT_LABEL = {\n  ECONNREFUSED: 'Provider endpoint refused the connection',\n  ENOTFOUND: 'Provider host could not be resolved',\n  ETIMEDOUT: 'Provider did not respond in time',\n  ECONNABORTED: 'Provider did not respond in time',\n  ECONNRESET: 'Provider closed the connection',\n};\n\n// Display-only clean-up: one line, no escape residue, no wrapping quotes.\nconst tidy = (value) => {\n  if (typeof value === 'number') return String(value);\n  if (typeof value !== 'string') return '';\n  return value\n    .replace(/\\\\[nrt]/g, ' ')\n    .replace(/\\\\\"/g, '\"')\n    .replace(/^[\"']|[\"']$/g, '')\n    .replace(/\\s+/g, ' ')\n    .trim();\n};\n\n// Decode the embedded body: JSON string literal -> JSON payload. A hand-rolled\n// .replace(/\\\\\"/g, '\"') is NOT equivalent: it corrupts nested escaped quotes and\n// the parse then throws, which is how the raw wrapper used to reach reception.\nconst asObject = (body) => {\n  let value = String(body == null ? '' : body).trim();\n  for (let i = 0; i < 3; i += 1) {\n    if (value[0] === '{') {\n      try { return JSON.parse(value); } catch (e) { return null; }\n    }\n    if (value[0] !== '\"') return null;\n    const end = value.lastIndexOf('\"');\n    if (end <= 0) return null;\n    try { value = JSON.parse(value.slice(0, end + 1)); } catch (e) { return null; }\n  }\n  return null;\n};\n\nconst firstText = (list) => {\n  if (!Array.isArray(list)) return '';\n  for (const item of list) {\n    const text = tidy(typeof item === 'string' ? item : (item && (item.message || item.detail || item.msg)));\n    if (text) return text;\n  }\n  return '';\n};\n\n// The provider's own sentence, in the order providers actually use it.\nconst providerSentence = (body) => {\n  const parsed = asObject(body);\n  if (!parsed) return tidy(body);\n  const err = parsed.error;\n  const candidates = [\n    parsed.detail, parsed.message, parsed.error_description, parsed.description, parsed.hint,\n    typeof err === 'string' ? err : '',\n    err && err.message, err && err.title,\n    err && err.error_data && err.error_data.details,\n    firstText(parsed.errors),\n  ];\n  for (const candidate of candidates) {\n    const text = tidy(candidate);\n    if (text) return text;\n  }\n  return tidy(body);\n};\n\n// -> { status: number|null, detail: string (<=300) } — one sentence reception can act on.\nconst classifyProviderError = (err) => {\n  // Parse from the RAW message: tidy() unescapes quotes and must never run first,\n  // or the JSON string literal stops being a valid literal.\n  const message = (err && typeof err.message === 'string') ? err.message : '';\n  const explicit = Number(err && (err.status || err.httpCode || err.statusCode));\n  const prefixed = message.match(/^\\s*(\\d{3})\\s*-\\s*([\\s\\S]*)$/);\n  const status = (Number.isFinite(explicit) && explicit >= 400) ? explicit\n    : (prefixed ? Number(prefixed[1]) : null);\n  if (status) {\n    const label = STATUS_LABEL[status] || (status >= 500 ? 'Provider server error' : 'Provider returned an error');\n    const sentence = providerSentence(prefixed ? prefixed[2] : '');\n    return { status, detail: (label + (sentence ? ': ' + sentence : '')).slice(0, 300) };\n  }\n  const code = tidy(err && err.code).toUpperCase();\n  if (TRANSPORT_LABEL[code]) return { status: null, detail: TRANSPORT_LABEL[code].slice(0, 300) };\n  return { status: null, detail: (tidy(message) || tidy(err) || 'Provider call failed').slice(0, 300) };\n};\n// <<< provider-error-classification <<<\n\nconst SUMMARY = 'Disruption notice sent via WhatsApp';\n\nconst out = [];\nfor (let idx = 0; idx < responses.length; idx += 1) {\n  const incoming = responses[idx].json || {};\n  const base = bases[idx] || {};\n  const isError = Boolean(incoming.error);\n  const resp = isError ? {} : incoming;\n\n  const providerStatus = String(resp.status || '').toLowerCase();\n  const failed = isError || providerStatus === 'failed' || resp.ok === false;\n\n  // A failed call is classified into one readable sentence; a provider that answers\n  // ok:false (no exception) keeps its own message verbatim.\n  const classified = isError ? classifyProviderError(incoming.error) : null;\n  const errorDetail = isError\n    ? classified.detail\n    : (failed ? String(resp.error_message || resp.error || resp.detail || 'Provider reported a failure').slice(0, 300) : '');\n\n  const payload = {\n    provider: 'meta_whatsapp',\n    channel: 'whatsapp',\n    direction: 'outbound',\n    status: failed ? 'failed' : 'sent',\n    patient_name: base.patient_name || '',\n    patient_phone: base.patient_phone || '',\n    request_code: base.request_id || '',\n    external_ref: failed ? '' : (\n      (resp.messages && resp.messages[0] && resp.messages[0].id) ||\n      resp.external_ref || resp.message_id || resp.id || resp.call_id || ''\n    ),\n    summary: SUMMARY,\n    error_detail: errorDetail,\n  };\n\n  let logged = { ok: false };\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'POST',\n      url: $env.DJANGO_API_BASE_URL + '/interactions/',\n      headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': $env.DJANGO_WEBHOOK_SECRET || '' },\n      body: payload,\n      json: true,\n    });\n    logged = { ok: true, id: res.id, status: res.status };\n  } catch (e) {\n    logged = { ok: false, error: (e.message || String(e)).slice(0, 300) };\n  }\n\n  out.push({ json: { ...base, provider_response: resp, interaction_log: { ...logged, payload } } });\n}\nreturn out;\n"
+      }
+    },
+    {
+      "id": "19a63b17-d1cf-4317-86d8-108ee7ce3ca2",
+      "name": "Log SMS Interaction",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        40
+      ],
+      "parameters": {
+        "jsCode": "// Workflow 08 · Stage D-3 — log the provider outcome to Django (authoritative record).\n// One disruption push carries EVERY impacted patient, so unlike Workflow D this\n// node zips EVERY response with the adapter's same-channel items BY POSITION\n// (the send nodes preserve order). The provider-error-classification block below\n// is the canonical copy shared with Workflow D (test_lognodes.js asserts that).\nconst responses = $input.all();\nconst bases = $('Provider Config & Adapter').all()\n  .map(i => i.json)\n  .filter(j => j && j.provider_channel === 'sms');\n\n// >>> provider-error-classification (canonical copy — byte-identical in all three\n// Log * Interaction nodes; test_lognodes.js asserts that) >>>\n// n8n hands a failed HTTP call to this node as { message, name, stack } — plus a\n// `code` for transport errors. There is NO error.status: the status only exists as\n// the message prefix, and the response body is embedded as a JSON *string literal*:\n//   404 - \"{\\\"code\\\":404,\\\"message\\\":\\\"...\\\"}\"\n// So the status must be read from the prefix and the body needs a real two-step parse.\nconst STATUS_LABEL = {\n  400: 'Provider rejected the request',\n  401: 'Provider authentication failed',\n  403: 'Provider refused access',\n  404: 'Provider endpoint not found',\n  409: 'Provider reported a conflict',\n  422: 'Provider rejected the request',\n  429: 'Provider rate limit reached',\n};\nconst TRANSPORT_LABEL = {\n  ECONNREFUSED: 'Provider endpoint refused the connection',\n  ENOTFOUND: 'Provider host could not be resolved',\n  ETIMEDOUT: 'Provider did not respond in time',\n  ECONNABORTED: 'Provider did not respond in time',\n  ECONNRESET: 'Provider closed the connection',\n};\n\n// Display-only clean-up: one line, no escape residue, no wrapping quotes.\nconst tidy = (value) => {\n  if (typeof value === 'number') return String(value);\n  if (typeof value !== 'string') return '';\n  return value\n    .replace(/\\\\[nrt]/g, ' ')\n    .replace(/\\\\\"/g, '\"')\n    .replace(/^[\"']|[\"']$/g, '')\n    .replace(/\\s+/g, ' ')\n    .trim();\n};\n\n// Decode the embedded body: JSON string literal -> JSON payload. A hand-rolled\n// .replace(/\\\\\"/g, '\"') is NOT equivalent: it corrupts nested escaped quotes and\n// the parse then throws, which is how the raw wrapper used to reach reception.\nconst asObject = (body) => {\n  let value = String(body == null ? '' : body).trim();\n  for (let i = 0; i < 3; i += 1) {\n    if (value[0] === '{') {\n      try { return JSON.parse(value); } catch (e) { return null; }\n    }\n    if (value[0] !== '\"') return null;\n    const end = value.lastIndexOf('\"');\n    if (end <= 0) return null;\n    try { value = JSON.parse(value.slice(0, end + 1)); } catch (e) { return null; }\n  }\n  return null;\n};\n\nconst firstText = (list) => {\n  if (!Array.isArray(list)) return '';\n  for (const item of list) {\n    const text = tidy(typeof item === 'string' ? item : (item && (item.message || item.detail || item.msg)));\n    if (text) return text;\n  }\n  return '';\n};\n\n// The provider's own sentence, in the order providers actually use it.\nconst providerSentence = (body) => {\n  const parsed = asObject(body);\n  if (!parsed) return tidy(body);\n  const err = parsed.error;\n  const candidates = [\n    parsed.detail, parsed.message, parsed.error_description, parsed.description, parsed.hint,\n    typeof err === 'string' ? err : '',\n    err && err.message, err && err.title,\n    err && err.error_data && err.error_data.details,\n    firstText(parsed.errors),\n  ];\n  for (const candidate of candidates) {\n    const text = tidy(candidate);\n    if (text) return text;\n  }\n  return tidy(body);\n};\n\n// -> { status: number|null, detail: string (<=300) } — one sentence reception can act on.\nconst classifyProviderError = (err) => {\n  // Parse from the RAW message: tidy() unescapes quotes and must never run first,\n  // or the JSON string literal stops being a valid literal.\n  const message = (err && typeof err.message === 'string') ? err.message : '';\n  const explicit = Number(err && (err.status || err.httpCode || err.statusCode));\n  const prefixed = message.match(/^\\s*(\\d{3})\\s*-\\s*([\\s\\S]*)$/);\n  const status = (Number.isFinite(explicit) && explicit >= 400) ? explicit\n    : (prefixed ? Number(prefixed[1]) : null);\n  if (status) {\n    const label = STATUS_LABEL[status] || (status >= 500 ? 'Provider server error' : 'Provider returned an error');\n    const sentence = providerSentence(prefixed ? prefixed[2] : '');\n    return { status, detail: (label + (sentence ? ': ' + sentence : '')).slice(0, 300) };\n  }\n  const code = tidy(err && err.code).toUpperCase();\n  if (TRANSPORT_LABEL[code]) return { status: null, detail: TRANSPORT_LABEL[code].slice(0, 300) };\n  return { status: null, detail: (tidy(message) || tidy(err) || 'Provider call failed').slice(0, 300) };\n};\n// <<< provider-error-classification <<<\n\nconst SUMMARY = 'Disruption notice sent via SMS';\n\nconst out = [];\nfor (let idx = 0; idx < responses.length; idx += 1) {\n  const incoming = responses[idx].json || {};\n  const base = bases[idx] || {};\n  const isError = Boolean(incoming.error);\n  const resp = isError ? {} : incoming;\n\n  const providerStatus = String(resp.status || '').toLowerCase();\n  const failed = isError || providerStatus === 'failed' || resp.ok === false;\n\n  // A failed call is classified into one readable sentence; a provider that answers\n  // ok:false (no exception) keeps its own message verbatim.\n  const classified = isError ? classifyProviderError(incoming.error) : null;\n  const errorDetail = isError\n    ? classified.detail\n    : (failed ? String(resp.error_message || resp.error || resp.detail || 'Provider reported a failure').slice(0, 300) : '');\n\n  const payload = {\n    provider: 'voicebip',\n    channel: 'sms',\n    direction: 'outbound',\n    status: failed ? 'failed' : 'sent',\n    patient_name: base.patient_name || '',\n    patient_phone: base.patient_phone || '',\n    request_code: base.request_id || '',\n    external_ref: failed ? '' : (\n      (resp.messages && resp.messages[0] && resp.messages[0].id) ||\n      resp.external_ref || resp.message_id || resp.id || resp.call_id || ''\n    ),\n    summary: SUMMARY,\n    error_detail: errorDetail,\n  };\n\n  let logged = { ok: false };\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'POST',\n      url: $env.DJANGO_API_BASE_URL + '/interactions/',\n      headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': $env.DJANGO_WEBHOOK_SECRET || '' },\n      body: payload,\n      json: true,\n    });\n    logged = { ok: true, id: res.id, status: res.status };\n  } catch (e) {\n    logged = { ok: false, error: (e.message || String(e)).slice(0, 300) };\n  }\n\n  out.push({ json: { ...base, provider_response: resp, interaction_log: { ...logged, payload } } });\n}\nreturn out;\n"
+      }
+    },
+    {
+      "id": "21072da8-4318-4f1a-8d57-7a123c917f8c",
+      "name": "Log Skipped Channel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        280
+      ],
+      "parameters": {
+        "jsCode": "// Workflow D · Phase 2 — skip visibility.\n// The switch's skip output used to end in nowhere: a channel the receptionist\n// asked for that could not fire vanished into the execution log. This node\n// writes a `queued` InteractionLog row (\"held back, not attempted\") for every\n// actionable skip, so Django — the source of truth — can show reception what\n// was NOT sent and why.\n//\n// Row-worthy reasons (each one is actionable):\n//   outside_call_window, provider_not_configured,\n//   whatsapp_template_not_configured, missing_phone, no_slots,\n//   voice_payload_missing.\n// Not row-worthy, by decision:\n//   duplicate_dispatch     — the original send row already exists.\n//   no_active_channel      — the only real cause is a Telegram patient, and\n//                            Django itself already logged the Telegram card.\n//   patient_already_engaged — the patient has a hold or booking; reception can\n//                            already see it, and the guard suppressed a nudge.\n//\n// This node is fed by the switch's skip output AND, since Phase 3 / 3.8, by the\n// false output of `IF Voice Still Needed`: a voice payload that cannot be rebuilt\n// after the 30s probe is the same kind of fact as any other held-back leg.\n//\n// The external_ref is deterministic (skip-<channel>-<request_code>), so a\n// repeated skip updates the same row instead of piling up. A later real send\n// uses a different ref — the history stays honest.\n//\n// Best-effort by design: a Django outage or a 400 must never fail the dispatch.\n// The skip already happened; the row is a record, not a gate.\nconst REASON_TEXT = {\n  outside_call_window: 'Outside calling hours (08:00-19:00) - the call was not placed.',\n  provider_not_configured: 'Provider is not configured yet - credentials are missing.',\n  whatsapp_template_not_configured: 'WhatsApp template not approved yet - nothing can be sent outside the 24-hour reply window without it.',\n  missing_phone: 'No phone number on file for this patient.',\n  no_slots: 'No free slot was found for this request - nothing was sent. Re-check availability before re-dispatching.',\n  voice_payload_missing: 'The call could not be built after the 30-second check, so no call was placed. This means the dispatch ran twice or the adapter step did not produce the voice item - re-dispatch the request and check the execution log.',\n};\nconst PROVIDER_FOR_CHANNEL = { whatsapp: 'meta_whatsapp', sms: 'voicebip', voice: 'voicebip' };\n\nconst out = [];\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  const channel = j.provider_channel;\n  const reason = j.provider_request && j.provider_request.skip_reason;\n  const requestCode = j.request_id || '';\n\n  const rowWorthy = Boolean(REASON_TEXT[reason] && channel && requestCode);\n  let logged = { ok: false, skipped: 'not_row_worthy' };\n\n  if (rowWorthy) {\n    const payload = {\n      provider: PROVIDER_FOR_CHANNEL[channel] || 'voicebip',\n      channel: channel,\n      direction: 'outbound',\n      status: 'queued',\n      patient_name: j.patient_name || '',\n      // Blank by design for missing_phone; Django accepts it for queued rows\n      // linked to a request (Phase 2 relaxation).\n      patient_phone: j.patient_phone || '',\n      request_code: requestCode,\n      external_ref: 'skip-' + channel + '-' + requestCode,\n      summary: 'Held back: ' + REASON_TEXT[reason],\n      error_detail: reason,\n    };\n    try {\n      const res = await this.helpers.httpRequest({\n        method: 'POST',\n        url: $env.DJANGO_API_BASE_URL + '/interactions/',\n        headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': $env.DJANGO_WEBHOOK_SECRET || '' },\n        body: payload,\n        json: true,\n      });\n      logged = { ok: true, id: res.id, status: res.status };\n    } catch (e) {\n      logged = { ok: false, error: String(e.message || e).slice(0, 300) };\n    }\n    logged.payload = payload;\n  }\n\n  out.push({ json: { ...j, skip_log: logged } });\n}\nreturn out;\n"
+      }
+    }
+  ],
+  "connections": {
+    "Disruption Alerts Webhook from Django": {
+      "main": [
+        [
+          {
+            "node": "Verify Disruption Secret",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Disruption Secret": {
+      "main": [
+        [
+          {
+            "node": "IF Disruption Authorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Disruption Authorized": {
+      "main": [
+        [
+          {
+            "node": "Respond Disruption Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Disruption Unauthorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Disruption Accepted": {
+      "main": [
+        [
+          {
+            "node": "Parse Disruption Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Disruption Items": {
+      "main": [
+        [
+          {
+            "node": "Provider Config & Adapter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Provider Config & Adapter": {
+      "main": [
+        [
+          {
+            "node": "Route Provider Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Provider Request": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Interactive Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send SMS (VoiceBip)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Skipped Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp Interactive Message": {
+      "main": [
+        [
+          {
+            "node": "Log WhatsApp Interaction",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log WhatsApp Interaction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send SMS (VoiceBip)": {
+      "main": [
+        [
+          {
+            "node": "Log SMS Interaction",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log SMS Interaction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timezone": "Africa/Lagos"
+  },
+  "active": false,
+  "meta": {
+    "instance": "https://n8n.medpulse.clinic/",
+    "templateCredsSetupCompleted": false
+  },
+  "versionId": "4f3a47d4-98b4-4f81-be27-dd3f4e279357"
+}
