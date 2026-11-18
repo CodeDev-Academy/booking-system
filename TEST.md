@@ -203,6 +203,35 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
   deliberately overlapping confirmed appointments: overlay named AP-0007 / AP-0008 with overlap
   12:15-12:30 PM; view / silence / chip-reopen verified; deleting one probe cleared the chip 3.6 s
   later through the poll. Probe rows deleted, doctors restored, DB clean.
+- [x] `T-726`: **Dated Leave Periods (D.1)**: `DoctorLeave` stores a leave as a real range —
+  `start_date`, `end_date` (inclusive) and `end_date = NULL` meaning "until further notice" — with
+  `leave_type`, `reason` and `recorded_by`. `Doctor.leave_period_covering()` /
+  `is_on_leave_on()` answer "is this doctor off on THIS day", and `Doctor.is_on_leave` is now only
+  the today flag, re-synced from the periods. `DoctorLeave.record()` merges overlapping and touching
+  windows instead of stacking duplicates. The availability engine, `HoldService`, the
+  colleague-reassign path and `_apply_move` all check the requested DATE, so a 4-day leave blocks
+  four days and the fifth books normally. Doctors with no leave rows keep the old boolean block, so
+  manual switches and the older tests still work. 9 tests (`DoctorLeaveAvailabilityTests`,
+  `DoctorLeavePlanTests`) written first, then green; full suite 300/300.
+- [x] `T-727`: **Rollback Preview (D.2)**: `DisruptionService.preview_disruption` runs the REAL
+  resolver — same priority order (same-time colleague → same-day free slot → next day) — inside a
+  transaction that is always rolled back (`_PreviewRollback`), so what the receptionist sees is
+  exactly what Approve will do, with nothing saved and nothing queued. `POST
+  /api/v1/disruptions/<doctor_uuid>/preview/` returns the same report shape as auto-resolve plus
+  `preview: true`. 7 tests pin it: no `DoctorLeave` row, no appointment moved, no interaction log,
+  no duty flag change after a preview that reports placements.
+- [x] `T-728`: **Leave Planner UI + Day-Aware Calendar (D.3)**: the cockpit now opens with a leave
+  period card (first/last day inputs plus 1 / 3 / 7 / 30-day chips), a "Preview plan" button, and a
+  per-day panel that lists every affected patient, where they would land, the colleague load and a
+  "need you" count. "Approve & notify" stays disabled until a preview exists, then names exactly
+  what will happen ("place 3 patients, leave 1 for you"). Any change to the window throws the old
+  preview away. The calendar derives "on leave" from the raw periods for the day it is showing, so
+  Dr. Bello greys out on 30 Nov and 1 Dec only, shows "On Leave · <reason>" in the timetable header,
+  an "On leave" chip on his card, and reads "On Duty" again on 2 Dec. The day's affected list now
+  uses the same statuses the resolver moves (`confirmed` / `held`, expired holds excluded), so the
+  card and the preview agree. Live proof: preview of 30 Nov–1 Dec listed 3 patients → Dr. Babawo at
+  the same times with the DB untouched; approve created one leave row and moved all three, queueing
+  6 notices.
 
 ---
 
@@ -243,6 +272,7 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 | 2026-11-17 | Brain Agent | `Item A / T-719` | **PASSED** | n8n restructure: `workflows/` + `docs/` + README tree, `git mv` history preserved, 13 harness path refs updated, all 9 harnesses green after the move, live doc pointers synced. |
 | 2026-11-17 → 18 | Brain Agent | `Item B / T-720-T-722` | **PASSED** | One-click doctor-leave resolver end to end: Django service (suite 265/265) + endpoint + n8n push, workflow `08` (77-check harness; fail-closed 401 verified live), frontend cockpit wired to the live grid. Live proof on fresh probe patients (executions 951, 960, 1066): adapter multi-item fix took Parse 4 → Adapter 4 → Route [2 whatsapp / 2 sms / 0 skip] → 4 `sent` rows; truthful toast captured ("2 same day. 4 notices pushed"). Three real defects found and pinned: single-item adapter, append-only calendar sync, missing toast render on the calendar route. Probes, claim rows and audit rows deleted; every doctor restored; DB left clean. |
 | 2026-11-18 | Brain Agent | `Item C / T-723-T-725` | **PASSED** | Double-booking detector + staff endpoint + full-screen red alert with 10s re-check. Detector 12 tests and endpoint 3 tests written red-first (NotImplementedError / 404), then green; full Django suite green. Live proof: two deliberately overlapping confirmed appointments on Dr. Bello -> overlay named AP-0007 / AP-0008 and the exact 12:15-12:30 PM overlap -> "View in calendar" selected the clash day + doctor, "Silence alert" dismissed the overlay while the red chip stayed, chip click reopened it; deleting one probe cleared the chip after 3.6 s. Probe rows deleted, doctors restored, DB clean. |
+| 2026-11-18 | Brain Agent | `Leave flow / T-726-T-728` | **PASSED** | Dated leave period, rolled-back preview and the planner UI. Preview 7 tests and dated-leave 9 tests written first (`NotImplementedError` / failing date behaviour), then green; full Django suite 300/300 OK in 297 s. Live proof with 3 probe appointments (AP-0007/0008 Mon 30 Nov, AP-0009 Tue 1 Dec): preview reported 2 days / 3 patients -> Dr. Babawo at the same times and labelled "Preview only — nothing sent"; DB check after preview showed no leave rows, flag false, appointments unmoved. Approve created one `DoctorLeave` 2026-11-30 -> 2026-12-01 and moved all three, queueing 6 notices. Calendar overlay verified in the browser: "Manage Leave" + "On Leave · Sudden Medical Emergency" on 30 Nov and 1 Dec, "Sick / Leave" + "On Duty" on 18 Nov and 2 Dec. Probe appointments, their `InteractionLog` rows and the temporary leave row deleted; all doctors `is_on_leave=False`, no leave rows left. |
 
 ---
 

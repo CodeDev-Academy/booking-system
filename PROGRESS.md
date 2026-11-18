@@ -2085,7 +2085,82 @@ doctors restored, DB clean.
 
 ---
 
-## Next up - Phase 5 (partner handover)
+## 2026-11-18 - Leave flow step 1: dated period + honest preview (built, live-proven)
+
+### What was broken
+The leave cockpit only ever meant "this doctor is off today". A receptionist
+planning a 4-day trip had to repeat the same one-day action four times, and the
+"Auto-Resolve" button moved patients the moment it was pressed — there was no way
+to see where everyone would go before it happened.
+
+### What shipped
+- Dated leave (T-726): `DoctorLeave` holds a real range, inclusive, with
+  `end_date = NULL` meaning "until further notice". `Doctor.is_on_leave` is now
+  only the today flag and re-syncs from the periods; a doctor with no leave rows
+  still honours the old boolean, so manual switches keep working. The
+  availability engine, hold engine, colleague reassignment and the resolver all
+  check the requested DATE, so the first day back books normally. Overlapping
+  windows merge into one row.
+- Preview (T-727): `preview_disruption` runs the REAL resolver inside a
+  transaction that is always rolled back. Same placements, same counts, nothing
+  saved, nothing queued. `POST /api/v1/disruptions/<uuid>/preview/` returns the
+  same report shape as approve, flagged `preview: true`.
+- Planner UI (T-728): leave period card with first/last day inputs and 1 / 3 / 7
+  / 30-day chips; "Preview plan" renders a per-day panel with every patient,
+  where they would land, colleague load and a "need you" count, stamped
+  "Preview only — nothing sent". "Approve & notify" only appears once a preview
+  exists and names the outcome. Editing the window discards the old preview.
+- Calendar truth (T-728): the grid derives "on leave" from the raw periods for
+  the day it is showing, so a 2-day plan greys out exactly two columns. The
+  timetable header reads "On Leave · <reason>" instead of "On Duty", the doctor
+  card carries an "On leave" chip, and the day's affected list uses the same
+  statuses the resolver moves (`confirmed` / `held`, expired holds excluded).
+
+### Tests
+Red first: 7 preview tests (`DisruptionPreviewTests`), 9 dated-leave tests
+(`DoctorLeaveAvailabilityTests`, `DoctorLeavePlanTests`), then green. Full Django
+suite **300/300 OK** in 297 s. esbuild parse check clean on every changed
+frontend file; browser console clean.
+
+### Live proof
+Three probe appointments (AP-0007/0008 on Mon 30 Nov, AP-0009 on Tue 1 Dec,
+Dr. Bello). Preview: 2 days, 3 patients, all to Dr. Babawo at the same times,
+"Preview only — nothing sent"; DB check afterwards showed no leave rows, flag
+false, appointments unmoved. Approve: one `DoctorLeave` 2026-11-30 → 2026-12-01,
+all three moved to Dr. Babawo, 6 notices queued, toast "3 same day. 6 notices
+pushed". Calendar check: Dr. Bello reads "Manage Leave" + "On Leave · Sudden
+Medical Emergency" on 30 Nov and 1 Dec, and "Sick / Leave" + "On Duty" on 18 Nov
+and 2 Dec. Probes, their interaction rows and the temporary leave row deleted;
+DB clean.
+
+### Files
+`backend/appointments/models.py`,
+`backend/appointments/migrations/0006_doctorleave.py`,
+`backend/appointments/services/disruption_service.py`,
+`backend/appointments/services/availability.py`,
+`backend/appointments/services/hold_service.py`,
+`backend/appointments/views_appointment.py`,
+`backend/appointments/views_clinic.py`,
+`backend/appointments/serializers_clinic.py`,
+`backend/appointments/tests.py`,
+`frontend/src/stores/useCalendarStore.js`,
+`frontend/src/services/apiService.js`,
+`frontend/src/components/calendar/EmergencyDisruptionModal.jsx`,
+`frontend/src/components/calendar/DoctorGridBookingCalendar.jsx`,
+`frontend/src/styles/components/calendar.css`.
+
+---
+
+## Next up - leave flow steps 2-3, then Phase 5 (partner handover)
+
+**Leave flow: step 1 done (2026-11-18).** Step 2 is the distribution control the
+receptionist asked for: auto-split, pick colleagues with a cap each, or give every
+patient to one named colleague, with a clear list of anyone who cannot be placed.
+Step 3 is the safety net: a stranded queue for patients left without a slot, an undo
+for the last distribution, and notify-once so nobody gets two conflicting messages.
+Multi-doctor distribution comes after these, not before.
+
+## Phase 5 (partner handover)
 
 **Status: 5.1 done (2026-11-17); 5.2 blocked on the partner; 5.3 next.** All message-carrying
 workflows are real and proven: `05` (dispatch), `04` (replies), `02` (expiry sweeper),
