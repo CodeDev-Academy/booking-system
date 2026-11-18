@@ -3,6 +3,7 @@ from django.db import transaction
 from django.utils import timezone
 from appointments.models import (
     Doctor,
+    DoctorLeave,
     DoctorService,
     Appointment,
     AuditLog,
@@ -14,12 +15,49 @@ from .hold_service import HoldService, SlotConflictException
 from .sweep_service import PROVIDER_BY_CHANNEL
 
 
+class _PreviewRollback(Exception):
+    """Internal sentinel: unwinds a preview transaction so nothing is saved."""
+
+
 class DisruptionService:
     """
     Doctor Emergency Sick Leave & Disruption Management Protocol (Risk R-15).
     Identifies affected appointments, finds 1-click colleague reassignments at identical times,
     and calculates priority replacement slots for affected patients.
     """
+
+    @classmethod
+    def record_leave_window(cls, doctor, leave_start_dt, leave_end_dt, reason,
+                            performed_by, leave_type='emergency'):
+        """
+        Turn a datetime window into dated leave rows and keep the roster flag
+        honest: `is_on_leave` stays True only while TODAY is inside the leave.
+
+        A future-dated leave therefore no longer blocks the doctor's whole
+        calendar, and a finished leave stops marking them off duty. Re-running
+        the same window stretches the existing row instead of adding another.
+        """
+        today = timezone.localdate()
+        start_date = timezone.localtime(leave_start_dt).date()
+        end_date = timezone.localtime(leave_end_dt).date()
+
+        # A doctor parked on the legacy "off duty" switch has no dates at all;
+        # adding dated leave must not quietly put them back on duty.
+        manual_off = doctor.is_on_leave and not doctor.leaves.exists()
+
+        leave = DoctorLeave.record(
+            doctor, start_date, end_date, reason=reason,
+            leave_type=leave_type, created_by=performed_by,
+        )
+        if manual_off and not leave.covers(today):
+            # Separate row: merging would turn the dated plan open-ended.
+            DoctorLeave.objects.create(
+                doctor=doctor, start_date=today, end_date=None,
+                leave_type='other', reason='Manual off-duty (kept)',
+                created_by=performed_by,
+            )
+        doctor.sync_leave_flag()
+        return leave
 
     @classmethod
     @transaction.atomic
@@ -35,8 +73,10 @@ class DisruptionService:
             leave_end_dt = timezone.make_aware(datetime.datetime.combine(leave_start_dt.date(), datetime.time(23, 59, 59)))
 
         doctor = Doctor.objects.select_for_update().get(id=doctor_id)
-        doctor.is_on_leave = True
-        doctor.save(update_fields=['is_on_leave'])
+        cls.record_leave_window(
+            doctor, leave_start_dt, leave_end_dt, reason, performed_by,
+            leave_type='emergency',
+        )
 
         # Find all confirmed or held appointments in the leave window
         impacted_appts = Appointment.objects.filter(
@@ -81,6 +121,9 @@ class DisruptionService:
             for colleague in qualified_colleagues:
                 # 1a. Working day check
                 if iso_day not in colleague.working_days:
+                    continue
+                # 1a-bis. Dated leave on the appointment's own day
+                if colleague.is_on_leave_on(local_start.date()):
                     continue
 
                 # 1b. Shift hours check
@@ -166,7 +209,9 @@ class DisruptionService:
         # Lock the target doctor row (same serialization as HoldService.acquire_slot).
         new_doctor = Doctor.objects.select_for_update().get(id=new_doctor_id)
 
-        if not new_doctor.is_active or new_doctor.is_on_leave:
+        if not new_doctor.is_active or new_doctor.is_on_leave_on(
+            timezone.localtime(appointment.start_datetime).date()
+        ):
             raise SlotConflictException(
                 f"Doctor {new_doctor.name} is currently unavailable or on leave."
             )
@@ -248,6 +293,8 @@ class DisruptionService:
         iso_day = local_start.isoweekday()
         if iso_day not in colleague.working_days:
             return False
+        if colleague.is_on_leave_on(local_start.date()):
+            return False
         if local_start.time() < colleague.shift_start or local_end.time() > colleague.shift_end:
             return False
         if not DoctorService.objects.filter(doctor=colleague, service=appointment.service).exists():
@@ -276,7 +323,9 @@ class DisruptionService:
         the block, then move. Raises SlotConflictException and leaves the
         appointment untouched on any clash."""
         locked = Doctor.objects.select_for_update().get(id=new_doctor.id)
-        if not locked.is_active or locked.is_on_leave:
+        if not locked.is_active or locked.is_on_leave_on(
+            timezone.localtime(new_start).date()
+        ):
             raise SlotConflictException(
                 f"Doctor {locked.name} is currently unavailable or on leave."
             )
@@ -374,8 +423,10 @@ class DisruptionService:
             )
 
         doctor = Doctor.objects.select_for_update().get(id=doctor_id)
-        doctor.is_on_leave = True
-        doctor.save(update_fields=['is_on_leave'])
+        cls.record_leave_window(
+            doctor, leave_start_dt, leave_end_dt, reason, performed_by,
+            leave_type='emergency',
+        )
 
         impacted_appts = Appointment.objects.filter(
             doctor=doctor,
@@ -491,3 +542,41 @@ class DisruptionService:
             'messages_queued_count': messages_queued_count,
             'results': results,
         }
+
+    @classmethod
+    def preview_disruption(cls, doctor_id, leave_start_dt=None, leave_end_dt=None,
+                           reason="Planned Leave", performed_by="preview",
+                           max_lookahead_days=3):
+        """
+        Dry run of auto_resolve_disruption — the honest kind.
+
+        The REAL resolver runs inside a transaction that is always rolled back,
+        so a preview can never drift from what the approve button would do.
+        Same priority rules, same conflict checks against already-planned moves,
+        same per-patient report. Nothing is written: no leave flag, no moved
+        appointment, no queued message, no audit row. The view never registers
+        the n8n push for a preview.
+
+        A 30-day leave is a large simulation; the caller should keep the range
+        sane and treat the report as a plan, not a promise (a colleague can be
+        booked by someone else between preview and approve — the approve run
+        re-validates everything under its own locks and reports anyone it could
+        not place).
+        """
+        try:
+            with transaction.atomic():
+                report = cls.auto_resolve_disruption(
+                    doctor_id=doctor_id,
+                    leave_start_dt=leave_start_dt,
+                    leave_end_dt=leave_end_dt,
+                    reason=reason,
+                    performed_by=performed_by,
+                    max_lookahead_days=max_lookahead_days,
+                )
+                raise _PreviewRollback
+        except _PreviewRollback:
+            pass
+
+        report['preview'] = True
+        report['nothing_saved'] = True
+        return report

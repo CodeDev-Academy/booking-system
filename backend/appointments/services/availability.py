@@ -54,11 +54,12 @@ class AvailabilityEngine:
             return []
 
         # 2. Get eligible doctors qualified for this service
+        # Dated leave is checked per doctor below, against THIS target date — a
+        # doctor booked off next month must still be offered today.
         doctor_services = DoctorService.objects.filter(
             service=service,
             doctor__is_active=True,
-            doctor__is_on_leave=False
-        ).select_related('doctor')
+        ).select_related('doctor').prefetch_related('doctor__leaves')
 
         if preferred_doctor:
             doctor_services = doctor_services.filter(doctor=preferred_doctor)
@@ -69,6 +70,8 @@ class AvailabilityEngine:
         for ds in doctor_services:
             doctor = ds.doctor
             if iso_day not in doctor.working_days:
+                continue
+            if doctor.is_on_leave_on(target_date):
                 continue
 
             # Check doctor daily appointment ceiling (burnout guard)

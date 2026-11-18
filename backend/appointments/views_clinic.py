@@ -6,7 +6,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import ClinicSetting, Doctor, StaffUser, Appointment, Service, AuditLog
+from .models import ClinicSetting, Doctor, DoctorLeave, StaffUser, Appointment, Service, AuditLog
 from .permissions import IsStaffAuthenticated, IsClinicAdmin
 from .serializers_clinic import (
     ClinicSettingSerializer,
@@ -243,6 +243,7 @@ class DoctorDutyStatusView(APIView):
 
         if update_fields:
             doctor.save(update_fields=update_fields)
+            self._sync_leave_rows(doctor, request.user.email)
 
             AuditLog.objects.create(
                 entity_name='Doctor',
@@ -254,6 +255,26 @@ class DoctorDutyStatusView(APIView):
             )
 
         return Response(DoctorDirectorySerializer(doctor).data, status=status.HTTP_200_OK)
+
+    @staticmethod
+    def _sync_leave_rows(doctor, performed_by):
+        """
+        Keep the 1-click switch and the dated leave rows in step: "off duty"
+        opens an open-ended leave row from today, "on duty" closes it. Dated
+        plans are left alone — they are edited in the leave planner, not here.
+        """
+        today = timezone.localdate()
+        if doctor.is_on_leave:
+            has_today = any(p.covers(today) for p in doctor.leaves.all())
+            if not has_today:
+                DoctorLeave.objects.create(
+                    doctor=doctor, start_date=today, end_date=None,
+                    leave_type='sick', reason='Marked off duty from the roster',
+                    created_by=performed_by,
+                )
+        else:
+            doctor.leaves.filter(end_date__isnull=True).delete()
+        doctor.sync_leave_flag()
 
     def post(self, request, id):
         return self.patch(request, id)
@@ -275,7 +296,7 @@ class CalendarScheduleView(APIView):
         end_date = serializer.validated_data['resolved_end']
         doctor_id = serializer.validated_data.get('doctor_id')
 
-        doctors_qs = Doctor.objects.filter(is_active=True)
+        doctors_qs = Doctor.objects.filter(is_active=True).prefetch_related('leaves')
         if doctor_id:
             doctors_qs = doctors_qs.filter(id=doctor_id)
 
@@ -291,6 +312,18 @@ class CalendarScheduleView(APIView):
         # Build doctor schedule blocks
         schedule_by_doctor = {}
         for doc in doctors_qs:
+            leave_periods = [
+                {
+                    'id': str(period.id),
+                    'start_date': period.start_date.isoformat(),
+                    'end_date': period.end_date.isoformat() if period.end_date else None,
+                    'leave_type': period.leave_type,
+                    'reason': period.reason,
+                }
+                for period in doc.leaves.all()
+                if period.start_date <= end_date
+                and (period.end_date is None or period.end_date >= start_date)
+            ]
             schedule_by_doctor[str(doc.id)] = {
                 'doctor_id': str(doc.id),
                 'doctor_name': doc.name,
@@ -298,7 +331,8 @@ class CalendarScheduleView(APIView):
                 'working_days': doc.working_days,
                 'shift_start': doc.shift_start.strftime('%H:%M'),
                 'shift_end': doc.shift_end.strftime('%H:%M'),
-                'is_on_leave': doc.is_on_leave,
+                'is_on_leave': doc.is_on_leave_on(start_date),
+                'leave_periods': leave_periods,
                 'appointments': [],
             }
 

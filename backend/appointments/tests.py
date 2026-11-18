@@ -9,6 +9,7 @@ from .models import (
     ClinicSetting,
     StaffUser,
     Doctor,
+    DoctorLeave,
     Service,
     DoctorService,
     AvailabilityRule,
@@ -5955,9 +5956,13 @@ class AutoResolveDisruptionTests(TestCase):
     def test_unplaced_flagged_without_message(self):
         DoctorService.objects.filter(doctor=self.colleague).delete()
         appt = self._book(self.doctor, self._next_monday(), 11, 0, name='Stuck Patient', phone='+2348055557710')
+        # Step 1b: the doctor is now blocked only on the leave DATES, so "same
+        # doctor, next day" is a valid placement. To test the no-option case,
+        # look at the leave day only and leave no qualified colleague.
         report = DisruptionService.auto_resolve_disruption(
             doctor_id=self.doctor.id,
             leave_start_dt=appt.start_datetime - datetime.timedelta(hours=1),
+            max_lookahead_days=0,
         )
         appt.refresh_from_db()
         self.assertEqual(appt.doctor.id, self.doctor.id)  # untouched
@@ -5966,14 +5971,24 @@ class AutoResolveDisruptionTests(TestCase):
         self.assertEqual(result['messages'], [])
         self.assertFalse(InteractionLog.objects.filter(appointment=appt).exists())
 
-    def test_doctor_marked_on_leave_and_audit_logged(self):
+    def test_leave_period_recorded_and_flag_not_stuck(self):
+        """
+        Step 1b: a future-dated leave must NOT flip the roster switch forever.
+        The dates go into DoctorLeave; `is_on_leave` stays honest (it only
+        means 'off duty today').
+        """
         appt = self._book(self.doctor, self._next_monday(), 11, 0, phone='+2348055557711')
         DisruptionService.auto_resolve_disruption(
             doctor_id=self.doctor.id,
             leave_start_dt=appt.start_datetime - datetime.timedelta(hours=1),
         )
         self.doctor.refresh_from_db()
-        self.assertTrue(self.doctor.is_on_leave)
+        self.assertFalse(self.doctor.is_on_leave)
+        leave = DoctorLeave.objects.get(doctor=self.doctor)
+        self.assertEqual(
+            leave.start_date, timezone.localtime(appt.start_datetime).date()
+        )
+        self.assertTrue(self.doctor.is_on_leave_on(leave.start_date))
         self.assertTrue(AuditLog.objects.filter(action='DISRUPTION_AUTO_RESOLVED').exists())
 
 
@@ -6093,6 +6108,177 @@ class AutoResolveEndpointTests(APITestCase):
         self.client.force_authenticate(user=self.receptionist)
         res = self._post(doctor_id='00000000-0000-0000-0000-000000000000')
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class DisruptionPreviewTests(APITestCase):
+    """
+    Step 1a — POST /api/v1/disruptions/{doctor_id}/preview/
+
+    A dry run of the REAL resolver. It must produce the same placement
+    decisions and report, while saving nothing: no leave flag, no moved
+    appointment, no queued message, no audit row, no webhook.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Preview', email='sarah.preview@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+        self.doctor = Doctor.objects.create(
+            name='Dr. Bello Preview', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5], shift_start=datetime.time(9, 0),
+            shift_end=datetime.time(17, 0), max_daily_appointments=12,
+        )
+        self.colleague = Doctor.objects.create(
+            name='Dr. Chinwe Preview', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6], shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(16, 0), max_daily_appointments=14,
+        )
+        self.service = Service.objects.create(
+            name='Dental Examination', category='Dental Care',
+            duration_minutes=30, buffer_minutes=10, price=15000.00,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.service)
+        DoctorService.objects.create(doctor=self.colleague, service=self.service)
+
+        # Only the leaving doctor performs this one -> nobody can take it.
+        self.exclusive_service = Service.objects.create(
+            name='Orthodontic Surgery', category='Dental Care',
+            duration_minutes=30, buffer_minutes=10, price=85000.00,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.exclusive_service)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _next_monday(self):
+        today = timezone.now().date()
+        return today + datetime.timedelta(days=(1 - today.isoweekday()) % 7 + 7)
+
+    def _window(self, start_day=None, end_day=None):
+        start_day = start_day or self._next_monday()
+        end_day = end_day or start_day
+        return {
+            'leave_start': timezone.make_aware(
+                datetime.datetime.combine(start_day, datetime.time(8, 0))
+            ).isoformat(),
+            'leave_end': timezone.make_aware(
+                datetime.datetime.combine(end_day, datetime.time(23, 59))
+            ).isoformat(),
+        }
+
+    def _book(self, phone, service=None, day=None, hour=11):
+        day = day or self._next_monday()
+        start = timezone.make_aware(datetime.datetime.combine(day, datetime.time(hour, 0)))
+        service = service or self.service
+        return HoldService.acquire_slot(
+            doctor_id=self.doctor.id, service_id=service.id,
+            start_datetime=start,
+            end_datetime=start + datetime.timedelta(minutes=service.duration_minutes),
+            patient_name='Amina Preview', patient_phone=phone, is_hold=False,
+        )
+
+    def _preview(self, doctor_id=None, body=None):
+        return self.client.post(
+            f"/api/v1/disruptions/{doctor_id or self.doctor.id}/preview/",
+            body if body is not None else {'reason': 'Planned leave', **self._window()},
+            format='json',
+        )
+
+    def test_requires_staff_auth(self):
+        res = self._preview()
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_preview_plans_without_touching_the_database(self):
+        appt = self._book('+2348055557901')
+        expected_start = appt.start_datetime
+        self.client.force_authenticate(user=self.receptionist)
+        audit_before = AuditLog.objects.count()
+
+        res = self._preview()
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.data['preview'])
+        self.assertFalse(res.data['delivery_pushed'])
+        self.assertEqual(res.data['auto_resolved_count'], 1)
+        self.assertEqual(res.data['results'][0]['outcome'], 'reassigned')
+        self.assertEqual(res.data['results'][0]['new_doctor'], 'Dr. Chinwe Preview')
+
+        # Nothing was saved.
+        appt.refresh_from_db()
+        self.doctor.refresh_from_db()
+        self.assertEqual(appt.doctor.id, self.doctor.id)
+        self.assertEqual(appt.start_datetime, expected_start)
+        self.assertFalse(self.doctor.is_on_leave)
+        self.assertEqual(InteractionLog.objects.count(), 0)
+        self.assertEqual(AuditLog.objects.count(), audit_before)
+
+    def test_preview_never_pushes_to_n8n(self):
+        import os
+        from unittest.mock import patch
+        self._book('+2348055557902')
+        self.client.force_authenticate(user=self.receptionist)
+        with patch.dict(os.environ, {'N8N_DISRUPTION_WEBHOOK_URL': 'https://n8n.example.com/disruption-alerts'}), \
+                patch('appointments.views_appointment.fire_and_forget_webhook') as mock_fire:
+            res = self._preview()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        mock_fire.assert_not_called()
+
+    def test_preview_reports_unplaceable_patient(self):
+        appt = self._book('+2348055557903', service=self.exclusive_service)
+        self.client.force_authenticate(user=self.receptionist)
+        monday = self._next_monday()
+
+        # The resolver looks up to 3 days ahead, so the leave must cover that
+        # window before this patient is truly unplaceable.
+        res = self._preview(body={
+            'reason': 'Planned leave',
+            **self._window(monday, monday + datetime.timedelta(days=3)),
+        })
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['unplaced_count'], 1)
+        self.assertEqual(res.data['auto_resolved_count'], 0)
+        self.assertEqual(res.data['results'][0]['appointment_id'], str(appt.id))
+        self.assertEqual(res.data['results'][0]['outcome'], 'unplaced')
+        self.assertEqual(res.data['results'][0]['messages'], [])
+        self.assertEqual(res.data['messages_queued_count'], 0)
+
+    def test_preview_handles_a_multi_day_window(self):
+        monday = self._next_monday()
+        tuesday = monday + datetime.timedelta(days=1)
+        first = self._book('+2348055557904', day=monday)
+        second = self._book('+2348055557905', day=tuesday)
+        self.client.force_authenticate(user=self.receptionist)
+
+        res = self._preview(body={'reason': 'Annual leave', **self._window(monday, tuesday)})
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['auto_resolved_count'], 2)
+        self.assertEqual(res.data['same_day_count'], 2)
+        by_id = {r['appointment_id']: r for r in res.data['results']}
+        self.assertEqual(by_id[str(first.id)]['new_start'][:10], monday.isoformat())
+        self.assertEqual(by_id[str(second.id)]['new_start'][:10], tuesday.isoformat())
+        # Two patients * two channels would be four messages if this were real.
+        self.assertEqual(res.data['messages_queued_count'], 4)
+        self.assertEqual(InteractionLog.objects.count(), 0)
+
+    def test_unknown_doctor_404(self):
+        self.client.force_authenticate(user=self.receptionist)
+        res = self._preview(doctor_id='00000000-0000-0000-0000-000000000000')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_bad_datetime_400(self):
+        self.client.force_authenticate(user=self.receptionist)
+        res = self._preview(body={'leave_start': 'not-a-date', 'leave_end': 'also-bad'})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res.data['error'], 'INVALID_DATETIME')
 
 
 class DispatchContractEnrichmentTests(APITestCase):
@@ -7341,6 +7527,291 @@ class DoubleBookingEndpointTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data['count'], 0)
         self.assertEqual(res.data['conflicts'], [])
+
+
+class DoctorLeaveAvailabilityTests(TestCase):
+    """
+    Step 1b — leave is a DATED period, not a permanent switch.
+
+    Before this, one click put `is_on_leave = True` on the doctor forever, so
+    every future date looked blocked until someone remembered to restore duty.
+    A leave period must block only its own dates and the doctor must stay
+    bookable everywhere else.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+        self.doctor = Doctor.objects.create(
+            name='Dr. Leave Bello', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5], shift_start=datetime.time(9, 0),
+            shift_end=datetime.time(17, 0), max_daily_appointments=12,
+        )
+        self.service = Service.objects.create(
+            name='Dental Examination', category='Dental Care',
+            duration_minutes=30, buffer_minutes=10, price=15000.00,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.service)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _next_monday(self):
+        today = timezone.now().date()
+        return today + datetime.timedelta(days=(1 - today.isoweekday()) % 7 + 7)
+
+    def _leave(self, start_date, end_date, leave_type='annual'):
+        return DoctorLeave.objects.create(
+            doctor=self.doctor, start_date=start_date, end_date=end_date,
+            leave_type=leave_type, reason='Planned leave',
+        )
+
+    def _book(self, day, hour=11):
+        start = timezone.make_aware(datetime.datetime.combine(day, datetime.time(hour, 0)))
+        return HoldService.acquire_slot(
+            doctor_id=self.doctor.id, service_id=self.service.id,
+            start_datetime=start,
+            end_datetime=start + datetime.timedelta(minutes=30),
+            patient_name='Leave Patient', patient_phone='+2348055557101',
+            is_hold=False,
+        )
+
+    def test_leave_blocks_only_its_own_dates(self):
+        monday = self._next_monday()
+        tuesday = monday + datetime.timedelta(days=1)
+        wednesday = monday + datetime.timedelta(days=2)
+        self._leave(monday, tuesday)
+
+        self.assertTrue(self.doctor.is_on_leave_on(monday))
+        self.assertTrue(self.doctor.is_on_leave_on(tuesday))
+        self.assertFalse(self.doctor.is_on_leave_on(wednesday))
+        self.assertFalse(self.doctor.is_on_leave_on(monday - datetime.timedelta(days=7)))
+
+    def test_open_ended_leave_blocks_every_date_after_it_starts(self):
+        monday = self._next_monday()
+        self._leave(monday, None, leave_type='sick')
+
+        self.assertFalse(self.doctor.is_on_leave_on(monday - datetime.timedelta(days=1)))
+        self.assertTrue(self.doctor.is_on_leave_on(monday))
+        self.assertTrue(self.doctor.is_on_leave_on(monday + datetime.timedelta(days=30)))
+
+    def test_future_leave_does_not_flag_the_doctor_off_today(self):
+        monday = self._next_monday()
+        DoctorLeave.record(self.doctor, monday, monday + datetime.timedelta(days=3),
+                           reason='Annual leave')
+        self.doctor.refresh_from_db()
+
+        self.assertFalse(self.doctor.is_on_leave)
+        # A week later is a normal working day, so booking still works.
+        appt = self._book(monday + datetime.timedelta(days=7))
+        self.assertEqual(appt.doctor_id, self.doctor.id)
+
+    def test_hold_rejects_a_booking_inside_a_dated_leave(self):
+        monday = self._next_monday()
+        self._leave(monday, monday)
+        self.doctor.refresh_from_db()
+        self.assertFalse(self.doctor.is_on_leave)  # the flag is not the gate
+
+        with self.assertRaises(SlotConflictException):
+            self._book(monday)
+
+    def test_availability_engine_skips_only_the_leave_dates(self):
+        monday = self._next_monday()
+        self._leave(monday, monday)
+        engine = AvailabilityEngine()
+
+        self.assertEqual(engine.get_available_slots_for_date(self.service, monday), [])
+        later = engine.get_available_slots_for_date(
+            self.service, monday + datetime.timedelta(days=2)
+        )
+        self.assertNotEqual(later, [])
+
+    def test_stale_flag_clears_itself_after_the_period_ends(self):
+        yesterday = timezone.localdate() - datetime.timedelta(days=1)
+        self._leave(yesterday - datetime.timedelta(days=2), yesterday, leave_type='sick')
+        Doctor.objects.filter(id=self.doctor.id).update(is_on_leave=True)
+        self.doctor.refresh_from_db()
+        self.assertTrue(self.doctor.is_on_leave)  # left behind by the old flow
+
+        self.doctor.sync_leave_flag()
+
+        self.doctor.refresh_from_db()
+        self.assertFalse(self.doctor.is_on_leave)
+        self.assertFalse(self.doctor.is_on_leave_on(timezone.localdate()))
+
+    def test_a_manual_off_duty_flag_without_periods_still_blocks(self):
+        self.doctor.is_on_leave = True
+        self.doctor.save(update_fields=['is_on_leave'])
+
+        self.assertTrue(self.doctor.is_on_leave_on(self._next_monday()))
+        with self.assertRaises(SlotConflictException):
+            self._book(self._next_monday())
+
+
+class DoctorLeavePlanTests(APITestCase):
+    """
+    Step 1b — approving a leave plan records the dates, keeps the roster flag
+    honest, and exposes the periods to the calendar feed.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Leave', email='sarah.leave@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+        self.doctor = Doctor.objects.create(
+            name='Dr. Leave Bello', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5], shift_start=datetime.time(9, 0),
+            shift_end=datetime.time(17, 0), max_daily_appointments=12,
+        )
+        self.colleague = Doctor.objects.create(
+            name='Dr. Leave Chinwe', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5], shift_start=datetime.time(9, 0),
+            shift_end=datetime.time(17, 0), max_daily_appointments=14,
+        )
+        self.service = Service.objects.create(
+            name='Dental Examination', category='Dental Care',
+            duration_minutes=30, buffer_minutes=10, price=15000.00,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.service)
+        DoctorService.objects.create(doctor=self.colleague, service=self.service)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _next_monday(self):
+        today = timezone.now().date()
+        return today + datetime.timedelta(days=(1 - today.isoweekday()) % 7 + 7)
+
+    def _book(self, day, hour=11):
+        start = timezone.make_aware(datetime.datetime.combine(day, datetime.time(hour, 0)))
+        return HoldService.acquire_slot(
+            doctor_id=self.doctor.id, service_id=self.service.id,
+            start_datetime=start,
+            end_datetime=start + datetime.timedelta(minutes=30),
+            patient_name='Plan Patient', patient_phone='+2348055557201',
+            is_hold=False,
+        )
+
+    def _window(self, start_day, end_day):
+        return {
+            'leave_start': timezone.make_aware(
+                datetime.datetime.combine(start_day, datetime.time(8, 0))
+            ).isoformat(),
+            'leave_end': timezone.make_aware(
+                datetime.datetime.combine(end_day, datetime.time(23, 59))
+            ).isoformat(),
+        }
+
+    def test_auto_resolve_records_the_leave_period(self):
+        monday = self._next_monday()
+        tuesday = monday + datetime.timedelta(days=1)
+        appt = self._book(monday)
+        self.client.force_authenticate(user=self.receptionist)
+
+        res = self.client.post(
+            f"/api/v1/disruptions/{self.doctor.id}/auto-resolve/",
+            {'reason': 'Annual leave', **self._window(monday, tuesday)},
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        appt.refresh_from_db()
+        self.assertEqual(appt.doctor.id, self.colleague.id)
+        leave = DoctorLeave.objects.get(doctor=self.doctor)
+        self.assertEqual(leave.start_date, monday)
+        self.assertEqual(leave.end_date, tuesday)
+        self.doctor.refresh_from_db()
+        self.assertFalse(self.doctor.is_on_leave)  # not stuck off duty
+        self.assertTrue(self.doctor.is_on_leave_on(monday))
+
+    def test_running_the_same_plan_twice_does_not_duplicate_the_period(self):
+        monday = self._next_monday()
+        self._book(monday)
+        self.client.force_authenticate(user=self.receptionist)
+        body = {'reason': 'Annual leave', **self._window(monday, monday)}
+
+        self.client.post(f"/api/v1/disruptions/{self.doctor.id}/auto-resolve/", body, format='json')
+        self.client.post(f"/api/v1/disruptions/{self.doctor.id}/auto-resolve/", body, format='json')
+
+        self.assertEqual(DoctorLeave.objects.filter(doctor=self.doctor).count(), 1)
+
+    def test_duty_toggle_creates_an_open_leave_and_restore_duty_clears_it(self):
+        self.client.force_authenticate(user=self.receptionist)
+        url = f'/api/v1/clinic/doctors/{self.doctor.id}/duty-status/'
+
+        sick = self.client.patch(url, {'duty_mode': 'on_sick_leave'}, format='json')
+        self.assertEqual(sick.status_code, status.HTTP_200_OK)
+        self.assertTrue(sick.data['is_on_leave'])
+        open_leave = DoctorLeave.objects.get(doctor=self.doctor)
+        self.assertIsNone(open_leave.end_date)
+
+        back = self.client.patch(url, {'duty_mode': 'on_duty'}, format='json')
+        self.assertEqual(back.status_code, status.HTTP_200_OK)
+        self.assertFalse(back.data['is_on_leave'])
+        self.assertFalse(DoctorLeave.objects.filter(doctor=self.doctor).exists())
+
+    def test_calendar_schedule_exposes_leave_periods(self):
+        monday = self._next_monday()
+        DoctorLeave.objects.create(
+            doctor=self.doctor, start_date=monday,
+            end_date=monday + datetime.timedelta(days=1),
+            leave_type='annual', reason='Annual leave',
+        )
+        self.client.force_authenticate(user=self.receptionist)
+
+        res = self.client.get('/api/v1/calendar/schedule/', {
+            'start_date': monday.isoformat(),
+            'end_date': (monday + datetime.timedelta(days=6)).isoformat(),
+        })
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        entry = next(d for d in res.data['doctors'] if d['doctor_id'] == str(self.doctor.id))
+        self.assertEqual(len(entry['leave_periods']), 1)
+        self.assertEqual(entry['leave_periods'][0]['start_date'], monday.isoformat())
+        self.assertEqual(
+            entry['leave_periods'][0]['end_date'],
+            (monday + datetime.timedelta(days=1)).isoformat(),
+        )
+
+    def test_reassign_to_colleague_on_dated_leave_rejected_409(self):
+        monday = self._next_monday()
+        movable = self._book(monday)
+        DoctorLeave.objects.create(
+            doctor=self.colleague, start_date=monday, end_date=monday,
+            leave_type='annual', reason='Annual leave',
+        )
+        self.client.force_authenticate(user=self.receptionist)
+
+        res = self.client.post(f'/api/v1/appointments/{movable.id}/reassign-leave/', {
+            'new_doctor_id': str(self.colleague.id),
+        }, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        movable.refresh_from_db()
+        self.assertEqual(movable.doctor.id, self.doctor.id)
+
+    def test_preview_leaves_no_leave_period_behind(self):
+        monday = self._next_monday()
+        self._book(monday)
+        self.client.force_authenticate(user=self.receptionist)
+
+        res = self.client.post(
+            f"/api/v1/disruptions/{self.doctor.id}/preview/",
+            {'reason': 'Annual leave', **self._window(monday, monday)},
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(DoctorLeave.objects.count(), 0)
 
 
 

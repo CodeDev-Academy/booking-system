@@ -223,8 +223,12 @@ class DoctorDutyStatusUpdateSerializer(serializers.Serializer):
 class DoctorDirectorySerializer(serializers.ModelSerializer):
     """
     Renders clinicians with real-time duty state, daily workload, and attendance score.
+    Leave is reported from the dated periods, so a plan for next month never
+    marks the doctor off duty today.
     """
     duty_status = serializers.SerializerMethodField()
+    is_on_leave = serializers.SerializerMethodField()
+    leave_periods = serializers.SerializerMethodField()
     patients_seen_today = serializers.SerializerMethodField()
     active_appointments_today = serializers.SerializerMethodField()
     total_appointments = serializers.SerializerMethodField()
@@ -243,6 +247,7 @@ class DoctorDirectorySerializer(serializers.ModelSerializer):
             'shift_end',
             'is_active',
             'is_on_leave',
+            'leave_periods',
             'duty_status',
             'patients_seen_today',
             'active_appointments_today',
@@ -250,10 +255,25 @@ class DoctorDirectorySerializer(serializers.ModelSerializer):
             'attendance_rate',
         ]
 
+    def get_is_on_leave(self, obj):
+        return obj.is_on_leave_on(timezone.localdate())
+
+    def get_leave_periods(self, obj):
+        return [
+            {
+                'id': str(period.id),
+                'start_date': period.start_date.isoformat(),
+                'end_date': period.end_date.isoformat() if period.end_date else None,
+                'leave_type': period.leave_type,
+                'reason': period.reason,
+            }
+            for period in obj.leaves.all()
+        ]
+
     def get_duty_status(self, obj):
         if not obj.is_active:
             return 'inactive'
-        if obj.is_on_leave:
+        if obj.is_on_leave_on(timezone.localdate()):
             return 'on_sick_leave'
 
         now = timezone.localtime(timezone.now())

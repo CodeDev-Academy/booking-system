@@ -100,8 +100,11 @@ class HoldService:
         doctor = Doctor.objects.select_for_update().get(id=doctor_id)
         service = Service.objects.get(id=service_id)
 
-        # Risk R-05: Pre-hold re-validation of doctor status
-        if not doctor.is_active or doctor.is_on_leave:
+        # Risk R-05: Pre-hold re-validation of doctor status. Leave is checked
+        # against the booking's own date, not a permanent on/off switch.
+        if not doctor.is_active or doctor.is_on_leave_on(
+            timezone.localtime(start_datetime).date()
+        ):
             raise SlotConflictException(f"Doctor {doctor.name} is currently unavailable or on leave.")
 
         booking_request = None

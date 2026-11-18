@@ -275,6 +275,66 @@ class ReassignLeaveView(APIView):
         return Response(AppointmentDetailSerializer(updated_appt).data, status=status.HTTP_200_OK)
 
 
+class DisruptionPreviewView(APIView):
+    """
+    POST /api/v1/disruptions/{doctor_id}/preview/
+    Step 1 — dry run before the receptionist commits to a leave plan.
+
+    Runs the REAL resolver inside a transaction that is always rolled back, so
+    the report is exactly what the approve button would produce: per-patient
+    placement, same-day/next-day counts and who cannot be placed. Nothing is
+    moved, nothing is queued, no webhook fires. Long ranges are allowed but the
+    approve run re-validates every move under its own locks.
+    """
+    permission_classes = [IsStaffAuthenticated]
+
+    def post(self, request, doctor_id):
+        reason = request.data.get('reason') or 'Planned Leave'
+
+        def parse_dt(value, field):
+            if not value:
+                return None
+            try:
+                parsed = datetime.datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+            except (ValueError, TypeError):
+                raise ValueError(field)
+            if timezone.is_naive(parsed):
+                parsed = timezone.make_aware(parsed)
+            return parsed
+
+        try:
+            leave_start = parse_dt(request.data.get('leave_start'), 'leave_start')
+            leave_end = parse_dt(request.data.get('leave_end'), 'leave_end')
+        except ValueError as field_err:
+            return Response(
+                {'error': 'INVALID_DATETIME', 'detail': f'Unparseable {field_err} value.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not leave_start or not leave_end or leave_end < leave_start:
+            return Response(
+                {'error': 'INVALID_WINDOW', 'detail': 'leave_start and leave_end must form a valid window.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            report = DisruptionService.preview_disruption(
+                doctor_id=doctor_id,
+                leave_start_dt=leave_start,
+                leave_end_dt=leave_end,
+                reason=reason,
+                performed_by=request.user.email,
+            )
+        except Doctor.DoesNotExist:
+            return Response(
+                {'error': 'DOCTOR_NOT_FOUND', 'detail': 'No doctor matches this id.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        report['delivery_pushed'] = False
+        return Response(report, status=status.HTTP_200_OK)
+
+
 class DisruptionAutoResolveView(APIView):
     """
     POST /api/v1/disruptions/{doctor_id}/auto-resolve/
@@ -444,7 +504,11 @@ class RescheduleAppointmentView(APIView):
             # Same guarantees as a fresh booking: lock the target doctor row,
             # re-validate availability, purge stale holds, then conflict-check.
             doctor = Doctor.objects.select_for_update().get(id=doctor.id)
-            if not doctor.is_active or doctor.is_on_leave:
+            start = new_start or appointment.start_datetime
+            end = new_end or appointment.end_datetime
+            if not doctor.is_active or doctor.is_on_leave_on(
+                timezone.localtime(start).date()
+            ):
                 return Response(
                     {
                         'error': 'SLOT_CONFLICT',
@@ -455,8 +519,6 @@ class RescheduleAppointmentView(APIView):
                 )
 
             HoldService.purge_expired_holds(doctor)
-            start = new_start or appointment.start_datetime
-            end = new_end or appointment.end_datetime
             conflict = HoldService.find_slot_conflict(
                 doctor, start, end,
                 service=appointment.service,

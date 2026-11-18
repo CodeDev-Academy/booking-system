@@ -192,6 +192,131 @@ class Doctor(models.Model):
     def __str__(self):
         return f"{self.name} - {self.specialty}"
 
+    # ---- Dated leave (Step 1b) -------------------------------------------------
+    # `is_on_leave` is only honest for TODAY. Leave that starts next week must not
+    # block every future date, so the real source of truth is the DoctorLeave rows.
+
+    def leave_period_covering(self, date):
+        """The leave row that blocks `date`, or None."""
+        for period in self.leaves.all():
+            if period.covers(date):
+                return period
+        return None
+
+    def is_on_leave_on(self, date):
+        """
+        True when this doctor cannot work on `date`.
+
+        - a dated leave period covers it, or
+        - the legacy `is_on_leave` switch is on and the doctor has no leave rows
+          at all (a free-form "off duty until someone restores me" block).
+        """
+        periods = list(self.leaves.all())
+        if any(p.covers(date) for p in periods):
+            return True
+        return bool(self.is_on_leave and not periods)
+
+    def sync_leave_flag(self, today=None):
+        """
+        Re-derive `is_on_leave` from the leave periods so a finished leave stops
+        marking the doctor off duty. Safe to call often; writes only on change.
+        """
+        today = today or timezone.localdate()
+        periods = list(self.leaves.all())
+        if periods:
+            should = any(p.covers(today) for p in periods)
+        else:
+            should = self.is_on_leave
+        if self.is_on_leave != should:
+            self.is_on_leave = should
+            self.save(update_fields=['is_on_leave'])
+        return self.is_on_leave
+
+
+class DoctorLeave(models.Model):
+    """
+    A dated leave period (annual, sick, training...). Inclusive on both ends.
+    `end_date = None` means "until further notice" — used by the manual
+    off-duty switch so that 1-click sick leave is still a leave row.
+    """
+    LEAVE_TYPE_CHOICES = (
+        ('annual', 'Annual Leave'),
+        ('sick', 'Sick Leave'),
+        ('emergency', 'Emergency Leave'),
+        ('training', 'Training / Conference'),
+        ('other', 'Other'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    doctor = models.ForeignKey(Doctor, on_delete=models.CASCADE, related_name='leaves')
+    start_date = models.DateField(db_index=True)
+    end_date = models.DateField(null=True, blank=True, db_index=True)  # inclusive
+    leave_type = models.CharField(max_length=32, choices=LEAVE_TYPE_CHOICES, default='annual')
+    reason = models.CharField(max_length=255, blank=True, default='')
+    created_by = models.CharField(max_length=255, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'doctor_leaves'
+        ordering = ('start_date', 'created_at')
+        verbose_name = 'Doctor Leave'
+        verbose_name_plural = 'Doctor Leaves'
+        indexes = [
+            models.Index(fields=['doctor', 'start_date', 'end_date'], name='doctor_leave_window_idx'),
+        ]
+
+    def __str__(self):
+        end = self.end_date.isoformat() if self.end_date else 'until further notice'
+        return f"{self.doctor.name}: {self.start_date.isoformat()} -> {end}"
+
+    def covers(self, date):
+        if date < self.start_date:
+            return False
+        return self.end_date is None or date <= self.end_date
+
+    @classmethod
+    def record(cls, doctor, start_date, end_date, reason='', leave_type='annual',
+               created_by='', performed_by=None):
+        """
+        Save a leave window without stacking duplicates: an overlapping period is
+        stretched to cover the union instead of adding a second row. That keeps a
+        re-run of the same plan (or a preview followed by approve) idempotent.
+        """
+        if end_date is not None and end_date < start_date:
+            start_date, end_date = end_date, start_date
+
+        horizon = end_date or datetime.date.max
+        existing = doctor.leaves.filter(
+            start_date__lte=horizon,
+        ).filter(
+            models.Q(end_date__isnull=True) | models.Q(end_date__gte=start_date)
+        ).order_by('start_date').first()
+
+        if existing is not None:
+            changed = []
+            if start_date < existing.start_date:
+                existing.start_date = start_date
+                changed.append('start_date')
+            if existing.end_date is not None:
+                if end_date is None:
+                    existing.end_date = None
+                    changed.append('end_date')
+                elif end_date > existing.end_date:
+                    existing.end_date = end_date
+                    changed.append('end_date')
+            if changed and reason:
+                existing.reason = reason
+                changed.append('reason')
+            if changed:
+                existing.save(update_fields=changed)
+            return existing
+
+        return cls.objects.create(
+            doctor=doctor, start_date=start_date, end_date=end_date,
+            leave_type=leave_type, reason=reason,
+            created_by=created_by or (performed_by or ''),
+        )
+
 
 class Service(models.Model):
     """
