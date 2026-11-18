@@ -158,6 +158,29 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
   history (10 renames). All 9 harnesses green after the move; operational pointers updated in
   `n8n.md`, `AGENTS.md` layout, `MASTER_CONTEXT.md` file map, `ROADMAP_PARTNER_READINESS.md`,
   tests README + header comments. Historical run-log records intentionally keep their old paths.
+- [x] `T-720`: **One-Click Auto-Resolve Service (Item B / B.1)**: `DisruptionService.auto_resolve_disruption`
+  marks the leave and places EVERY impacted patient in one atomic call - priority (1) colleague free at the
+  exact same time, (2) earliest free engine slot the same day, (3) the next day. Each move re-validates
+  under the hold lock (conflicts, buffers, ceilings), writes `DISRUPTION_AUTO_RESOLVE_MOVE`, queues one
+  WhatsApp + one SMS claim row per patient (`disrupt-<code>-<channel>`; single-shot - an existing claim ref
+  is never re-queued) and writes one `DISRUPTION_AUTO_RESOLVED` summary. Unplaced patients get no message.
+  Tests written first (red), then green; full suite 265/265. Commit `59c07d9`.
+- [x] `T-721`: **Auto-Resolve Endpoint + Delivery Push (B.2)**: `POST /api/v1/disruptions/<doctor_uuid>/auto-resolve/`
+  - staff auth (401 unauth), unknown doctor 404 `DOCTOR_NOT_FOUND`, bad datetime 400; leave window defaults
+  to now -> 23:59:59 same day. The response carries the per-patient report plus `delivery_pushed`, true only
+  when the fire-and-forget push to `N8N_DISRUPTION_WEBHOOK_URL` fired inside `transaction.on_commit`
+  (unset URL = fail-safe, nothing claimed). Tests red-first, then green. Commit `59c07d9`.
+- [x] `T-722`: **Workflow 08 + Live One-Click Proof (B.3-B.5)**: `08_disruption_notifier.json` mirrors `05`'s
+  graph (verify -> IF -> respond -> parse -> adapter -> route -> sends -> logs) on `/webhook/disruption-alerts`;
+  fail-closed 401 verified live. Harness `test_disruption_notifier.js` 77 checks. **Three real defects caught
+  during the live proof**: (a) the adapter read only `$input.all()[0]`, so one push carrying 4 items delivered
+  1 message and stranded 3 patients - fixed to adapt every item (red-first D+1-D+7); (b) `syncFromBackend` was
+  append-only, so a moved appointment kept its persisted old time and the disruption cockpit showed stale
+  patients - fixed to upsert backend truth (and recompute buffers); (c) the calendar route never rendered the
+  store toast, so the receptionist got no outcome feedback - fixed with the standard banner (4s auto-dismiss).
+  Live proof (executions 951, 960, 1066): Parse 4 -> Adapter 4 -> Route [2 whatsapp / 2 sms / 0 skip] -> 4
+  `sent` rows in Django; captured toast "2 same day. 4 notices pushed". Probe rows deleted, doctors restored,
+  DB left clean.
 
 ---
 
@@ -196,6 +219,7 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 | 2026-11-17 | Brain Agent | `Suite K / T-715b` | **PASSED** | Workflow A / A.1-A.3. `test_reminders.js` **27/30 red** against the 6-node skeleton -> **81 green** (C19 pins the adapter byte-identical to 02; F9b/F12b pin the reminder-kind log labels; A10 pins the shipped `5 * * * *` cron). `03` rebuilt: 12 nodes - hourly cron -> sweep POST (`n8n_cron_reminders`) -> parse (reminder_items + followup_items, malformed dropped, empty = clean no-op) -> 02's adapter -> switch -> 3 sends + skip log -> 3 outcome logs (canonical block byte-identical to 05). Instance `UHQzb7w5gOh2hxcW` **active**, `valid: true` 0/0; repo in sync. Live proof `a3_live_proof.py` (cron temporarily `*/1 * * * *`, then restored + re-verified): **all checks passed** - 401 no-writes; the real cron delivered the 24h reminder on sms+whatsapp mirrors, the walk-in got the SMS fallback in BOTH windows, the follow-up recall delivered on whatsapp and marked the task once, the telegram fake-chat-id leg ended failed with a readable reason, the +30h appointment stayed silent, no AuditLog rows, only fixture+claim rows per phone, extra sweeps re-emitted nothing; proof rows deleted; seeded demo-data reminders fired once each (single-shot held), **One real defect caught and pinned:** the outcome POSTs carry the appointment code as `request_code` and `/api/v1/interactions/` resolved it against BookingRequest only - every claim stuck `queued` (9x 400 `BookingRequest AP-0000 not found.`); serializer fixed (BookingRequest first, then Appointment) + dev-server restart (the `--noreload` stale-server trap bit once). Full suite **248 / 248, exit 0**; all 9 n8n harnesses green. |
 | 2026-11-17 | Brain Agent | `Suite K / T-716–T-718` | **PASSED** | Partner-readiness QA batch from the user's live dashboard session: (T-716) `attention_open` resolution rule - 3 red then green, recovered patients leave Needs Attention and return only on a newer failure; (T-717) simulator DOB 400 reproduced (90-byte body), then `null` DOB -> 201 live + loud live-failure toast + ghost-row reconciliation (queue store persists to localStorage, ghosts survived refreshes); (T-718) seeder credential wipe - reseed test red first, credentials-once rule green. Full suite **253 / 253** (248 + 5 new). Commits `fa981fe`, `c1e14c0`. |
 | 2026-11-17 | Brain Agent | `Item A / T-719` | **PASSED** | n8n restructure: `workflows/` + `docs/` + README tree, `git mv` history preserved, 13 harness path refs updated, all 9 harnesses green after the move, live doc pointers synced. |
+| 2026-11-17 → 18 | Brain Agent | `Item B / T-720-T-722` | **PASSED** | One-click doctor-leave resolver end to end: Django service (suite 265/265) + endpoint + n8n push, workflow `08` (77-check harness; fail-closed 401 verified live), frontend cockpit wired to the live grid. Live proof on fresh probe patients (executions 951, 960, 1066): adapter multi-item fix took Parse 4 → Adapter 4 → Route [2 whatsapp / 2 sms / 0 skip] → 4 `sent` rows; truthful toast captured ("2 same day. 4 notices pushed"). Three real defects found and pinned: single-item adapter, append-only calendar sync, missing toast render on the calendar route. Probes, claim rows and audit rows deleted; every doctor restored; DB left clean. |
 
 ---
 

@@ -1991,6 +1991,52 @@ Full suite **253/253**; logins verified live: `admin@clinic.com` / `adminpasswor
 
 ---
 
+## 2026-11-17/18 - Item B: one-click emergency-leave resolver (built, live-proven)
+
+### What was broken
+A doctor calling in sick left the receptionist to move every patient by hand: the old
+Emergency Leave modal offered fake notify buttons, nothing was placed automatically and
+patients were never told. The live runs also exposed three defects: the n8n adapter sent
+only the first of four queued messages, the calendar's backend sync never updated a moved
+appointment, and the calendar route showed no toast at all.
+
+### What shipped
+- `DisruptionService.auto_resolve_disruption` (B.1): one atomic call marks the leave and
+  places every impacted patient - same-time colleague -> earliest same-day slot -> next
+  day - each move re-validated under the hold lock; queues one WhatsApp + one SMS row per
+  patient with Django's own words; unplaced patients get no message.
+- `POST /api/v1/disruptions/<doctor_id>/auto-resolve/` (B.2): staff-only, per-patient
+  report, `delivery_pushed` truthful, fire-and-forget push to `N8N_DISRUPTION_WEBHOOK_URL`
+  inside `transaction.on_commit`.
+- Workflow `08_Disruption_Notifier` (B.3): `05`'s graph on `/webhook/disruption-alerts`,
+  fail-closed secret, its own single-placeholder WhatsApp template; the adapter now adapts
+  EVERY item (the item[0] bug is pinned by harness cases D+1-D+7).
+- Frontend (B.4/B.5): "Sick / Leave" on the live timetable header opens the cockpit; the
+  one-click resolves the backend UUID via the staff directory (token-based name match),
+  applies returned placements to the calendar, and renders a truthful toast on the
+  calendar route (new banner, 4s auto-dismiss). Calendar sync is now an upsert.
+
+### Tests
+Harness first everywhere: Django 265/265 (T-720/T-721 red-first); `test_disruption_notifier.js`
+77 checks (red-first skeleton, incl. D+1-D+7 multi-item). All 10 n8n harnesses green.
+
+### Live proof (executions 951, 960, 1066)
+Two fresh probe appointments on Dr. Bello -> UI one-click -> both placed at the exact same
+times to a colleague; 4 claim rows -> n8n Parse 4 -> Adapter 4 -> 2 WhatsApp + 2 SMS -> 4
+`sent` rows; toast: "Dr. Bello Ibrahim's leave auto-resolved: 2 same day. 4 notices pushed
+for WhatsApp/SMS delivery." Probe rows deleted, doctors restored, DB clean.
+
+### Files
+`backend/appointments/services/disruption_service.py`, `backend/appointments/views_appointment.py`,
+`n8n/workflows/08_disruption_notifier.json`, `n8n/tests/test_disruption_notifier.js`,
+`frontend/src/stores/useCalendarStore.js`, `frontend/src/hooks/useCalendar.js`,
+`frontend/src/components/calendar/EmergencyDisruptionModal.jsx`,
+`frontend/src/components/calendar/DoctorGridBookingCalendar.jsx`,
+`frontend/src/components/calendar/MasterCalendarGrid.jsx`,
+`frontend/src/views/CalendarView.jsx`, `frontend/src/services/apiService.js`.
+
+---
+
 ## Next up - Phase 5 (partner handover)
 
 **Status: 5.1 done (2026-11-17); 5.2 blocked on the partner; 5.3 next.** All message-carrying

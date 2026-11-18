@@ -44,6 +44,7 @@ Never registered with anyone (internal only):
 | URL | Called by | Auth |
 |---|---|---|
 | `https://SERVER/webhook/dispatch-offers` | Django only, fire-and-forget | `X-Webhook-Secret` — a wrong or missing secret is refused `401` before anything is sent |
+| `https://SERVER/webhook/disruption-alerts` | Django only, fire-and-forget (one-click leave resolver) | `X-Webhook-Secret` — refused `401` before anything is sent |
 | `https://SERVER/webhook/intake` | The clinic's own booking page | none (public intake normalizer; Django re-validates everything) |
 | `https://SERVER/webhook/provider-sim/*` | Dev-only simulator | deactivated and deleted before launch (runbook §6) |
 
@@ -79,6 +80,7 @@ missing or wrong → **401 `{"error": "INVALID_WEBHOOK_SECRET"}`** and nothing i
 | `TELEGRAM_BOT_TOKEN` | from @BotFather; the launch interactive channel |
 | `TELEGRAM_WEBHOOK_SECRET` | separate secret for the Telegram webhook route |
 | `N8N_WEBHOOK_URL` | = `https://SERVER/webhook/intake` (intake normalizer — workflow `01`'s trigger path) |
+| `N8N_DISRUPTION_WEBHOOK_URL` | = `https://SERVER/webhook/disruption-alerts` (one-click leave resolver push — workflow `08`); unset = fail-safe, nothing claimed |
 | `WHATSAPP_ENABLED` / `SMS_ENABLED` / `VOICE_ENABLED` | availability flags the dashboard shows; flip after §5 credentials land |
 | `DISPATCH_REQUIRE_REACHABLE_CHANNEL` | default `false` = advisory mode (recommended at launch) |
 | `TRUST_PROXY_IP_HEADERS` / `TRUSTED_PROXY_SETS_XFF` | keep `True` on Railway (edge proxies) |
@@ -94,7 +96,7 @@ missing or wrong → **401 `{"error": "INVALID_WEBHOOK_SECRET"}`** and nothing i
 | `VOICEBIP_API_URL` / `VOICEBIP_API_KEY` / `VOICEBIP_VOICE_AGENT_ID` / `VOICEBIP_CALLER_ID` / `VOICEBIP_SMS_SENDER_ID` | §5 partner credentials |
 | `PROVIDER_CALLBACK_TOKEN` | §3 |
 | `PROVIDER_CALLBACK_ALLOW_QUERY_TOKEN` | unset/false unless VoiceBip confirms they can only paste a URL |
-| `WHATSAPP_PHONE_NUMBER_ID` / `WHATSAPP_ACCESS_TOKEN` / `WHATSAPP_TEMPLATE_NAME` / `WHATSAPP_TEMPLATE_LANG` / `WHATSAPP_VERIFY_TOKEN` | §5 partner credentials; dormant while empty (safe skips, never errors) |
+| `WHATSAPP_PHONE_NUMBER_ID` / `WHATSAPP_ACCESS_TOKEN` / `WHATSAPP_TEMPLATE_NAME` / `WHATSAPP_TEMPLATE_LANG` / `WHATSAPP_VERIFY_TOKEN` / `WHATSAPP_DISRUPTION_TEMPLATE_NAME` | §5 partner credentials; dormant while empty (safe skips, never errors) |
 | `N8N_BLOCK_ENV_ACCESS_IN_NODE` | `false` (code nodes read the env) |
 
 **Restart n8n after any env change** — variables are read once at process start.
@@ -117,6 +119,7 @@ missing or wrong → **401 `{"error": "INVALID_WEBHOOK_SECRET"}`** and nothing i
 - [ ] **VoiceBip**: DND routing for free-text SMS on Nigerian numbers, or is a pre-registered template required (if so: template id + variable syntax)
 - [ ] **Meta**: WhatsApp phone number ID + **permanent** access token
 - [ ] **Meta**: approved utility-category template — name, language, and placeholder order must match `WHATSAPP_TEMPLATE_PARAM_ORDER` (default `patient_name,service_name,option_1,option_2,option_3,expiry`; quick replies optional via `WHATSAPP_TEMPLATE_QUICK_REPLIES`)
+- [ ] **Meta**: a second approved utility-category template for **disruption notices** — body is ONE placeholder (`{{1}}` = our full sentence, verbatim); its name goes in `WHATSAPP_DISRUPTION_TEMPLATE_NAME`
 
 ---
 

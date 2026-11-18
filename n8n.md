@@ -259,6 +259,45 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
 
 ---
 
+### Workflow 8: Emergency Disruption & Reassignment Notifier
+- **Template File**: `n8n/workflows/08_disruption_notifier.json`
+- **Purpose**: Delivers the notices Django queues when a receptionist uses the one-click emergency-leave resolver on the Schedule Grid (doctor absent -> every impacted patient moved in priority order: same-time colleague -> earliest same-day slot -> next day). **Django decides everything** - who moves, to which doctor, and the exact words; `08` only delivers them over WhatsApp + SMS. Same graph shape as `05` (verify -> parse -> adapter -> route -> send -> log), with its own webhook and its own approved template.
+
+#### Node Pipeline & Data Flow:
+```
+[Webhook: Disruption Alerts Webhook from Django]  POST /webhook/disruption-alerts
+  - Fired by Django after the auto-resolve transaction commits
+    (N8N_DISRUPTION_WEBHOOK_URL); payload = one item per appointment x channel
+       |
+[Verify Disruption Secret] -> [IF Disruption Authorized]
+  |- false -> [Respond Disruption Unauthorized]  (401, nothing sent)
+  |- true  -> [Respond Disruption Accepted] (200) -> [Parse Disruption Items]
+              (one item per channel; malformed items dropped)
+                |
+         [Provider Config & Adapter]
+           - adapts EVERY input item 1:1 (one push carries every impacted patient;
+             item[0]-only silently stranded 3 of 4 patients in the live proof)
+           - mock mode -> Provider Simulator; live mode -> real APIs
+                |
+         [Route Provider Request] -+- whatsapp -> [Send WhatsApp Interactive Message]
+                                   +- sms      -> [Send SMS (VoiceBip)]
+                                   +- skip     -> [Log Skipped Channel]
+                |
+         [Log WhatsApp Interaction] / [Log SMS Interaction]
+           POST /api/v1/interactions/ - upsert by external_ref
+```
+
+- **Message contract**: Django's notice sentence is passed **verbatim**; the WhatsApp
+  template is its own approved template (`WHATSAPP_DISRUPTION_TEMPLATE_NAME`) whose body
+  is a single `{{1}}` placeholder. No quick-reply buttons and no voice leg (decision
+  2026-11-17: a disruption notice is a message, not an interaction).
+- **Env**: `N8N_DISRUPTION_WEBHOOK_URL` (Django side), `WHATSAPP_DISRUPTION_TEMPLATE_NAME`
+  (n8n side), `DJANGO_WEBHOOK_SECRET` (shared auth), plus the standard `WHATSAPP_*` /
+  `VOICEBIP_*` pair. Unset URL on the Django side = fail-safe (nothing claimed).
+- **Tests**: `node n8n/tests/test_disruption_notifier.js` (77 checks, including the
+  D+1-D+7 multi-item adapter cases that pin the item[0] regression).
+
+---
 ## 3. Webhook Security & Idempotency Governance
 
 1. **Authentication Header** (Django ⇄ n8n):
@@ -278,6 +317,7 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
    | `07` Provider Callback | `/webhook/provider-callback` (**GET + POST**, one output per method) | POST: `PROVIDER_CALLBACK_TOKEN` in a **header** (`X-Provider-Token` / `X-Callback-Token` / `X-Webhook-Token`); a query token only for a Meta envelope or with `PROVIDER_CALLBACK_ALLOW_QUERY_TOKEN=true`. GET: `hub.verify_token` vs `WHATSAPP_VERIFY_TOKEN` (Meta handshake only) | POST **401**; GET **403** — both fail closed when the env var is unset |
    | `06` Provider Simulator | `/webhook/provider-sim/*` | none — dev-only, deactivated before launch | n/a |
    | `04` Patient Response (C.2) | `/webhook/whatsapp-inbound` + `/webhook/sms-inbound` (**both POST**) | `X-Webhook-Secret` checked **before** the graph runs (`Verify Reply Secret` → `IF Reply Authorized`), same pattern as `05` | **401** `{ok:false,error:"unauthorized",reason}` — nothing is sent; its call **into** Django (`POST /api/v1/webhooks/patient-reply/`) carries the same secret and Django checks it again (C.1, §5.8) |
+   | `08` Disruption Notifier (B.3) | `/webhook/disruption-alerts` (**POST**) | `X-Webhook-Secret` checked **before** the graph runs (`Verify Disruption Secret` -> `IF Disruption Authorized`), same pattern as `05` | **401** `{ok:false,error:"unauthorized",reason}` - nothing is sent; Django fires it fire-and-forget after commit |
 
    `05` is the most sensitive entry point because it triggers real outbound messages and
    calls, so it answers with a true **401** (`responseMode: responseNode`) instead of the
