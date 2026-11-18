@@ -2037,6 +2037,54 @@ for WhatsApp/SMS delivery." Probe rows deleted, doctors restored, DB clean.
 
 ---
 
+## 2026-11-18 - Item C: double-booking red alert (built, live-proven)
+
+### What was broken
+Nothing watched the database for two patients in the same doctor's chair at the same
+time. The booking engine blocks such writes, but an import, a manual SQL edit or a
+migration could still create one, and the receptionist would only find out when both
+patients arrived.
+
+### What shipped
+- `ConflictService.find_double_bookings` (C.1): read-only scan from one day back to
+  fourteen days ahead; active statuses only; expired holds ignored; real appointment
+  intervals compared (sterilization buffers never raise this alert). Every clash is
+  reported once per pair with the doctor, both appointment records and the exact
+  overlap window, soonest first. 12 tests.
+- `GET /api/v1/conflicts/double-bookings/` (C.2): staff-only feed returning
+  `{generated_at, count, conflicts}`; it wraps the service so the rules live in one
+  place. 3 tests.
+- Frontend (C.3): headless `useDoubleBookingAlert` polls every 10 seconds;
+  `DoubleBookingAlert` is a full-screen red pulsing overlay naming the doctor, both
+  codes, both patients and the overlap, with "View in calendar" and "Silence alert".
+  A red count chip stays until the clash is gone and brings the overlay back when
+  clicked. Logic lives in the hook + apiService, markup in the component, styles in
+  `double-booking-alert.css`.
+
+### Tests
+Red first at every step: 12 detector tests (NotImplementedError), 3 endpoint tests
+(404), then green; full Django suite green. Parse check clean on every changed
+frontend file; live browser proof.
+
+### Live proof
+Two deliberately overlapping confirmed appointments on Dr. Bello (11:00-11:30 and
+11:15-11:45): the overlay named AP-0007 / AP-0008 with overlap 12:15-12:30 PM
+(local); "View in calendar" selected the clash day and Dr. Bello; "Silence alert"
+closed the overlay and the chip stayed red; clicking the chip reopened it; deleting
+one probe cleared the chip 3.6 s later through the 10 s poll. Probe rows deleted,
+doctors restored, DB clean.
+
+### Files
+`backend/appointments/services/conflict_service.py`,
+`backend/appointments/views_appointment.py`, `backend/appointments/urls.py`,
+`backend/appointments/tests.py`, `frontend/src/hooks/useDoubleBookingAlert.js`,
+`frontend/src/components/calendar/DoubleBookingAlert.jsx`,
+`frontend/src/styles/components/double-booking-alert.css`,
+`frontend/src/components/calendar/DoctorGridBookingCalendar.jsx`,
+`frontend/src/services/apiService.js`.
+
+---
+
 ## Next up - Phase 5 (partner handover)
 
 **Status: 5.1 done (2026-11-17); 5.2 blocked on the partner; 5.3 next.** All message-carrying

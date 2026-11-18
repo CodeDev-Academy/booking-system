@@ -182,6 +182,28 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
   `sent` rows in Django; captured toast "2 same day. 4 notices pushed". Probe rows deleted, doctors restored,
   DB left clean.
 
+- [x] `T-723`: **Double-Booking Detector (Item C / C.1)**: `ConflictService.find_double_bookings`
+  is a read-only safety net for clashes that reached the database another way (import, manual SQL,
+  migration). It scans `now - 1 day` to `now + 14 days`, keeps only active statuses
+  (`confirmed` / `held` / `arrived` / `in_consultation`), drops expired holds
+  (`hold_expires_at <= now`), groups by doctor and reports EVERY overlapping pair once: doctor id +
+  name, both appointment records (id, code, patient, status, start, end) and the exact overlap
+  window, sorted soonest-first. Real appointment intervals only — sterilization buffers never raise
+  this alert. 12 tests written first (red: `NotImplementedError`), then green.
+- [x] `T-724`: **Conflicts Endpoint (C.2)**: `GET /api/v1/conflicts/double-bookings/` is staff-only
+  (401 unauthenticated) and returns `{generated_at, count, conflicts}` by wrapping the service, so
+  the detection rules live in exactly one place. 3 tests written first (red: 404), then green.
+- [x] `T-725`: **Full-Screen Red Alert + 10s Re-Check (C.3)**: headless
+  `useDoubleBookingAlert` polls every 10 seconds and tracks silences per clash key — a fixed clash
+  loses its silence, so the same pair clashing again speaks up; a failed poll keeps the last known
+  list (never a false all-clear). `DoubleBookingAlert` renders a full-screen red pulsing overlay
+  naming the doctor, both codes, both patients and the overlap, with "View in calendar" (jumps to
+  the clash day and doctor) and "Silence alert" (dismisses the overlay). A red count chip stays
+  until the backend reports zero clashes and reopens the overlay when clicked. Live proof on two
+  deliberately overlapping confirmed appointments: overlay named AP-0007 / AP-0008 with overlap
+  12:15-12:30 PM; view / silence / chip-reopen verified; deleting one probe cleared the chip 3.6 s
+  later through the poll. Probe rows deleted, doctors restored, DB clean.
+
 ---
 
 ## 3. Test Execution Log
@@ -220,6 +242,7 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 | 2026-11-17 | Brain Agent | `Suite K / T-716–T-718` | **PASSED** | Partner-readiness QA batch from the user's live dashboard session: (T-716) `attention_open` resolution rule - 3 red then green, recovered patients leave Needs Attention and return only on a newer failure; (T-717) simulator DOB 400 reproduced (90-byte body), then `null` DOB -> 201 live + loud live-failure toast + ghost-row reconciliation (queue store persists to localStorage, ghosts survived refreshes); (T-718) seeder credential wipe - reseed test red first, credentials-once rule green. Full suite **253 / 253** (248 + 5 new). Commits `fa981fe`, `c1e14c0`. |
 | 2026-11-17 | Brain Agent | `Item A / T-719` | **PASSED** | n8n restructure: `workflows/` + `docs/` + README tree, `git mv` history preserved, 13 harness path refs updated, all 9 harnesses green after the move, live doc pointers synced. |
 | 2026-11-17 → 18 | Brain Agent | `Item B / T-720-T-722` | **PASSED** | One-click doctor-leave resolver end to end: Django service (suite 265/265) + endpoint + n8n push, workflow `08` (77-check harness; fail-closed 401 verified live), frontend cockpit wired to the live grid. Live proof on fresh probe patients (executions 951, 960, 1066): adapter multi-item fix took Parse 4 → Adapter 4 → Route [2 whatsapp / 2 sms / 0 skip] → 4 `sent` rows; truthful toast captured ("2 same day. 4 notices pushed"). Three real defects found and pinned: single-item adapter, append-only calendar sync, missing toast render on the calendar route. Probes, claim rows and audit rows deleted; every doctor restored; DB left clean. |
+| 2026-11-18 | Brain Agent | `Item C / T-723-T-725` | **PASSED** | Double-booking detector + staff endpoint + full-screen red alert with 10s re-check. Detector 12 tests and endpoint 3 tests written red-first (NotImplementedError / 404), then green; full Django suite green. Live proof: two deliberately overlapping confirmed appointments on Dr. Bello -> overlay named AP-0007 / AP-0008 and the exact 12:15-12:30 PM overlap -> "View in calendar" selected the clash day + doctor, "Silence alert" dismissed the overlay while the red chip stayed, chip click reopened it; deleting one probe cleared the chip after 3.6 s. Probe rows deleted, doctors restored, DB clean. |
 
 ---
 
