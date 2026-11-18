@@ -23,6 +23,7 @@ from .models import (
 from .services.availability import AvailabilityEngine
 from .services.hold_service import HoldService, SlotConflictException
 from .services.disruption_service import DisruptionService
+from .services.conflict_service import ConflictService
 from .services.sweep_service import SweepService
 
 
@@ -7062,6 +7063,284 @@ class PatientReplyWebhookTests(APITestCase):
             InteractionLog.objects.filter(direction='inbound', external_ref='vb-in-2001').count(),
             1,
         )
+
+
+class DoubleBookingConflictTests(TestCase):
+    """
+    Item C.1 - ConflictService.find_double_bookings.
+
+    The booking engine prevents double-bookings at write time; this detector is
+    the safety net for data that got in another way (import, manual SQL,
+    migration). It must name the doctor, both appointment codes and the exact
+    overlap window, and it must never fire on a clean schedule.
+    """
+
+    def setUp(self):
+        self.clinic = ClinicSetting.get_settings()
+        self.doctor = Doctor.objects.create(
+            name='Dr. Bello Ibrahim',
+            specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0),
+            shift_end=datetime.time(17, 0),
+            max_daily_appointments=12,
+        )
+        self.other_doctor = Doctor.objects.create(
+            name='Dr. Chinwe Okafor',
+            specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6],
+            shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(16, 0),
+            max_daily_appointments=14,
+        )
+        self.service = Service.objects.create(
+            name='Dental Examination',
+            category='Dental Care',
+            duration_minutes=30,
+            buffer_minutes=10,
+            price=15000.00,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.service)
+        DoctorService.objects.create(doctor=self.other_doctor, service=self.service)
+
+        # Fixed "now" so the scan window is deterministic.
+        self.now = timezone.now().replace(microsecond=0) + datetime.timedelta(days=1)
+
+    def _slot(self, hour, minute=0, day_offset=0):
+        return self.now.replace(hour=hour, minute=minute, second=0) + datetime.timedelta(days=day_offset)
+
+    def _appt(self, start, end, doctor=None, status='confirmed', name='Patient', hold_expires_at=None):
+        return Appointment.objects.create(
+            appointment_code='',
+            patient_name=name,
+            patient_phone='+2348000000000',
+            doctor=doctor or self.doctor,
+            service=self.service,
+            start_datetime=start,
+            end_datetime=end,
+            status=status,
+            hold_expires_at=hold_expires_at,
+        )
+
+    def test_detects_overlap_and_names_doctor_and_both_codes(self):
+        a = self._appt(self._slot(10, 0), self._slot(11, 0), name='Ada')
+        b = self._appt(self._slot(10, 30), self._slot(11, 30), name='Bola')
+
+        conflicts = ConflictService.find_double_bookings(now=self.now)
+
+        self.assertEqual(len(conflicts), 1)
+        c = conflicts[0]
+        self.assertEqual(c['doctor_id'], str(self.doctor.id))
+        self.assertEqual(c['doctor_name'], 'Dr. Bello Ibrahim')
+        self.assertEqual(
+            sorted([c['appointment_a']['code'], c['appointment_b']['code']]),
+            sorted([a.appointment_code, b.appointment_code]),
+        )
+        self.assertEqual(
+            sorted([c['appointment_a']['patient'], c['appointment_b']['patient']]),
+            ['Ada', 'Bola'],
+        )
+
+    def test_overlap_window_is_exact(self):
+        self._appt(self._slot(10, 0), self._slot(11, 0))
+        self._appt(self._slot(10, 30), self._slot(11, 30))
+
+        c = ConflictService.find_double_bookings(now=self.now)[0]
+
+        self.assertEqual(c['overlap_start'], self._slot(10, 30).isoformat())
+        self.assertEqual(c['overlap_end'], self._slot(11, 0).isoformat())
+
+    def test_appointment_fully_inside_another_is_flagged(self):
+        self._appt(self._slot(9, 0), self._slot(12, 0))
+        self._appt(self._slot(10, 0), self._slot(10, 30))
+
+        c = ConflictService.find_double_bookings(now=self.now)[0]
+
+        self.assertEqual(c['overlap_start'], self._slot(10, 0).isoformat())
+        self.assertEqual(c['overlap_end'], self._slot(10, 30).isoformat())
+
+    def test_adjacent_appointments_are_clean(self):
+        self._appt(self._slot(10, 0), self._slot(11, 0))
+        self._appt(self._slot(11, 0), self._slot(12, 0))
+
+        self.assertEqual(ConflictService.find_double_bookings(now=self.now), [])
+
+    def test_cancelled_no_show_and_completed_are_ignored(self):
+        self._appt(self._slot(10, 0), self._slot(11, 0))
+        self._appt(self._slot(10, 15), self._slot(10, 45), status='cancelled')
+        self._appt(self._slot(10, 20), self._slot(10, 40), status='no_show')
+        self._appt(self._slot(10, 25), self._slot(10, 35), status='completed')
+
+        self.assertEqual(ConflictService.find_double_bookings(now=self.now), [])
+
+    def test_expired_hold_is_ignored(self):
+        self._appt(self._slot(10, 0), self._slot(11, 0))
+        self._appt(
+            self._slot(10, 30),
+            self._slot(11, 30),
+            status='held',
+            hold_expires_at=self.now - datetime.timedelta(minutes=5),
+        )
+
+        self.assertEqual(ConflictService.find_double_bookings(now=self.now), [])
+
+    def test_live_hold_overlapping_confirmed_is_flagged(self):
+        self._appt(self._slot(10, 0), self._slot(11, 0))
+        self._appt(
+            self._slot(10, 30),
+            self._slot(11, 30),
+            status='held',
+            hold_expires_at=self.now + datetime.timedelta(minutes=15),
+        )
+
+        self.assertEqual(len(ConflictService.find_double_bookings(now=self.now)), 1)
+
+    def test_other_doctors_are_independent(self):
+        self._appt(self._slot(10, 0), self._slot(11, 0))
+        self._appt(self._slot(10, 0), self._slot(11, 0), doctor=self.other_doctor)
+
+        self.assertEqual(ConflictService.find_double_bookings(now=self.now), [])
+
+    def test_arrived_and_in_consultation_are_active(self):
+        self._appt(self._slot(10, 0), self._slot(11, 0), status='arrived')
+        self._appt(self._slot(10, 30), self._slot(11, 30), status='in_consultation')
+
+        self.assertEqual(len(ConflictService.find_double_bookings(now=self.now)), 1)
+
+    def test_three_way_stack_reports_every_pair(self):
+        self._appt(self._slot(10, 0), self._slot(11, 0), name='One')
+        self._appt(self._slot(10, 15), self._slot(11, 15), name='Two')
+        self._appt(self._slot(10, 30), self._slot(11, 30), name='Three')
+
+        conflicts = ConflictService.find_double_bookings(now=self.now)
+
+        self.assertEqual(len(conflicts), 3)  # (1,2) (1,3) (2,3)
+        pairs = {
+            frozenset([c['appointment_a']['patient'], c['appointment_b']['patient']])
+            for c in conflicts
+        }
+        self.assertEqual(len(pairs), 3)
+
+    def test_results_are_sorted_by_overlap_start(self):
+        self._appt(self._slot(14, 0), self._slot(15, 0), name='LateA')
+        self._appt(self._slot(14, 30), self._slot(15, 30), name='LateB')
+        self._appt(self._slot(9, 0), self._slot(10, 0), name='EarlyA')
+        self._appt(self._slot(9, 30), self._slot(10, 30), name='EarlyB')
+
+        conflicts = ConflictService.find_double_bookings(now=self.now)
+
+        self.assertEqual(len(conflicts), 2)
+        self.assertLess(conflicts[0]['overlap_start'], conflicts[1]['overlap_start'])
+
+    def test_appointments_outside_the_scan_window_are_ignored(self):
+        # Beyond the 1-day lookback.
+        self._appt(self._slot(10, 0, day_offset=-5), self._slot(11, 0, day_offset=-5))
+        self._appt(self._slot(10, 30, day_offset=-5), self._slot(11, 30, day_offset=-5))
+
+        # Beyond the 14-day lookahead.
+        self._appt(self._slot(10, 0, day_offset=40), self._slot(11, 0, day_offset=40))
+        self._appt(self._slot(10, 30, day_offset=40), self._slot(11, 30, day_offset=40))
+
+        self.assertEqual(ConflictService.find_double_bookings(now=self.now), [])
+
+
+class DoubleBookingEndpointTests(APITestCase):
+    """
+    Item C.2 - GET /api/v1/conflicts/double-bookings/
+
+    Read-only staff endpoint that feeds the red dashboard alert. It wraps
+    ConflictService, so the rules (active statuses, expired holds, real
+    intervals) live in exactly one place.
+    """
+
+    URL = '/api/v1/conflicts/double-bookings/'
+
+    def setUp(self):
+        cache.clear()
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Conflicts',
+            email='sarah.conflicts@clinic.com',
+            role='receptionist',
+            is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+        self.doctor = Doctor.objects.create(
+            name='Dr. Bello Ibrahim',
+            specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0),
+            shift_end=datetime.time(17, 0),
+            max_daily_appointments=12,
+        )
+        self.service = Service.objects.create(
+            name='Dental Examination',
+            category='Dental Care',
+            duration_minutes=30,
+            buffer_minutes=10,
+            price=15000.00,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.service)
+        self.now = timezone.now().replace(microsecond=0) + datetime.timedelta(days=1)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _appt(self, hour, minute, status='confirmed'):
+        start = self.now.replace(hour=hour, minute=minute, second=0)
+        return Appointment.objects.create(
+            appointment_code='',
+            patient_name=f'Patient {hour}:{minute}',
+            patient_phone='+2348000000000',
+            doctor=self.doctor,
+            service=self.service,
+            start_datetime=start,
+            end_datetime=start + datetime.timedelta(minutes=30),
+            status=status,
+        )
+
+    def test_requires_staff_authentication(self):
+        res = self.client.get(self.URL)
+
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_returns_detected_conflicts(self):
+        self.client.force_authenticate(user=self.receptionist)
+        a = self._appt(10, 0)
+        b = self._appt(10, 15)
+
+        res = self.client.get(self.URL)
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(len(res.data['conflicts']), 1)
+        conflict = res.data['conflicts'][0]
+        self.assertEqual(conflict['doctor_id'], str(self.doctor.id))
+        self.assertEqual(conflict['doctor_name'], 'Dr. Bello Ibrahim')
+        self.assertEqual(
+            sorted([conflict['appointment_a']['code'], conflict['appointment_b']['code']]),
+            sorted([a.appointment_code, b.appointment_code]),
+        )
+        self.assertEqual(
+            conflict['overlap_start'],
+            self.now.replace(hour=10, minute=15, second=0).isoformat(),
+        )
+        self.assertEqual(
+            conflict['overlap_end'],
+            self.now.replace(hour=10, minute=30, second=0).isoformat(),
+        )
+        self.assertIn('generated_at', res.data)
+
+    def test_clean_schedule_is_an_empty_list(self):
+        self.client.force_authenticate(user=self.receptionist)
+        self._appt(10, 0)
+        self._appt(10, 30)  # back-to-back, not overlapping
+
+        res = self.client.get(self.URL)
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 0)
+        self.assertEqual(res.data['conflicts'], [])
 
 
 

@@ -30,6 +30,8 @@ import { useCalendarStore } from '../../stores/useCalendarStore';
 import { useStaffStore } from '../../stores/useStaffStore';
 import { useAuthStore } from '../../stores/useAuthStore';
 import { EmergencyDisruptionModal } from './EmergencyDisruptionModal';
+import { DoubleBookingAlert, DoubleBookingCountChip } from './DoubleBookingAlert';
+import { useDoubleBookingAlert } from '../../hooks/useDoubleBookingAlert';
 import '../../styles/components/grid-booking-calendar.css';
 
 const getInitialToday = () => new Date();
@@ -221,6 +223,10 @@ export const DoctorGridBookingCalendar = ({
   const autoResolveDisruption = useCalendarStore((state) => state.autoResolveDisruption);
   const restoreDoctorDuty = useCalendarStore((state) => state.restoreDoctorDuty);
 
+  // Item C — red double-booking alert. Polls the backend every 10s; the
+  // overlay + red chip stay until the clash is fixed.
+  const doubleBookingAlert = useDoubleBookingAlert();
+
   // Colleague options for the disruption modal (on-duty doctors only).
   const availableColleagues = useMemo(() => {
     if (!disruptionModal.doctorId) return [];
@@ -359,6 +365,33 @@ export const DoctorGridBookingCalendar = ({
     return DOCTOR_META[currentDoctor?.id] || DOCTOR_META['doc-bello'];
   }, [currentDoctor]);
 
+  // "View in calendar" from the red alert: jump to the overlapping day and
+  // select the clashing doctor's column, then step the overlay aside. The red
+  // chip stays until the clash itself is gone.
+  const handleViewDoubleBooking = () => {
+    const conflict = doubleBookingAlert.primaryConflict;
+    if (!conflict) return;
+    const start = new Date(conflict.overlap_start || conflict.appointment_a?.start);
+    if (!Number.isNaN(start.getTime())) {
+      setSelectedDate(start);
+      setCurrentMonthDate(new Date(start.getFullYear(), start.getMonth(), 1));
+    }
+    setTimetableHorizon('day');
+
+    const doctorName = String(conflict.doctor_name || '').toLowerCase();
+    const match = doctors.find((doc) => {
+      if (doc.id === conflict.doctor_id) return true;
+      const tokens = String(doc.name || '')
+        .toLowerCase()
+        .replace(/^dr\.?\s+/, '')
+        .split(/\s+/);
+      return tokens.some((token) => token.length > 2 && doctorName.includes(token));
+    });
+    if (match) setSelectedDoctorId(match.id);
+
+    doubleBookingAlert.silence();
+  };
+
   // Subscribe to live calendar blocks for real-time walk-in reflection
   const storeBlocks = useCalendarStore((state) => state.blocks) || [];
 
@@ -496,6 +529,10 @@ export const DoctorGridBookingCalendar = ({
 
         {/* User Profile Pill with Interactive Dropdown */}
         <div className="grid-booking-user-actions">
+          <DoubleBookingCountChip
+            count={doubleBookingAlert.count}
+            onReopen={doubleBookingAlert.reopen}
+          />
           <button type="button" className="round-icon-action-btn" title="Front-Desk Alerts">
             <Bell size={16} />
           </button>
@@ -1261,6 +1298,17 @@ export const DoctorGridBookingCalendar = ({
           onRestoreDuty={restoreDoctorDuty}
         />
       )}
+
+      {/* Item C — full-screen red double-booking alert. Names the doctor, both
+          appointment codes and the exact overlap; the chip stays red after
+          "Silence" until the backend reports the clash is gone. */}
+      <DoubleBookingAlert
+        isOpen={doubleBookingAlert.isOpen}
+        conflict={doubleBookingAlert.primaryConflict}
+        count={doubleBookingAlert.conflicts.length}
+        onViewInCalendar={handleViewDoubleBooking}
+        onSilence={doubleBookingAlert.silence}
+      />
     </div>
   );
 };

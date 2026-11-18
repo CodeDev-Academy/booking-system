@@ -16,6 +16,7 @@ from .permissions import IsStaffAuthenticated
 from .services.hold_service import HoldService, SlotConflictException
 from .services.slot_selection import select_slot_offer
 from .services.disruption_service import DisruptionService
+from .services.conflict_service import ConflictService
 from .services.dispatch_service import fire_and_forget_webhook
 from .services.webhook_security import has_staff_or_webhook_access, resolve_webhook_secret, verify_webhook_secret
 from .services.sse_bus import broadcast_event
@@ -352,6 +353,25 @@ class DisruptionAutoResolveView(APIView):
         report['delivery_pushed'] = bool(items) and bool(os.environ.get('N8N_DISRUPTION_WEBHOOK_URL'))
 
         return Response(report, status=status.HTTP_200_OK)
+
+
+class DoubleBookingConflictsView(APIView):
+    """
+    GET /api/v1/conflicts/double-bookings/
+    Item C.2 — read-only feed for the dashboard's red double-booking alert.
+    Wraps ConflictService so the detection rules live in exactly one place.
+    Returns the soonest clash first, plus `generated_at` so the client can show
+    how fresh the check is (it polls every 10 seconds).
+    """
+    permission_classes = [IsStaffAuthenticated]
+
+    def get(self, request):
+        conflicts = ConflictService.find_double_bookings()
+        return Response({
+            'generated_at': timezone.now().isoformat(),
+            'count': len(conflicts),
+            'conflicts': conflicts,
+        }, status=status.HTTP_200_OK)
 
 
 class RescheduleAppointmentView(APIView):

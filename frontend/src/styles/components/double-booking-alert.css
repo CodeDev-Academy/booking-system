@@ -1,0 +1,377 @@
+/* ============================================================
+   Double-booking red alert (Item C)
+   A clash is a safety event, not a notification: full-screen red,
+   pulsing, and impossible to ignore until it is silenced on purpose.
+   ============================================================ */
+
+.double-booking-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 50% 30%, rgba(220, 38, 38, 0.28), transparent 60%),
+    rgba(15, 15, 15, 0.82);
+  backdrop-filter: blur(3px);
+  animation: db-overlay-in 180ms ease-out;
+}
+
+.double-booking-panel {
+  position: relative;
+  width: 100%;
+  max-width: 540px;
+  padding: 30px 30px 24px;
+  background: #ffffff;
+  border: 2px solid var(--danger, #dc2626);
+  border-radius: 18px;
+  box-shadow:
+    0 0 0 1px rgba(220, 38, 38, 0.25),
+    0 24px 70px rgba(0, 0, 0, 0.45),
+    0 0 60px rgba(220, 38, 38, 0.35);
+  overflow: hidden;
+  animation: db-panel-pulse 1.6s ease-in-out infinite;
+}
+
+/* Slow red wash inside the panel — "this is live" without hiding the text. */
+.double-booking-pulse {
+  position: absolute;
+  inset: -40%;
+  pointer-events: none;
+  background: radial-gradient(circle at 50% 0%, rgba(220, 38, 38, 0.16), transparent 62%);
+  animation: db-pulse 1.8s ease-in-out infinite;
+}
+
+.double-booking-kicker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  margin-bottom: 14px;
+  font-family: var(--font-sans, 'Plus Jakarta Sans', sans-serif);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--danger-text, #b91c1c);
+  background: var(--danger-soft, rgba(220, 38, 38, 0.08));
+  border: 1px solid var(--danger-border, rgba(220, 38, 38, 0.2));
+  border-radius: 999px;
+}
+
+.double-booking-title {
+  position: relative;
+  margin: 0 0 6px;
+  font-family: var(--font-sans, 'Plus Jakarta Sans', sans-serif);
+  font-size: 26px;
+  line-height: 1.15;
+  font-weight: 800;
+  color: #0f172a;
+  overflow-wrap: anywhere;
+}
+
+.double-booking-lede {
+  position: relative;
+  margin: 0 0 18px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: #475569;
+}
+
+.double-booking-codes {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  background: #fef2f2;
+  border: 1px solid rgba(220, 38, 38, 0.18);
+  border-radius: 12px;
+}
+
+.double-booking-code-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+  background: #ffffff;
+  border: 1px solid #f1d4d4;
+  border-radius: 9px;
+}
+
+.double-booking-code {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  border-radius: 6px;
+}
+
+.double-booking-code.accent-a {
+  color: #b91c1c;
+  background: rgba(220, 38, 38, 0.1);
+}
+
+.double-booking-code.accent-b {
+  color: #9a3412;
+  background: rgba(234, 88, 12, 0.12);
+}
+
+.double-booking-patient {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.double-booking-time {
+  flex: 0 0 auto;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: #64748b;
+}
+
+.double-booking-vs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #b91c1c;
+}
+
+.double-booking-vs span {
+  flex: 1 1 auto;
+  height: 1px;
+  background: rgba(220, 38, 38, 0.25);
+}
+
+.double-booking-overlap {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: #0f172a;
+  border-radius: 10px;
+}
+
+.double-booking-overlap-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #fca5a5;
+}
+
+.double-booking-overlap-value {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #ffffff;
+}
+
+.double-booking-more {
+  position: relative;
+  margin: 12px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #b91c1c;
+}
+
+.double-booking-actions {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.double-booking-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 1 1 180px;
+  padding: 12px 16px;
+  font-family: var(--font-sans, 'Plus Jakarta Sans', sans-serif);
+  font-size: 13px;
+  font-weight: 700;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.double-booking-btn:active {
+  transform: translateY(1px);
+}
+
+.double-booking-btn.primary {
+  color: #ffffff;
+  background: linear-gradient(180deg, #ef4444, #dc2626);
+  box-shadow: 0 8px 20px rgba(220, 38, 38, 0.32);
+}
+
+.double-booking-btn.primary:hover {
+  background: linear-gradient(180deg, #f05252, #c81e1e);
+}
+
+.double-booking-btn.ghost {
+  color: #0f172a;
+  background: #ffffff;
+  border-color: #e2e8f0;
+}
+
+.double-booking-btn.ghost:hover {
+  background: #f8fafc;
+}
+
+.double-booking-footnote {
+  position: relative;
+  margin: 14px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #94a3b8;
+}
+
+/* ---- Red count chip ---- */
+
+.double-booking-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  font-family: var(--font-sans, 'Plus Jakarta Sans', sans-serif);
+  font-size: 12px;
+  font-weight: 800;
+  color: #ffffff;
+  background: linear-gradient(180deg, #ef4444, #dc2626);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.55);
+  animation: db-chip-pulse 1.8s ease-out infinite;
+}
+
+.double-booking-chip span {
+  font-variant-numeric: tabular-nums;
+}
+
+.double-booking-chip-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.9;
+}
+
+.double-booking-chip:hover {
+  background: linear-gradient(180deg, #f05252, #c81e1e);
+}
+
+/* ---- Motion ---- */
+
+@keyframes db-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes db-panel-pulse {
+  0%,
+  100% {
+    border-color: var(--danger, #dc2626);
+    box-shadow:
+      0 0 0 1px rgba(220, 38, 38, 0.25),
+      0 24px 70px rgba(0, 0, 0, 0.45),
+      0 0 40px rgba(220, 38, 38, 0.28);
+  }
+  50% {
+    border-color: #f87171;
+    box-shadow:
+      0 0 0 4px rgba(220, 38, 38, 0.22),
+      0 24px 70px rgba(0, 0, 0, 0.45),
+      0 0 80px rgba(220, 38, 38, 0.5);
+  }
+}
+
+@keyframes db-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes db-chip-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 9px rgba(220, 38, 38, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0);
+  }
+}
+
+/* ---- Responsive & anti-overflow ---- */
+
+@media (max-width: 640px) {
+  .double-booking-overlay {
+    padding: 14px;
+    align-items: end;
+  }
+
+  .double-booking-panel {
+    padding: 22px 18px 18px;
+    border-radius: 16px;
+  }
+
+  .double-booking-title {
+    font-size: 21px;
+  }
+
+  .double-booking-code-row {
+    flex-wrap: wrap;
+  }
+
+  .double-booking-time {
+    width: 100%;
+  }
+
+  .double-booking-btn {
+    flex: 1 1 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .double-booking-overlay,
+  .double-booking-panel,
+  .double-booking-pulse,
+  .double-booking-chip {
+    animation: none;
+  }
+}

@@ -362,6 +362,12 @@ export const apiService = {
     });
   },
 
+  // Read-only double-booking feed for the red dashboard alert. The backend
+  // decides what counts as a clash; this method only fetches the list.
+  async fetchDoubleBookings() {
+    return request('/conflicts/double-bookings/');
+  },
+
   async fetchUpcomingReminders(windowDays = 14) {
     return request(`/appointments/upcoming-reminders/?window_days=${windowDays}`);
   },
