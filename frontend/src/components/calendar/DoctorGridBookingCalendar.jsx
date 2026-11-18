@@ -211,6 +211,7 @@ export const DoctorGridBookingCalendar = ({
 }) => {
   const navigate = useNavigate();
   const calendarDoctors = useCalendarStore((state) => state.doctors);
+  const leavePeriods = useCalendarStore((state) => state.leavePeriods);
   const staffList = useStaffStore((state) => state.staffList);
   const lockDesk = useAuthStore((state) => state.lockDesk);
   const logout = useAuthStore((state) => state.logout);
@@ -221,21 +222,16 @@ export const DoctorGridBookingCalendar = ({
   const closeDisruptionModal = useCalendarStore((state) => state.closeDisruptionModal);
   const reassignToColleague = useCalendarStore((state) => state.reassignToColleague);
   const autoResolveDisruption = useCalendarStore((state) => state.autoResolveDisruption);
+  const setLeaveWindow = useCalendarStore((state) => state.setLeaveWindow);
+  const previewDisruptionPlan = useCalendarStore((state) => state.previewDisruptionPlan);
   const restoreDoctorDuty = useCalendarStore((state) => state.restoreDoctorDuty);
 
   // Item C — red double-booking alert. Polls the backend every 10s; the
   // overlay + red chip stay until the clash is fixed.
   const doubleBookingAlert = useDoubleBookingAlert();
 
-  // Colleague options for the disruption modal (on-duty doctors only).
-  const availableColleagues = useMemo(() => {
-    if (!disruptionModal.doctorId) return [];
-    return calendarDoctors.filter(
-      (d) => d.id !== disruptionModal.doctorId && d.isOnDuty && !d.isEmergencyLeave
-    );
-  }, [calendarDoctors, disruptionModal.doctorId]);
-
-  // Doctors list (Dr. Bello, Dr. Okafor, Dr. Babawo)
+  // Colleague options for the disruption modal (on-duty doctors only) — filled
+  // in below, once the timetable's selected day is known.
   const doctors = useMemo(() => {
     if (calendarDoctors && calendarDoctors.length > 0) return calendarDoctors;
     const staffDocs = staffList.filter((s) => s.role === 'doctor');
@@ -276,6 +272,40 @@ export const DoctorGridBookingCalendar = ({
   const selectedDayNumber = selectedDate.getDate();
   const selectedDayName = DAY_NAMES_FULL[selectedDate.getDay()];
   const selectedMonthName = MONTH_NAMES[selectedMonthIdx];
+
+  // The day the timetable is showing decides who is off. A dated leave period
+  // only blocks its own dates, so stepping to another day brings the doctor
+  // back without a refetch. When the backend has no periods for a doctor, the
+  // older boolean (whole-day leave flag) still applies.
+  const doctorsOnSelectedDay = useMemo(() => {
+    if (!leavePeriods || Object.keys(leavePeriods).length === 0) return doctors;
+    const dayKey = new Date(
+      selectedDate.getFullYear(),
+      selectedDate.getMonth(),
+      selectedDate.getDate()
+    ).getTime();
+
+    return doctors.map((doc) => {
+      const periods = leavePeriods[doc.id];
+      if (!periods) return doc;
+      const covering = periods.find((p) => dayKey >= p.start && dayKey <= p.end);
+      return {
+        ...doc,
+        isOnDuty: !covering,
+        isEmergencyLeave: Boolean(covering),
+        emergencyReason: covering?.reason || null,
+      };
+    });
+  }, [doctors, leavePeriods, selectedDate]);
+
+  // Colleague options for the disruption modal: on duty on the viewed day and
+  // not the doctor going on leave.
+  const availableColleagues = useMemo(() => {
+    if (!disruptionModal.doctorId) return [];
+    return doctorsOnSelectedDay.filter(
+      (d) => d.id !== disruptionModal.doctorId && d.isOnDuty && !d.isEmergencyLeave
+    );
+  }, [doctorsOnSelectedDay, disruptionModal.doctorId]);
 
   // Month Calendar Grid Calculation
   const calendarYear = currentMonthDate.getFullYear();
@@ -325,7 +355,7 @@ export const DoctorGridBookingCalendar = ({
 
   // Filtered doctors
   const filteredDoctors = useMemo(() => {
-    return doctors.filter((doc) => {
+    return doctorsOnSelectedDay.filter((doc) => {
       const q = searchDoctorQuery.toLowerCase().trim();
       const matchSearch =
         !q ||
@@ -350,16 +380,16 @@ export const DoctorGridBookingCalendar = ({
       }
       return true;
     });
-  }, [doctors, searchDoctorQuery, selectedSpecialty]);
+  }, [doctorsOnSelectedDay, searchDoctorQuery, selectedSpecialty]);
 
   // Active selected doctor
   const currentDoctor = useMemo(() => {
     return (
-      doctors.find((d) => d.id === selectedDoctorId) ||
+      doctorsOnSelectedDay.find((d) => d.id === selectedDoctorId) ||
       filteredDoctors[0] ||
-      doctors[0]
+      doctorsOnSelectedDay[0]
     );
-  }, [doctors, selectedDoctorId, filteredDoctors]);
+  }, [doctorsOnSelectedDay, selectedDoctorId, filteredDoctors]);
 
   const activeDocMeta = useMemo(() => {
     return DOCTOR_META[currentDoctor?.id] || DOCTOR_META['doc-bello'];
@@ -688,6 +718,7 @@ export const DoctorGridBookingCalendar = ({
                 onClick={() => setSelectedDoctorId(doc.id)}
                 role="button"
                 tabIndex={0}
+                style={doc.isEmergencyLeave ? { borderColor: '#fecaca' } : undefined}
               >
                 <div className="doctor-card-info-row">
                   <div className="doctor-card-avatar">
@@ -702,6 +733,11 @@ export const DoctorGridBookingCalendar = ({
                       <span className="doctor-card-specialty-tag">
                         {doc.specialty || 'General Practice'}
                       </span>
+                      {doc.isEmergencyLeave ? (
+                        <span style={{ fontSize: '10px', color: '#b91c1c', fontWeight: 700 }}>
+                          &bull; On leave
+                        </span>
+                      ) : null}
                       <span style={{ fontSize: '10px', color: '#16a34a', fontWeight: 600 }}>
                         &bull; {weekApptsCount} visits this week
                       </span>
@@ -737,8 +773,26 @@ export const DoctorGridBookingCalendar = ({
               <div className="timetable-doctor-meta">
                 <span className="timetable-doctor-name">{currentDoctor?.name}</span>
                 <span className="timetable-doctor-sub">
-                  <span className="timetable-status-dot" />
-                  <strong style={{ color: '#0f172a' }}>On Duty</strong> &bull;{' '}
+                  <span
+                    className="timetable-status-dot"
+                    style={
+                      currentDoctor?.isEmergencyLeave
+                        ? { background: '#dc2626', boxShadow: '0 0 0 3px rgba(220,38,38,0.12)' }
+                        : undefined
+                    }
+                  />
+                  <strong style={{ color: currentDoctor?.isEmergencyLeave ? '#b91c1c' : '#0f172a' }}>
+                    {currentDoctor?.isEmergencyLeave ? 'On Leave' : 'On Duty'}
+                  </strong>{' '}
+                  {currentDoctor?.isEmergencyLeave && currentDoctor?.emergencyReason ? (
+                    <>
+                      &bull;{' '}
+                      <span style={{ color: '#b91c1c', fontWeight: 600 }}>
+                        {currentDoctor.emergencyReason}
+                      </span>{' '}
+                    </>
+                  ) : null}
+                  &bull;{' '}
                   <span style={{ color: '#0369a1', fontWeight: 600 }}>{currentDoctor?.specialty}</span> &bull;{' '}
                   <span>{activeDocMeta.suite}</span> &bull;{' '}
                   <span className="tabular-nums">{activeDocMeta.shift}</span>
@@ -1290,11 +1344,13 @@ export const DoctorGridBookingCalendar = ({
         <EmergencyDisruptionModal
           isOpen={disruptionModal.isOpen}
           disruptionData={disruptionModal}
-          doctors={calendarDoctors}
+          doctors={doctorsOnSelectedDay}
           availableColleagues={availableColleagues}
           onClose={closeDisruptionModal}
           onReassign={reassignToColleague}
           onAutoResolve={autoResolveDisruption}
+          onSetLeaveWindow={setLeaveWindow}
+          onPreviewPlan={previewDisruptionPlan}
           onRestoreDuty={restoreDoctorDuty}
         />
       )}

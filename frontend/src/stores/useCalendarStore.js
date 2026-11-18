@@ -18,6 +18,37 @@ import { useAppModeStore } from './appModeStore';
 
 const MIN = 60000;
 
+// The calendar roster and the backend staff directory spell the same doctor
+// differently ("Dr. Aminu Bello" vs "Dr. Bello Ibrahim"), so names are matched
+// on shared tokens rather than a substring. Never guess: no match = error.
+const nameTokens = (name) =>
+  String(name || '')
+    .toLowerCase()
+    .replace(/^dr\.?\s*/, '')
+    .split(/[\s.]+/)
+    .filter(Boolean);
+
+const doctorNamesMatch = (a, b) => {
+  const x = nameTokens(a);
+  const y = nameTokens(b);
+  return x.length > 0 && x.some((token) => y.includes(token));
+};
+
+const resolveBackendDoctor = async (doctorName) => {
+  const directory = await apiService.fetchStaffDirectory();
+  const match = (directory?.doctors || []).find((d) => doctorNamesMatch(d.name, doctorName));
+  if (!match) {
+    throw new Error('Doctor not found in the clinic staff directory');
+  }
+  return match;
+};
+
+// Local-midnight day bounds -> the ISO window the backend resolver expects.
+const leaveWindowPayload = (startDay, endDay) => ({
+  leave_start: new Date(startDay).toISOString(),
+  leave_end: new Date(endDay + 24 * 60 * MIN - 1).toISOString(),
+});
+
 // Helper to construct initial calendar blocks
 const initCalendarBlocks = () => {
   const busy = buildBusyBlocks();
@@ -97,12 +128,18 @@ export const useCalendarStore = create(
     notes: '',
   },
 
-  // Emergency Disruption Modal (Risk R-15)
+  // Emergency Disruption Modal (Risk R-15). `leaveWindow` is the planned leave
+  // (whole days, inclusive); `preview` is the backend's rolled-back dry run of
+  // the very resolver that Approve will run.
   disruptionModal: {
     isOpen: false,
     doctorId: null,
     dayStart: null,
     affectedAppointments: [],
+    leaveWindow: null,
+    preview: null,
+    previewLoading: false,
+    previewError: null,
   },
 
   // In-App Toast
@@ -112,6 +149,10 @@ export const useCalendarStore = create(
 
   setViewMode: (mode) => set({ viewMode: mode }),
   setSelectedServiceId: (serviceId) => set({ selectedServiceId: serviceId }),
+
+  // Doctor leave periods from the backend, keyed by roster id. The calendar
+  // derives "on leave" for the day it is showing from these raw ranges.
+  leavePeriods: {},
 
   setDateOffset: (offset) => set({ currentDateOffset: offset }),
   nextDay: () => set((state) => ({ currentDateOffset: state.currentDateOffset + 1 })),
@@ -330,11 +371,17 @@ export const useCalendarStore = create(
     const dayStart = dayStartTs ?? startOfDayOffset(currentDateOffset);
     const dayEnd = dayStart + 24 * 60 * MIN;
 
-    // Find all confirmed/held appointments for this doctor on current viewed day
+    // Find all confirmed/held appointments for this doctor on current viewed day.
+    // Same statuses the backend resolver will move: a patient who already
+    // arrived, was seen, or whose hold expired is not part of the plan, so it
+    // must not appear here either.
+    const now = Date.now();
     const affected = blocks.filter(
       (b) =>
         b.doctorId === doctorId &&
         (b.type === 'appointment' || b.type === 'hold') &&
+        (!b.status || b.status === 'confirmed' || b.status === 'held') &&
+        !(b.holdExpiresAt && b.holdExpiresAt < now) &&
         b.start >= dayStart &&
         b.start < dayEnd
     );
@@ -345,8 +392,145 @@ export const useCalendarStore = create(
         doctorId,
         dayStart,
         affectedAppointments: affected,
+        leaveWindow: { startDay: dayStart, endDay: dayStart },
+        preview: null,
+        previewLoading: false,
+        previewError: null,
       },
     });
+  },
+
+  // The receptionist widens or narrows the planned leave (whole days). Any
+  // change throws away the old preview: it no longer describes this plan.
+  setLeaveWindow: ({ startDay, endDay }) => {
+    set((state) => {
+      const start = startDay ?? state.disruptionModal.leaveWindow?.startDay ?? state.disruptionModal.dayStart;
+      const rawEnd = endDay ?? state.disruptionModal.leaveWindow?.endDay ?? start;
+      const end = rawEnd < start ? start : rawEnd;
+      return {
+        disruptionModal: {
+          ...state.disruptionModal,
+          leaveWindow: { startDay: start, endDay: end },
+          preview: null,
+          previewError: null,
+        },
+      };
+    });
+  },
+
+  // Dry run: the backend runs the REAL resolver inside a rolled-back
+  // transaction. Same placements, same counts, nothing saved, nothing sent.
+  previewDisruptionPlan: async (reason = 'Planned Leave') => {
+    const modal = get().disruptionModal;
+    const docId = modal.doctorId;
+    if (!docId) return { success: false, message: 'No doctor selected' };
+
+    const doctorName = getDoctor(docId)?.name || 'Doctor';
+    const dayStart = modal.leaveWindow?.startDay ?? modal.dayStart ?? startOfDayOffset(get().currentDateOffset);
+    const dayEnd = modal.leaveWindow?.endDay ?? dayStart;
+
+    set((state) => ({
+      disruptionModal: { ...state.disruptionModal, previewLoading: true, previewError: null },
+    }));
+
+    try {
+      if (useAppModeStore.getState().isDemoMode) {
+        // Demo mode has no backend: plan locally from the blocks on screen and
+        // say so. Nothing is claimed about patient messages.
+        const report = get()._demoDisruptionPreview(docId, dayStart);
+        set((state) => ({
+          disruptionModal: {
+            ...state.disruptionModal,
+            preview: report,
+            previewLoading: false,
+            previewError: null,
+            demoPreview: true,
+          },
+        }));
+        return { success: true, report };
+      }
+
+      const backendDoctor = await resolveBackendDoctor(doctorName);
+      const report = await apiService.previewDisruption(
+        backendDoctor.id,
+        { reason, ...leaveWindowPayload(dayStart, dayEnd) }
+      );
+      set((state) => ({
+        disruptionModal: {
+          ...state.disruptionModal,
+          preview: report,
+          previewLoading: false,
+          previewError: null,
+          demoPreview: false,
+        },
+      }));
+      return { success: true, report };
+    } catch (err) {
+      const message = err?.message || 'Could not preview this leave plan';
+      set((state) => ({
+        disruptionModal: {
+          ...state.disruptionModal,
+          preview: null,
+          previewLoading: false,
+          previewError: message,
+        },
+      }));
+      return { success: false, message };
+    }
+  },
+
+  // Local-only plan used by the demo simulator. Same shape as the backend
+  // report so one panel renders both.
+  _demoDisruptionPreview: (docId, dayStart) => {
+    const { blocks } = get();
+    const dayEnd = dayStart + 24 * 60 * MIN;
+    const now = Date.now();
+    const affected = blocks.filter(
+      (b) =>
+        b.doctorId === docId &&
+        (b.type === 'appointment' || b.type === 'hold') &&
+        (!b.status || b.status === 'confirmed' || b.status === 'held') &&
+        !(b.holdExpiresAt && b.holdExpiresAt < now) &&
+        b.start >= dayStart &&
+        b.start < dayEnd
+    );
+    const colleagues = get().doctors.filter(
+      (d) => d.id !== docId && d.isOnDuty && !d.isEmergencyLeave
+    );
+
+    const results = affected.map((apt) => {
+      const durationMin = apt.durationMin || 30;
+      const bufferMin = apt.bufferMin !== undefined ? apt.bufferMin : 10;
+      const busyWithoutApt = blocks.filter(
+        (b) =>
+          b.appointmentId !== (apt.appointmentId || apt.id) &&
+          b.id !== apt.id &&
+          b.id !== `${apt.appointmentId || apt.id}-buffer`
+      );
+      const free = colleagues.find(
+        (c) =>
+          validateSlot({ doctorId: c.id, start: apt.start, durationMin, bufferMin }, busyWithoutApt).ok
+      );
+      return {
+        appointment_code: apt.appointmentId || apt.id,
+        patient_name: apt.patientName,
+        start_datetime: new Date(apt.start).toISOString(),
+        outcome: free ? 'reassigned' : 'unplaced',
+        new_doctor: free ? free.name : null,
+      };
+    });
+
+    return {
+      preview: true,
+      demo: true,
+      doctor_name: getDoctor(docId)?.name || 'Doctor',
+      auto_resolved_count: results.filter((r) => r.outcome === 'reassigned').length,
+      same_day_count: results.filter((r) => r.outcome === 'reassigned').length,
+      next_day_count: 0,
+      unplaced_count: results.filter((r) => r.outcome !== 'reassigned').length,
+      messages_queued_count: 0,
+      results,
+    };
   },
 
   closeDisruptionModal: () =>
@@ -356,6 +540,10 @@ export const useCalendarStore = create(
         doctorId: null,
         dayStart: null,
         affectedAppointments: [],
+        leaveWindow: null,
+        preview: null,
+        previewLoading: false,
+        previewError: null,
       },
     }),
 
@@ -383,7 +571,16 @@ export const useCalendarStore = create(
           ? { ...d, isOnDuty: true, isEmergencyLeave: false, emergencyReason: null }
           : d
       ),
-      disruptionModal: { isOpen: false, doctorId: null, affectedAppointments: [] },
+      disruptionModal: {
+        isOpen: false,
+        doctorId: null,
+        dayStart: null,
+        affectedAppointments: [],
+        leaveWindow: null,
+        preview: null,
+        previewLoading: false,
+        previewError: null,
+      },
       toast: {
         tone: 'success',
         text: `${getDoctor(doctorId)?.name || 'Doctor'} marked back On Duty.`,
@@ -407,12 +604,24 @@ export const useCalendarStore = create(
       if (!Array.isArray(docSchedules) || docSchedules.length === 0) return;
 
       const remoteBlocks = [];
+      const leavePeriods = {};
+
       docSchedules.forEach((docItem) => {
         const docNameLower = (docItem.doctor_name || '').toLowerCase();
         let mappedDocId = docItem.doctor_id;
         if (docNameLower.includes('bello')) mappedDocId = 'doc-bello';
         else if (docNameLower.includes('okafor') || docNameLower.includes('chin')) mappedDocId = 'doc-okafor';
         else if (docNameLower.includes('babawo')) mappedDocId = 'doc-babawo';
+
+        // Keep the RAW periods. A leave only greys out the days it covers, so
+        // the calendar derives the flag for whatever day it is showing.
+        leavePeriods[mappedDocId] = (docItem.leave_periods || []).map((period) => ({
+          start: new Date(`${period.start_date}T00:00:00`).getTime(),
+          end: period.end_date
+            ? new Date(`${period.end_date}T00:00:00`).getTime()
+            : Infinity,
+          reason: period.reason || 'Planned leave',
+        }));
 
         (docItem.appointments || []).forEach((apt) => {
           const startTs = new Date(apt.start_datetime).getTime();
@@ -443,6 +652,8 @@ export const useCalendarStore = create(
           });
         });
       });
+
+      set({ leavePeriods });
 
       if (remoteBlocks.length > 0) {
         set((state) => {
@@ -812,39 +1023,22 @@ export const useCalendarStore = create(
     try {
       // The calendar uses local roster ids ('doc-babawo'); the disruption
       // endpoint needs the backend Doctor UUID. The staff directory is the
-      // bridge — resolved by name. Matching is TOKEN-based ("bello" matches
-      // "Dr. Aminu Bello" <-> "Dr. Bello Ibrahim"); plain substring fails
-      // when first names differ between the roster and the directory.
-      const nameMatches = (a, b) => {
-        if (!a || !b) return false;
-        const tokens = (n) =>
-          String(n)
-            .toLowerCase()
-            .replace(/^dr\.?\s*/, '')
-            .split(/[\s.]+/)
-            .filter(Boolean);
-        const x = tokens(a);
-        const y = tokens(b);
-        return x.some((t) => y.includes(t));
-      };
+      // bridge — resolved by name tokens (shared helper above).
+      const nameMatches = doctorNamesMatch;
+      const backendDoctor = await resolveBackendDoctor(doctorName);
 
-      const directory = await apiService.fetchStaffDirectory();
-      const backendDoctor = (directory?.doctors || []).find((d) =>
-        nameMatches(d.name, doctorName)
-      );
-      if (!backendDoctor) {
-        throw new Error('Doctor not found in the clinic staff directory');
-      }
-
-      // The leave window mirrors the modal's affected list: the viewed day
-      // (explicitly captured when the modal opened).
+      // The leave window is the plan the receptionist confirmed in the modal
+      // (whole days, inclusive). Falling back to the viewed day keeps the old
+      // behaviour for callers that never opened the planner.
       const dayStart =
-        get().disruptionModal.dayStart ?? startOfDayOffset(get().currentDateOffset);
-      const report = await apiService.autoResolveDisruption(backendDoctor.id, {
-        reason,
-        leave_start: new Date(dayStart).toISOString(),
-        leave_end: new Date(dayStart + 24 * 60 * MIN - 1).toISOString(),
-      });
+        get().disruptionModal.leaveWindow?.startDay ??
+        get().disruptionModal.dayStart ??
+        startOfDayOffset(get().currentDateOffset);
+      const dayEnd = get().disruptionModal.leaveWindow?.endDay ?? dayStart;
+      const report = await apiService.autoResolveDisruption(
+        backendDoctor.id,
+        { reason, ...leaveWindowPayload(dayStart, dayEnd) }
+      );
 
       // Map backend doctor names ("Dr. Amina Bello") to local doctor ids.
       const roster = get().doctors;

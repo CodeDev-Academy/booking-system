@@ -362,6 +362,16 @@ export const apiService = {
     });
   },
 
+  // Dry run of that same resolver. The backend plans inside a transaction it
+  // always rolls back, so the response is exactly what Approve would do while
+  // saving nothing and sending nothing.
+  async previewDisruption(doctorId, payload) {
+    return request(`/disruptions/${doctorId}/preview/`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
   // Read-only double-booking feed for the red dashboard alert. The backend
   // decides what counts as a clash; this method only fetches the list.
   async fetchDoubleBookings() {
