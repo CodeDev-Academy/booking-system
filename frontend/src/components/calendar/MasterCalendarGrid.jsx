@@ -171,7 +171,7 @@ export const MasterCalendarGrid = ({ calendarData }) => {
           availableColleagues={availableColleagues}
           onClose={actions.closeDisruptionModal}
           onReassign={actions.reassignToColleague}
-          onNotifyReschedule={actions.notifyAndReschedule}
+          onAutoResolve={actions.autoResolveDisruption}
           onRestoreDuty={actions.restoreDoctorDuty}
         />
       )}

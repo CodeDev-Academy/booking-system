@@ -31,11 +31,29 @@ export const CalendarView = () => {
     doctors,
     services,
     blocks,
+    toast,
     actions,
   } = calendarData;
 
   return (
     <div className="view-container">
+      {/* Toast Notification Banner — the one-click disruption cockpit reports
+          its outcome here (placed counts + truthful delivery claim). */}
+      {toast && (
+        <div className={`calendar-toast-banner toast-${toast.tone}`} style={{ marginBottom: '12px' }}>
+          <div className="toast-content">
+            <span className="duty-dot" />
+            <span>{toast.text}</span>
+          </div>
+          <button
+            type="button"
+            className="toast-close-btn"
+            onClick={actions.dismissToast}
+          >
+            &times;
+          </button>
+        </div>
+      )}
       {/* View Header with 2-Tab Switcher - Centered Layout */}
       <div
         className="view-header calendar-view-header"

@@ -279,7 +279,7 @@ export const useCalendar = () => {
       markDoctorEmergencyLeave: store.markDoctorEmergencyLeave,
       restoreDoctorDuty: store.restoreDoctorDuty,
       reassignToColleague: store.reassignToColleague,
-      notifyAndReschedule: store.notifyAndReschedule,
+      autoResolveDisruption: store.autoResolveDisruption,
       rescheduleAppointment: store.rescheduleAppointment,
       admitAppointment: (apt) => useVisitsStore.getState().admitAppointment(apt),
       simulateIncomingHold: store.simulateIncomingHold,

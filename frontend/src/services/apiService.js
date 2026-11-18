@@ -353,6 +353,15 @@ export const apiService = {
     });
   },
 
+  // One-click emergency leave resolution: the backend decides everything
+  // (placements, notice words); the frontend only sends the window + reason.
+  async autoResolveDisruption(doctorId, payload) {
+    return request(`/disruptions/${doctorId}/auto-resolve/`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
   async fetchUpcomingReminders(windowDays = 14) {
     return request(`/appointments/upcoming-reminders/?window_days=${windowDays}`);
   },

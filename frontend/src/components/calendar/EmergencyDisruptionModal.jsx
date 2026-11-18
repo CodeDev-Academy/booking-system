@@ -3,7 +3,7 @@ import {
   X,
   AlertTriangle,
   ArrowRightLeft,
-  Calendar as CalendarIcon,
+  Zap,
   Check,
   UserCheck,
   ShieldAlert,
@@ -19,12 +19,23 @@ export const EmergencyDisruptionModal = ({
   availableColleagues,
   onClose,
   onReassign,
-  onNotifyReschedule,
+  onAutoResolve,
   onRestoreDuty,
 }) => {
   const [selectedColleague, setSelectedColleague] = useState(
     availableColleagues[0]?.id || ''
   );
+  const [isAutoResolving, setIsAutoResolving] = useState(false);
+
+  const handleAutoResolve = async () => {
+    if (isAutoResolving) return;
+    setIsAutoResolving(true);
+    try {
+      await onAutoResolve(doctorId);
+    } finally {
+      setIsAutoResolving(false);
+    }
+  };
 
   // Sync selected colleague when availableColleagues changes
   React.useEffect(() => {
@@ -92,6 +103,35 @@ export const EmergencyDisruptionModal = ({
             </p>
           </div>
         </div>
+
+        {/* One-Click Auto-Resolve (B.4): backend engine places every patient
+            (same-time colleague -> same-day free slot -> next day) and queues
+            WhatsApp + SMS notices with the backend's own words. */}
+        {affectedAppointments.length > 0 && (
+          <button
+            type="button"
+            className="btn-base btn-primary"
+            style={{
+              width: '100%',
+              marginTop: '12px',
+              padding: '12px 16px',
+              fontSize: '13px',
+              fontWeight: 700,
+              justifyContent: 'center',
+              opacity: isAutoResolving ? 0.7 : 1,
+              cursor: isAutoResolving ? 'wait' : 'pointer',
+            }}
+            onClick={handleAutoResolve}
+            disabled={isAutoResolving}
+          >
+            <Zap size={15} />
+            <span>
+              {isAutoResolving
+                ? 'Auto-Resolving — Placing Every Patient…'
+                : 'One-Click Auto-Resolve: Reassign All & Notify Patients (WhatsApp + SMS)'}
+            </span>
+          </button>
+        )}
 
         {/* Global Colleague Selector */}
         {availableColleagues.length > 0 && (
@@ -167,17 +207,6 @@ export const EmergencyDisruptionModal = ({
                     </div>
 
                     <div className="affected-item-actions">
-                      <button
-                        type="button"
-                        className="btn-base btn-primary"
-                        style={{ padding: '6px 12px', fontSize: '12px' }}
-                        onClick={() => onNotifyReschedule(apt.appointmentId || apt.id)}
-                        title={`Reschedule with ${currentDoc?.name} on next available shift`}
-                      >
-                        <CalendarIcon size={13} />
-                        <span>Reschedule with {currentDoc?.name?.split(' ')[1] || 'Doctor'} (Next Shift)</span>
-                      </button>
-
                       {availableColleagues.length > 0 && (
                         <button
                           type="button"
@@ -258,17 +287,6 @@ export const EmergencyDisruptionModal = ({
                           <span>Transfer to {colleague?.name?.split(' ')[1] || 'Colleague'} (Today)</span>
                         </button>
                       )}
-
-                      <button
-                        type="button"
-                        className="btn-base btn-secondary"
-                        style={{ padding: '6px 10px', fontSize: '11px' }}
-                        onClick={() => onNotifyReschedule(apt.appointmentId || apt.id)}
-                        title="Send reschedule options to patient"
-                      >
-                        <CalendarIcon size={12} />
-                        <span>Reschedule</span>
-                      </button>
                     </div>
                   </div>
                 );

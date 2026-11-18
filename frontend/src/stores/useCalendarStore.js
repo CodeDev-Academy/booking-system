@@ -101,6 +101,7 @@ export const useCalendarStore = create(
   disruptionModal: {
     isOpen: false,
     doctorId: null,
+    dayStart: null,
     affectedAppointments: [],
   },
 
@@ -322,9 +323,11 @@ export const useCalendarStore = create(
   },
 
   // 1-Click Doctor Emergency Absence Disruption Protocol (Risk R-15)
-  openDisruptionModal: (doctorId) => {
+  // dayStartTs: optional explicit day (local midnight) so the affected list
+  // mirrors exactly the day the receptionist is viewing.
+  openDisruptionModal: (doctorId, dayStartTs = null) => {
     const { blocks, currentDateOffset } = get();
-    const dayStart = startOfDayOffset(currentDateOffset);
+    const dayStart = dayStartTs ?? startOfDayOffset(currentDateOffset);
     const dayEnd = dayStart + 24 * 60 * MIN;
 
     // Find all confirmed/held appointments for this doctor on current viewed day
@@ -340,6 +343,7 @@ export const useCalendarStore = create(
       disruptionModal: {
         isOpen: true,
         doctorId,
+        dayStart,
         affectedAppointments: affected,
       },
     });
@@ -350,6 +354,7 @@ export const useCalendarStore = create(
       disruptionModal: {
         isOpen: false,
         doctorId: null,
+        dayStart: null,
         affectedAppointments: [],
       },
     }),
@@ -441,24 +446,68 @@ export const useCalendarStore = create(
 
       if (remoteBlocks.length > 0) {
         set((state) => {
-          const existingIds = new Set(state.blocks.map((b) => b.appointmentId || b.id));
+          // UPSERT, not append: the persisted snapshot can hold an older copy
+          // of an appointment (same id, old time/doctor). Append-only sync
+          // silently ignored every backend move — the calendar then showed a
+          // stale slot and the disruption cockpit missed real patients.
+          const remoteById = new Map(remoteBlocks.map((rb) => [rb.appointmentId, rb]));
+          const matched = new Set();
+
+          let blocks = state.blocks.map((b) => {
+            const key = b.appointmentId || b.id;
+            const rb = remoteById.get(key);
+            if (!rb || b.type === 'buffer') return b;
+            matched.add(key);
+            return {
+              ...b,
+              doctorId: rb.doctorId,
+              start: rb.start,
+              end: rb.end,
+              durationMin: rb.durationMin,
+              bufferMin: rb.bufferMin,
+              patientName: rb.patientName,
+              patientPhone: rb.patientPhone,
+              status: rb.status,
+              label: rb.label,
+              holdExpiresAt: rb.holdExpiresAt,
+            };
+          });
+
+          // Recompute every sterilization buffer from its (possibly moved) parent.
+          blocks = blocks.map((b) => {
+            if (b.type !== 'buffer') return b;
+            const parentKey = String(b.id).replace(/-buffer$/, '');
+            const parent = blocks.find(
+              (x) => x.type !== 'buffer' && (x.appointmentId || x.id) === parentKey
+            );
+            if (!parent) return b;
+            return {
+              ...b,
+              doctorId: parent.doctorId,
+              start: parent.end,
+              end: parent.end + (b.durationMin || 10) * MIN,
+            };
+          });
+
+          // Append appointments this browser has never seen.
           const additions = [];
           remoteBlocks.forEach((rb) => {
-            if (!existingIds.has(rb.appointmentId)) {
-              additions.push(rb);
-              additions.push({
-                id: `${rb.id}-buffer`,
-                appointmentId: rb.appointmentId,
-                doctorId: rb.doctorId,
-                type: 'buffer',
-                label: `${rb.bufferMin}m Sterilization Buffer`,
-                start: rb.end,
-                end: rb.end + rb.bufferMin * MIN,
-                durationMin: rb.bufferMin,
-              });
-            }
+            if (matched.has(rb.appointmentId)) return;
+            if (blocks.some((b) => (b.appointmentId || b.id) === rb.appointmentId)) return;
+            additions.push(rb);
+            additions.push({
+              id: `${rb.id}-buffer`,
+              appointmentId: rb.appointmentId,
+              doctorId: rb.doctorId,
+              type: 'buffer',
+              label: `${rb.bufferMin}m Sterilization Buffer`,
+              start: rb.end,
+              end: rb.end + rb.bufferMin * MIN,
+              durationMin: rb.bufferMin,
+            });
           });
-          return additions.length > 0 ? { blocks: [...state.blocks, ...additions] } : state;
+
+          return additions.length > 0 ? { blocks: [...blocks, ...additions] } : { blocks };
         });
       }
     } catch (err) {
@@ -623,25 +672,269 @@ export const useCalendarStore = create(
     return { success: true };
   },
 
-  // Dispatch emergency cancellation/reschedule alert to patients (Risk R-15 Option 2)
-  notifyAndReschedule: (appointmentId) => {
-    const apt = get().blocks.find((b) => b.appointmentId === appointmentId);
+  // One-click emergency resolution (B.4): the backend places EVERY impacted
+  // patient in priority order (same-time colleague -> same-day free slot ->
+  // next day) and queues WhatsApp + SMS notices with its own words. This
+  // action applies the returned placements to the calendar and reports the
+  // outcome TRUTHFULLY: delivery is only claimed when the backend confirms
+  // the push to n8n. Demo mode simulates placement locally and never claims
+  // a patient message was sent.
+  autoResolveDisruption: async (doctorId, reason = 'Sudden Medical Emergency') => {
+    // The modal owns the doctor context — fall back to it when the id is
+    // not passed explicitly (defensive: an undefined id must never resolve
+    // to the wrong doctor).
+    const docId = doctorId || get().disruptionModal.doctorId;
+    if (!docId) {
+      return { success: false, message: 'No doctor selected for disruption resolution' };
+    }
+    const affected = get().disruptionModal.affectedAppointments;
+    const doctorName = getDoctor(docId)?.name || 'Doctor';
+
+    // The modal opens straight from the "Sick / Leave" button, so declaring
+    // the leave is THIS action's job. Live mode: the endpoint marks the
+    // backend doctor on leave; locally we mirror it for the calendar.
     set((state) => ({
-      blocks: state.blocks.filter(
-        (b) => b.appointmentId !== appointmentId && b.id !== `${appointmentId}-buffer`
+      doctors: state.doctors.map((d) =>
+        d.id === docId
+          ? { ...d, isOnDuty: false, isEmergencyLeave: true, emergencyReason: reason }
+          : d
       ),
-      disruptionModal: {
-        ...state.disruptionModal,
-        affectedAppointments: state.disruptionModal.affectedAppointments.filter(
-          (a) => a.appointmentId !== appointmentId
-        ),
-      },
-      toast: {
-        tone: 'amber',
-        text: `Automated Telegram/SMS disruption alert dispatched to ${apt?.patientName || 'patient'}. Rescheduling priority token issued.`,
-      },
     }));
-    soundService.playAlert();
+
+    if (useAppModeStore.getState().isDemoMode) {
+      const colleagues = get().doctors.filter(
+        (d) => d.id !== docId && d.isOnDuty && !d.isEmergencyLeave
+      );
+      const dayStart =
+        get().disruptionModal.dayStart ?? startOfDayOffset(get().currentDateOffset);
+      const dayEnd = dayStart + 24 * 60 * MIN;
+      const newBlocks = [...get().blocks];
+      let sameDay = 0;
+      const unplaced = [];
+
+      affected.forEach((apt) => {
+        const aptKey = apt.appointmentId || apt.id;
+        const durationMin = apt.durationMin || 30;
+        const bufferMin = apt.bufferMin !== undefined ? apt.bufferMin : 10;
+        const busyWithoutApt = newBlocks.filter(
+          (b) =>
+            b.appointmentId !== aptKey &&
+            b.id !== apt.id &&
+            b.id !== `${aptKey}-buffer`
+        );
+
+        let placed = null;
+        // Priority 1: a colleague free at the exact same time.
+        for (const colleague of colleagues) {
+          const validation = validateSlot(
+            { doctorId: colleague.id, start: apt.start, durationMin, bufferMin },
+            busyWithoutApt
+          );
+          if (validation.ok) {
+            placed = { doctorId: colleague.id, start: apt.start };
+            break;
+          }
+        }
+        // Priority 2: earliest free 15-minute slot the same day.
+        if (!placed) {
+          for (const colleague of colleagues) {
+            for (
+              let ts = Math.max(dayStart, apt.start);
+              ts + durationMin * MIN <= dayEnd;
+              ts += 15 * MIN
+            ) {
+              if (ts === apt.start) continue;
+              const validation = validateSlot(
+                { doctorId: colleague.id, start: ts, durationMin, bufferMin },
+                busyWithoutApt
+              );
+              if (validation.ok) {
+                placed = { doctorId: colleague.id, start: ts };
+                break;
+              }
+            }
+            if (placed) break;
+          }
+        }
+
+        if (placed) {
+          sameDay += 1;
+          const newEnd = placed.start + durationMin * MIN;
+          for (let i = 0; i < newBlocks.length; i++) {
+            const b = newBlocks[i];
+            const isApt =
+              b.appointmentId === aptKey || b.id === apt.id;
+            const isBuffer = b.id === `${aptKey}-buffer`;
+            if (isApt) {
+              newBlocks[i] = { ...b, doctorId: placed.doctorId, start: placed.start, end: newEnd };
+            } else if (isBuffer) {
+              newBlocks[i] = {
+                ...b,
+                doctorId: placed.doctorId,
+                start: newEnd,
+                end: newEnd + bufferMin * MIN,
+              };
+            }
+          }
+        } else {
+          unplaced.push(apt);
+        }
+      });
+
+      const remainingKeys = unplaced.map((u) => u.appointmentId || u.id);
+      set((state) => ({
+        blocks: newBlocks,
+        disruptionModal: {
+          ...state.disruptionModal,
+          ...(remainingKeys.length === 0
+            ? { isOpen: false, doctorId: null }
+            : {}),
+          affectedAppointments: state.disruptionModal.affectedAppointments.filter(
+            (a) => remainingKeys.includes(a.appointmentId || a.id)
+          ),
+        },
+        toast: {
+          tone: unplaced.length === 0 ? 'success' : 'amber',
+          text:
+            unplaced.length === 0
+              ? `Demo auto-resolve: all ${sameDay} affected appointments re-placed on the calendar. No patient messages are sent in demo mode.`
+              : `Demo auto-resolve: ${sameDay} re-placed locally, ${unplaced.length} need manual transfer. No patient messages are sent in demo mode.`,
+        },
+      }));
+      if (unplaced.length === 0) {
+        soundService.playChime();
+      } else {
+        soundService.playAlert();
+      }
+      return { success: true, sameDay, unplaced: unplaced.length };
+    }
+
+    try {
+      // The calendar uses local roster ids ('doc-babawo'); the disruption
+      // endpoint needs the backend Doctor UUID. The staff directory is the
+      // bridge — resolved by name. Matching is TOKEN-based ("bello" matches
+      // "Dr. Aminu Bello" <-> "Dr. Bello Ibrahim"); plain substring fails
+      // when first names differ between the roster and the directory.
+      const nameMatches = (a, b) => {
+        if (!a || !b) return false;
+        const tokens = (n) =>
+          String(n)
+            .toLowerCase()
+            .replace(/^dr\.?\s*/, '')
+            .split(/[\s.]+/)
+            .filter(Boolean);
+        const x = tokens(a);
+        const y = tokens(b);
+        return x.some((t) => y.includes(t));
+      };
+
+      const directory = await apiService.fetchStaffDirectory();
+      const backendDoctor = (directory?.doctors || []).find((d) =>
+        nameMatches(d.name, doctorName)
+      );
+      if (!backendDoctor) {
+        throw new Error('Doctor not found in the clinic staff directory');
+      }
+
+      // The leave window mirrors the modal's affected list: the viewed day
+      // (explicitly captured when the modal opened).
+      const dayStart =
+        get().disruptionModal.dayStart ?? startOfDayOffset(get().currentDateOffset);
+      const report = await apiService.autoResolveDisruption(backendDoctor.id, {
+        reason,
+        leave_start: new Date(dayStart).toISOString(),
+        leave_end: new Date(dayStart + 24 * 60 * MIN - 1).toISOString(),
+      });
+
+      // Map backend doctor names ("Dr. Amina Bello") to local doctor ids.
+      const roster = get().doctors;
+      const nameToId = (name) => {
+        if (!name) return null;
+        return roster.find((d) => nameMatches(d.name, name))?.id || null;
+      };
+
+      set((state) => {
+        let blocks = state.blocks;
+        report.results.forEach((r) => {
+          if (r.outcome !== 'reassigned') return;
+          const keys = [r.appointment_code, r.appointment_id].filter(Boolean);
+          const newDocId = nameToId(r.new_doctor);
+          const newStart = new Date(r.new_start).getTime();
+          const newEnd = new Date(r.new_end).getTime();
+          blocks = blocks.map((b) => {
+            if (keys.includes(b.appointmentId) || keys.includes(b.id)) {
+              return { ...b, doctorId: newDocId || b.doctorId, start: newStart, end: newEnd };
+            }
+            if (keys.some((k) => b.id === `${k}-buffer`)) {
+              return {
+                ...b,
+                doctorId: newDocId || b.doctorId,
+                start: newEnd,
+                end: newEnd + (b.durationMin || 10) * MIN,
+              };
+            }
+            return b;
+          });
+          appointmentSyncBus.publishAppointmentRescheduled({
+            appointmentId: r.appointment_code || r.appointment_id,
+            newStart,
+            doctorId: newDocId,
+          });
+        });
+
+        const unplacedResults = report.results.filter((r) => r.outcome !== 'reassigned');
+        const remainingKeys = unplacedResults.map(
+          (r) => r.appointment_code || r.appointment_id
+        );
+
+        const parts = [];
+        if (report.same_day_count) parts.push(`${report.same_day_count} same day`);
+        if (report.next_day_count) parts.push(`${report.next_day_count} next day`);
+        const placementSummary = parts.length ? parts.join(', ') : 'no automatic placement';
+        const delivery = report.delivery_pushed
+          ? `${report.messages_queued_count} notices pushed for WhatsApp/SMS delivery.`
+          : report.messages_queued_count
+            ? `${report.messages_queued_count} notices queued — delivery follows via the messaging workflows.`
+            : 'No notices queued.';
+
+        return {
+          blocks,
+          disruptionModal: {
+            ...state.disruptionModal,
+            ...(remainingKeys.length === 0 ? { isOpen: false, doctorId: null } : {}),
+            affectedAppointments: state.disruptionModal.affectedAppointments.filter(
+              (a) => remainingKeys.includes(a.appointmentId || a.id)
+            ),
+          },
+          toast: {
+            tone: unplacedResults.length === 0 ? 'success' : 'amber',
+            text: `${report.doctor_name || doctorName}'s leave auto-resolved: ${placementSummary}. ${
+              unplacedResults.length ? `${unplacedResults.length} need manual transfer. ` : ''
+            }${delivery}`,
+          },
+        };
+      });
+
+      if (report.unplaced_count === 0) {
+        soundService.playChime();
+      } else {
+        soundService.playAlert();
+      }
+      get().syncFromBackend();
+      return { success: true, report };
+    } catch (err) {
+      console.warn('Auto-resolve disruption failed:', err);
+      set({
+        toast: {
+          tone: 'amber',
+          text: `Auto-resolve failed for ${doctorName}: ${
+            err?.message || 'backend error'
+          }. Patients still need manual transfer.`,
+        },
+      });
+      soundService.playAlert();
+      return { success: false, message: err?.message || 'Auto-resolve failed' };
+    }
   },
 
   // Real-time SSE Cell Invalidation Simulation (Risk R-14)

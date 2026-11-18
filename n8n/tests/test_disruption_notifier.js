@@ -100,6 +100,20 @@ function runAdapter(envVars, channel, overrides) {
   return vm.runInNewContext('(function () {\n' + code('Provider Config & Adapter') + '\n})()', sandbox);
 }
 
+// Multi-item runner: ONE disruption push carries EVERY impacted patient, and
+// Parse Disruption Items emits one input per channel — so the adapter must
+// adapt EVERY input item, not just the first.
+function runAdapterMulti(envVars, srcs) {
+  const store = {};
+  const sandbox = {
+    console,
+    $env: envVars,
+    $input: { all: () => srcs.map((json) => ({ json })) },
+    $getWorkflowStaticData: () => store,
+  };
+  return vm.runInNewContext('(function () {\n' + code('Provider Config & Adapter') + '\n})()', sandbox);
+}
+
 // Log-node runner: MULTIPLE responses (one disruption push carries every patient),
 // zipped by position against the adapter's same-channel items.
 async function runLog(nodeName, channel, responses, overrides) {
@@ -304,6 +318,33 @@ const wrap = (status, body) => status + ' - ' + JSON.stringify(body);
     VOICEBIP_API_KEY: 'vbkey' }, 'whatsapp', { want_voice: true, want_whatsapp: false, want_sms: false });
   check('D11 want_voice alone produces nothing sendable',
     out.length === 1 && out[0].json.provider_request.route === 'no_active_channel' || out[0].json.provider_channel === null,
+    JSON.stringify(out.map((o) => o.json.provider_request.route)));
+
+  // ---- D+. adapter multi-item: one push carries EVERY impacted patient -------
+  console.log('D+ adapter (multi-item, 2 patients x 2 channels)');
+  out = runAdapterMulti({ PROVIDER_MOCK: '' }, [
+    ADAPTER_SRC('sms'),
+    ADAPTER_SRC('whatsapp'),
+    Object.assign({}, ADAPTER_SRC('sms'), {
+      request_id: 'AP-1043', claim_ref: 'disrupt-AP-1043-sms',
+      patient_phone: '+234 805 444 5555', message: 'Other words',
+    }),
+    Object.assign({}, ADAPTER_SRC('whatsapp'), {
+      request_id: 'AP-1043', claim_ref: 'disrupt-AP-1043-whatsapp',
+      patient_phone: '+234 805 444 5555', message: 'Other words',
+    }),
+  ]);
+  check('D+1 four inputs -> four adapted outputs', out.length === 4, String(out.length));
+  check('D+2 every item keeps its own channel', out[0].json.provider_channel === 'sms'
+    && out[1].json.provider_channel === 'whatsapp'
+    && out[2].json.provider_channel === 'sms'
+    && out[3].json.provider_channel === 'whatsapp',
+    JSON.stringify(out.map((o) => o.json.provider_channel)));
+  check('D+3 item 3 carries ITS phone', out[2].json.provider_request.body.to === '+234 805 444 5555');
+  check('D+4 item 3 carries ITS words', out[2].json.provider_request.body.message === 'Other words');
+  check('D+5 item 2 whatsapp words stay verbatim', out[1].json.provider_request.body.template.components[0].parameters[0].text === WORDS);
+  check('D+6 item 4 whatsapp words are its own', out[3].json.provider_request.body.template.components[0].parameters[0].text === 'Other words');
+  check('D+7 no skip legs on a clean multi-push', out.every((o) => o.json.provider_request.route !== 'skip'),
     JSON.stringify(out.map((o) => o.json.provider_request.route)));
 
   // ---- E. log nodes: multi-patient zip by position ---------------------------

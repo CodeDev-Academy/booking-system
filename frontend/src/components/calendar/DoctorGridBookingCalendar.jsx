@@ -24,10 +24,12 @@ import {
   LogOut,
   Users,
   Settings as SettingsIcon,
+  AlertTriangle,
 } from 'lucide-react';
 import { useCalendarStore } from '../../stores/useCalendarStore';
 import { useStaffStore } from '../../stores/useStaffStore';
 import { useAuthStore } from '../../stores/useAuthStore';
+import { EmergencyDisruptionModal } from './EmergencyDisruptionModal';
 import '../../styles/components/grid-booking-calendar.css';
 
 const getInitialToday = () => new Date();
@@ -210,6 +212,22 @@ export const DoctorGridBookingCalendar = ({
   const staffList = useStaffStore((state) => state.staffList);
   const lockDesk = useAuthStore((state) => state.lockDesk);
   const logout = useAuthStore((state) => state.logout);
+  // Risk R-15 disruption cockpit: state + actions for the one-click
+  // emergency-leave resolver (modal renders at the end of this component).
+  const disruptionModal = useCalendarStore((state) => state.disruptionModal);
+  const openDisruptionModal = useCalendarStore((state) => state.openDisruptionModal);
+  const closeDisruptionModal = useCalendarStore((state) => state.closeDisruptionModal);
+  const reassignToColleague = useCalendarStore((state) => state.reassignToColleague);
+  const autoResolveDisruption = useCalendarStore((state) => state.autoResolveDisruption);
+  const restoreDoctorDuty = useCalendarStore((state) => state.restoreDoctorDuty);
+
+  // Colleague options for the disruption modal (on-duty doctors only).
+  const availableColleagues = useMemo(() => {
+    if (!disruptionModal.doctorId) return [];
+    return calendarDoctors.filter(
+      (d) => d.id !== disruptionModal.doctorId && d.isOnDuty && !d.isEmergencyLeave
+    );
+  }, [calendarDoctors, disruptionModal.doctorId]);
 
   // Doctors list (Dr. Bello, Dr. Okafor, Dr. Babawo)
   const doctors = useMemo(() => {
@@ -691,15 +709,45 @@ export const DoctorGridBookingCalendar = ({
               </div>
             </div>
 
-            <button
-              type="button"
-              className="dossier-action-btn"
-              onClick={handleBookNow}
-              style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-            >
-              <Plus size={14} />
-              <span>+ Book Walk-In</span>
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              {/* Risk R-15 trigger: opens the one-click disruption cockpit */}
+              <button
+                type="button"
+                className="dossier-action-btn"
+                onClick={() => {
+                  // Local midnight of the day the receptionist is viewing, so
+                  // the affected list mirrors exactly this timetable.
+                  const dayStartTs = new Date(
+                    selectedDate.getFullYear(),
+                    selectedDate.getMonth(),
+                    selectedDate.getDate()
+                  ).getTime();
+                  openDisruptionModal(selectedDoctorId, dayStartTs);
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: currentDoctor?.isEmergencyLeave ? '#fef2f2' : '#ffffff',
+                  border: '1px solid #fecaca',
+                  color: '#b91c1c',
+                }}
+                title="Report sudden absence — auto-reassign every affected patient and notify them (WhatsApp + SMS)"
+              >
+                <AlertTriangle size={14} />
+                <span>{currentDoctor?.isEmergencyLeave ? 'Manage Leave' : 'Sick / Leave'}</span>
+              </button>
+
+              <button
+                type="button"
+                className="dossier-action-btn"
+                onClick={handleBookNow}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Plus size={14} />
+                <span>+ Book Walk-In</span>
+              </button>
+            </div>
           </div>
 
           {/* Timetable Control Strip: Horizon Toggle & Functional Day Navigation */}
@@ -1198,6 +1246,21 @@ export const DoctorGridBookingCalendar = ({
           </div>
         </div>
       </div>
+
+      {/* Emergency Leave Disruption Cockpit (Risk R-15) — one-click auto-resolve
+          plus per-patient manual transfer fallbacks. */}
+      {disruptionModal.isOpen && (
+        <EmergencyDisruptionModal
+          isOpen={disruptionModal.isOpen}
+          disruptionData={disruptionModal}
+          doctors={calendarDoctors}
+          availableColleagues={availableColleagues}
+          onClose={closeDisruptionModal}
+          onReassign={reassignToColleague}
+          onAutoResolve={autoResolveDisruption}
+          onRestoreDuty={restoreDoctorDuty}
+        />
+      )}
     </div>
   );
 };
