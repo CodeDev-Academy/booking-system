@@ -2151,14 +2151,87 @@ DB clean.
 
 ---
 
-## Next up - leave flow steps 2-3, then Phase 5 (partner handover)
+## 2026-11-19 - Leave flow step 2: distribution control (built, live-proven)
 
-**Leave flow: step 1 done (2026-11-18).** Step 2 is the distribution control the
-receptionist asked for: auto-split, pick colleagues with a cap each, or give every
-patient to one named colleague, with a clear list of anyone who cannot be placed.
-Step 3 is the safety net: a stranded queue for patients left without a slot, an undo
-for the last distribution, and notify-once so nobody gets two conflicting messages.
-Multi-doctor distribution comes after these, not before.
+### What was broken
+Step 1 could plan a leave and show where everyone would go, but the
+receptionist had no say in it. Every affected patient went to whichever
+colleague the resolver found first, so one doctor could quietly absorb a
+whole morning while another sat free. There was no way to say "Okafor can
+take two extra, Babawo four" or "give them all to Babawo", and an
+unplaced patient came back as a bare "unplaced" with no reason.
+
+### What shipped
+- Distribution contract (T-729): `preview_disruption` and
+  `auto_resolve_disruption` both accept `colleague_ids` and
+  `colleague_caps`, read by one shared parser (`read_distribution_choice`).
+  `colleague_ids` is a hard allow-list — absent means any colleague (old
+  behaviour), `[]` means nobody, a list means only those doctors, and the
+  leaving doctor is rejected. Caps limit the EXTRA patients this plan adds
+  to a doctor on any ONE day: existing bookings do not eat the cap, and a
+  cap of 1 on Monday still allows 1 on Tuesday. Cap 0 means "do not use
+  this doctor". Both the same-time pass and the engine slot search respect
+  the list and caps.
+- Honest failures: each unplaced patient carries `unplaced_reason` and
+  `unplaced_text` written by Django — `NO_COLLEAGUE_CHOSEN`,
+  `NONE_QUALIFIED` (names the chosen doctors), `ALL_AT_CAP` (names the
+  doctor, the day and `used of cap`) or `NO_FREE_SLOT` (names the day or
+  the lookahead). The report echoes `distribution` (`colleague_ids`,
+  `colleague_caps`, `placed_by_doctor`, `caps_hit`) and the audit row
+  records it.
+- Bad input: both endpoints answer `400 INVALID_DISTRIBUTION` with a plain
+  detail for a wrong shape, an unknown/inactive doctor, the leaving doctor
+  or a negative cap.
+- Chooser UI (T-730): a "Who takes these patients" card with Auto split /
+  Choose colleagues / All to one. "Choose colleagues" gives each on-duty
+  colleague a tick and a "Max extra / day" input (blank = no limit); "All
+  to one" uses radios. Preview is disabled until a choice exists, any
+  change discards the old preview, and unplaced rows show Django's text.
+  Roster ids are mapped to backend ids by the existing name-token bridge; a
+  doctor that cannot be matched refuses the plan instead of vanishing.
+  Preview and approve send identical payloads.
+
+### Tests
+Red first: 18 new cases in `DisruptionDistributionTests` and
+`DisruptionDistributionEndpointTests` (allow-list, cap spill, cap 0,
+per-day counting, one-colleague plan, extra-patient counting, named
+reasons, preview == approve, bad shapes). First run: 4 failures, because
+the cap helper was passed doctor objects where ids were expected — fixed,
+then 18/18. Disruption classes **32/32 OK**; full Django suite
+**318/318 OK** in 424 s.
+
+### Live proof
+Three probe appointments (AP-0007/0008/0009, Fri 20 Nov, Dr. Bello) with
+Dr. Okafor cap 1 and Dr. Babawo cap 2: preview reported "3 affected /
+3 can be placed / 0 need you", colleague load "Dr. Babawo · 3", with two
+patients on Friday and the third pushed to Monday 23 by the per-day cap.
+The preview POST carried `colleague_ids` + `colleague_caps`, and the
+approve POST carried the same two values (approve was stubbed in the page,
+so the real DB was not touched). Unqualified-only (Okafor, cap 0) rendered "No chosen
+colleague is qualified for Dental Consultation & Examination (Dr. Chinwe
+Okafor)."; qualified-only at cap 0 rendered "Dr. Babawo hit the cap you
+set for Wed, 18 Nov (0 of 0). No other chosen colleague could take this
+patient." Probes and their rows deleted; no leave rows; appointments
+restored; DB clean.
+
+### Files
+`backend/appointments/services/disruption_service.py`,
+`backend/appointments/views_appointment.py`,
+`backend/appointments/tests.py`,
+`frontend/src/stores/useCalendarStore.js`,
+`frontend/src/components/calendar/EmergencyDisruptionModal.jsx`,
+`frontend/src/components/calendar/DoctorGridBookingCalendar.jsx`,
+`frontend/src/styles/components/calendar.css`.
+
+---
+
+## Next up - leave flow step 3, then Phase 5 (partner handover)
+
+**Leave flow: steps 1-2 done (2026-11-19).** Step 3 is the safety net: a
+stranded queue for patients left without a slot, an undo for the last
+distribution, and notify-once so nobody gets two conflicting messages.
+Multi-doctor distribution and per-day caps are already in place; Step 3
+must not re-plan anyone who was already placed.
 
 ## Phase 5 (partner handover)
 

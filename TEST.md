@@ -232,6 +232,37 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
   card and the preview agree. Live proof: preview of 30 Nov–1 Dec listed 3 patients → Dr. Babawo at
   the same times with the DB untouched; approve created one leave row and moved all three, queueing
   6 notices.
+- [x] `T-729`: **Distribution Control (E.1)**: `auto_resolve_disruption` and `preview_disruption`
+  accept `colleague_ids` and `colleague_caps`, read by one shared parser
+  (`read_distribution_choice`). `colleague_ids` is a hard allow-list: absent/`None` means any
+  colleague (old behaviour), `[]` means nobody, and a list means only those doctors; the leaving
+  doctor is rejected. Caps count only the EXTRA patients this plan adds to a doctor on any ONE day
+  (cap 0 = do not use), so a doctor with two patients already booked can still accept their cap in
+  extras, and a cap of 1 on Monday does not block 1 on Tuesday. Both the same-time pass and the
+  engine slot search respect the list and the caps. Anyone who cannot be placed comes back with a
+  named reason and plain text: `NO_COLLEAGUE_CHOSEN`, `NONE_QUALIFIED` (names the chosen doctors),
+  `ALL_AT_CAP` (names the doctor, the day and `used of cap`), `NO_FREE_SLOT` (names the day or the
+  lookahead). The report echoes `distribution` (`colleague_ids`, `colleague_caps`,
+  `placed_by_doctor`, `caps_hit`) and the audit row records it. Both endpoints answer
+  `400 INVALID_DISTRIBUTION` with a plain detail on bad shape, unknown ids, self ids or negative
+  caps. 18 tests (`DisruptionDistributionTests`, `DisruptionDistributionEndpointTests`) written
+  red-first, then green; the 14 existing disruption tests still pass (32/32).
+- [x] `T-730`: **Distribution UI (E.2)**: the disruption cockpit gained a "Who takes these patients"
+  card with three chips — Auto split, Choose colleagues, All to one. "Choose colleagues" lists every
+  on-duty colleague with a tick and a "Max extra / day" input (blank = no limit); "All to one" uses
+  radios. Preview stays disabled until at least one colleague is chosen, with a plain hint, and any
+  change to the mode, ticks or caps throws the old preview away so a stale plan cannot be approved.
+  Roster ids are mapped to backend doctor ids by the existing name-token bridge; a doctor that
+  cannot be matched refuses the plan with a message instead of being silently dropped. Preview and
+  approve send the same `colleague_ids` / `colleague_caps` body. Unplaced rows render Django's
+  `unplaced_text` verbatim. Live proof: 3 probe patients on Fri 20 Nov with Dr. Okafor cap 1 and
+  Dr. Babawo cap 2 → "3 affected / 3 can be placed / 0 need you", colleague load "Dr. Babawo · 3",
+  two patients on Fri and the third pushed to Mon 23 by the per-day cap; the approve request body
+  carried the identical ids and caps. Choosing only unqualified Dr. Okafor with cap 0 rendered "No
+  chosen colleague is qualified for Dental Consultation & Examination (Dr. Chinwe Okafor)." Choosing
+  qualified Dr. Babawo with cap 0 rendered "Dr. Babawo hit the cap you set for Wed, 18 Nov (0 of 0).
+  No other chosen colleague could take this patient." Probes deleted, no leave rows, appointments
+  restored.
 
 ---
 
@@ -273,6 +304,7 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 | 2026-11-17 → 18 | Brain Agent | `Item B / T-720-T-722` | **PASSED** | One-click doctor-leave resolver end to end: Django service (suite 265/265) + endpoint + n8n push, workflow `08` (77-check harness; fail-closed 401 verified live), frontend cockpit wired to the live grid. Live proof on fresh probe patients (executions 951, 960, 1066): adapter multi-item fix took Parse 4 → Adapter 4 → Route [2 whatsapp / 2 sms / 0 skip] → 4 `sent` rows; truthful toast captured ("2 same day. 4 notices pushed"). Three real defects found and pinned: single-item adapter, append-only calendar sync, missing toast render on the calendar route. Probes, claim rows and audit rows deleted; every doctor restored; DB left clean. |
 | 2026-11-18 | Brain Agent | `Item C / T-723-T-725` | **PASSED** | Double-booking detector + staff endpoint + full-screen red alert with 10s re-check. Detector 12 tests and endpoint 3 tests written red-first (NotImplementedError / 404), then green; full Django suite green. Live proof: two deliberately overlapping confirmed appointments on Dr. Bello -> overlay named AP-0007 / AP-0008 and the exact 12:15-12:30 PM overlap -> "View in calendar" selected the clash day + doctor, "Silence alert" dismissed the overlay while the red chip stayed, chip click reopened it; deleting one probe cleared the chip after 3.6 s. Probe rows deleted, doctors restored, DB clean. |
 | 2026-11-18 | Brain Agent | `Leave flow / T-726-T-728` | **PASSED** | Dated leave period, rolled-back preview and the planner UI. Preview 7 tests and dated-leave 9 tests written first (`NotImplementedError` / failing date behaviour), then green; full Django suite 300/300 OK in 297 s. Live proof with 3 probe appointments (AP-0007/0008 Mon 30 Nov, AP-0009 Tue 1 Dec): preview reported 2 days / 3 patients -> Dr. Babawo at the same times and labelled "Preview only — nothing sent"; DB check after preview showed no leave rows, flag false, appointments unmoved. Approve created one `DoctorLeave` 2026-11-30 -> 2026-12-01 and moved all three, queueing 6 notices. Calendar overlay verified in the browser: "Manage Leave" + "On Leave · Sudden Medical Emergency" on 30 Nov and 1 Dec, "Sick / Leave" + "On Duty" on 18 Nov and 2 Dec. Probe appointments, their `InteractionLog` rows and the temporary leave row deleted; all doctors `is_on_leave=False`, no leave rows left. |
+| 2026-11-19 | Brain Agent | `Leave flow / T-729-T-730` | **PASSED** | Distribution control: hard allow-list (`colleague_ids`) and per-day EXTRA-patient caps (`colleague_caps`) enforced in the same resolver pass preview and approve use, named unplaced reasons (`NO_COLLEAGUE_CHOSEN`, `NONE_QUALIFIED`, `ALL_AT_CAP`, `NO_FREE_SLOT`), one shared payload parser and `400 INVALID_DISTRIBUTION` on bad input, plus the three-mode chooser UI. 18 new tests written red-first (4 failing on the first run: caps ignored because doctor objects were passed where ids were expected), then green; disruption classes 32/32, full suite 318/318 OK. Live proof in the browser: 3 probe patients on Fri 20 Nov with Dr. Okafor cap 1 / Dr. Babawo cap 2 -> "3 affected / 3 can be placed / 0 need you", colleague load "Dr. Babawo · 3", split 2 on Fri + 1 on Mon 23 by the per-day cap; the preview request carried `colleague_ids` + `colleague_caps` and the approve request carried the same two values (approve was stubbed in the page so the real DB stayed untouched). Unqualified-only (Okafor, cap 0) rendered "No chosen colleague is qualified for Dental Consultation & Examination (Dr. Chinwe Okafor)."; qualified-only at cap 0 rendered "Dr. Babawo hit the cap you set for Wed, 18 Nov (0 of 0). No other chosen colleague could take this patient." Probes and their rows deleted, no leave rows, appointments restored, DB clean. |
 
 ---
 
