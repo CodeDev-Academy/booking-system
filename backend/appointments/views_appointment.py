@@ -15,7 +15,7 @@ from .models import Appointment, Doctor, FollowUpTask, AuditLog, ClinicSetting, 
 from .permissions import IsStaffAuthenticated
 from .services.hold_service import HoldService, SlotConflictException
 from .services.slot_selection import select_slot_offer
-from .services.disruption_service import DisruptionService, DisruptionUndoError
+from .services.disruption_service import DisruptionService, DisruptionUndoError, DisruptionRefusal
 from .services.conflict_service import ConflictService
 from .services.dispatch_service import fire_and_forget_webhook
 from .services.webhook_security import has_staff_or_webhook_access, resolve_webhook_secret, verify_webhook_secret
@@ -282,6 +282,13 @@ class ReassignLeaveView(APIView):
                 new_doctor_id=new_doctor_id,
                 performed_by=request.user.email
             )
+        except DisruptionRefusal as e:
+            # A colleague who does not offer the patient's service is refused
+            # before anything is saved, with Django's sentence for it.
+            return Response({
+                'error': e.code,
+                'detail': e.text,
+            }, status=status.HTTP_409_CONFLICT)
         except SlotConflictException as e:
             # Phase 2.5: a colleague whose calendar clashes (or who is on
             # leave) is a 409, not a silent double-booking on their calendar.

@@ -998,15 +998,35 @@ export const useCalendarStore = create(
     }
   },
 
-  // Reassign affected appointments to a colleague with Schedule Collision Validation
-  reassignToColleague: (appointmentId, targetDoctorId) => {
+  // Reassign affected appointments to a colleague with Schedule Collision Validation.
+  //
+  // Fix 4: in live mode the backend decides first. Django refuses a colleague
+  // who does not offer the patient's service (or is on leave / clashes), and
+  // the card must not move until that answer is in — an optimistic move would
+  // leave the grid showing a patient under a doctor who never took them.
+  reassignToColleague: async (appointmentId, targetDoctorId) => {
     const { blocks } = get();
     const apt = blocks.find((b) => b.appointmentId === appointmentId || b.id === appointmentId);
     if (!apt) return { success: false, message: 'Appointment not found on calendar' };
 
+    const targetDoc = getDoctor(targetDoctorId);
+
+    if (!useAppModeStore.getState().isDemoMode) {
+      try {
+        await apiService.reassignDoctorLeave(appointmentId, targetDoctorId);
+      } catch (err) {
+        const detail =
+          err?.details?.detail ||
+          err?.message ||
+          `Could not transfer the patient to ${targetDoc?.name || 'this colleague'}.`;
+        soundService.playAlert();
+        set({ toast: { tone: 'amber', text: detail } });
+        return { success: false, message: detail, code: err?.details?.error };
+      }
+    }
+
     const durationMin = apt.durationMin || 30;
     const bufferMin = apt.bufferMin !== undefined ? apt.bufferMin : 10;
-    const targetDoc = getDoctor(targetDoctorId);
 
     // Validate collision for the colleague at the same time slot, excluding current appointment & buffer
     const busyBlocks = blocks.filter(
@@ -1058,12 +1078,6 @@ export const useCalendarStore = create(
       newStart: apt.start,
       doctorId: targetDoctorId,
     });
-
-    if (!useAppModeStore.getState().isDemoMode) {
-      apiService.reassignDoctorLeave(appointmentId, targetDoctorId).catch((err) => {
-        console.warn('Backend reassignDoctorLeave failed:', err);
-      });
-    }
 
     soundService.playChime();
     return { success: true };

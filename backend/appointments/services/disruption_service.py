@@ -21,13 +21,20 @@ class _PreviewRollback(Exception):
     """Internal sentinel: unwinds a preview transaction so nothing is saved."""
 
 
-class DisruptionUndoError(Exception):
-    """A refusal to undo a distribution, with Django's words for the reason."""
+class DisruptionRefusal(Exception):
+    """A named refusal with Django's own words for the reason."""
 
     def __init__(self, code, text):
         super().__init__(text)
         self.code = code
         self.text = text
+
+
+class DisruptionUndoError(DisruptionRefusal):
+    """A refusal to undo a distribution, with Django's words for the reason."""
+
+    def __init__(self, code, text):
+        super().__init__(code, text)
 
 
 class DisruptionService:
@@ -213,12 +220,28 @@ class DisruptionService:
         calendar is conflict-checked (overlap + sterilization buffer) at the
         appointment's existing time before anything is saved. A clash raises
         SlotConflictException, which the view maps to 409.
+
+        Fix 4: the colleague must actually offer the patient's service. The
+        automatic resolver filtered by qualification from day one; this manual
+        path did not, so a dental patient could be handed to a GP. Undo is
+        deliberately NOT gated this way — it puts a patient back with the
+        doctor who already had them, and a later roster edit must not trap them
+        on the leave day.
         """
         appointment = Appointment.objects.select_for_update().get(id=appointment_id)
         old_doctor_name = appointment.doctor.name
 
         # Lock the target doctor row (same serialization as HoldService.acquire_slot).
         new_doctor = Doctor.objects.select_for_update().get(id=new_doctor_id)
+
+        if not DoctorService.objects.filter(
+            doctor=new_doctor, service_id=appointment.service_id
+        ).exists():
+            raise DisruptionRefusal(
+                'NOT_QUALIFIED',
+                f"{new_doctor.name} does not offer {appointment.service.name}, "
+                f"so {appointment.patient_name} cannot be moved to them.",
+            )
 
         if not new_doctor.is_active or new_doctor.is_on_leave_on(
             timezone.localtime(appointment.start_datetime).date()

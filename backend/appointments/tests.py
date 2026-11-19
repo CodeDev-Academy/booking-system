@@ -24,7 +24,11 @@ from .models import (
 )
 from .services.availability import AvailabilityEngine
 from .services.hold_service import HoldService, SlotConflictException
-from .services.disruption_service import DisruptionService, DisruptionUndoError
+from .services.disruption_service import (
+    DisruptionService,
+    DisruptionUndoError,
+    DisruptionRefusal,
+)
 from .services.conflict_service import ConflictService
 from .services.sweep_service import SweepService
 
@@ -8680,3 +8684,96 @@ class DisruptionUndoEndpointTests(_DisruptionFixture, APITestCase):
         self.client.force_authenticate(user=self.receptionist)
         res = self.client.post(self._url(uuid.uuid4()), {}, format='json')
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+# ======================================================================
+# Fix 4 - a manual transfer may only go to a doctor who offers the service.
+# The automatic resolver already filters by qualification; this path did not.
+# ======================================================================
+
+
+class ManualReassignQualificationTests(_DisruptionFixture, APITestCase):
+    """reassign_to_colleague / POST reassign-leave/ must refuse an
+    unqualified colleague with a named, plain reason."""
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        # A doctor who does not offer this service: no DoctorService row.
+        self.unqualified = Doctor.objects.create(
+            name='Dr. Ada Unqualified', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6], shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(16, 0), max_daily_appointments=10,
+        )
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Qualify', email='sarah.qualify@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_unqualified_colleague_is_refused_and_nothing_moves(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567501')
+
+        with self.assertRaises(DisruptionRefusal) as caught:
+            DisruptionService.reassign_to_colleague(
+                appt.id, self.unqualified.id, performed_by='sarah@clinic.com'
+            )
+
+        self.assertEqual(caught.exception.code, 'NOT_QUALIFIED')
+        self.assertIn('Dr. Ada Unqualified', caught.exception.text)
+        self.assertIn(self.service.name, caught.exception.text)
+        appt.refresh_from_db()
+        self.assertEqual(appt.doctor.id, self.doctor.id)
+        self.assertFalse(
+            AuditLog.objects.filter(action='DISRUPTION_COLLEAGUE_REASSIGNMENT').exists()
+        )
+
+    def test_qualified_colleague_still_moves(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567502')
+
+        DisruptionService.reassign_to_colleague(
+            appt.id, self.colleague.id, performed_by='sarah@clinic.com'
+        )
+
+        appt.refresh_from_db()
+        self.assertEqual(appt.doctor.id, self.colleague.id)
+
+    def test_endpoint_refuses_with_409_and_a_plain_sentence(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567503')
+        self.client.force_authenticate(user=self.receptionist)
+
+        res = self.client.post(
+            f'/api/v1/appointments/{appt.id}/reassign-leave/',
+            {'new_doctor_id': str(self.unqualified.id)},
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['error'], 'NOT_QUALIFIED')
+        self.assertIn('Dr. Ada Unqualified', res.data['detail'])
+        appt.refresh_from_db()
+        self.assertEqual(appt.doctor.id, self.doctor.id)
+
+    def test_undo_is_not_blocked_when_qualification_data_changed_later(self):
+        # Undo puts a patient back with the doctor who already had them, so a
+        # later roster edit must never trap them on the leave day.
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567504')
+        report = self._approve(monday)
+        DoctorService.objects.filter(
+            doctor=self.doctor, service=self.service
+        ).delete()
+
+        DisruptionService.undo_disruption_batch(
+            report['batch']['id'], performed_by='sarah@clinic.com'
+        )
+
+        appt.refresh_from_db()
+        self.assertEqual(appt.doctor.id, self.doctor.id)
