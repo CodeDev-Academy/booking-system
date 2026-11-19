@@ -2319,12 +2319,119 @@ doctor on leave.
 
 ---
 
+## 2026-11-19 - Leave flow hardening: three gaps closed (built, live-proven)
+
+### What was broken
+A review of the finished leave flow found six things it did not reach. Three
+were worth fixing now:
+
+1. **The undo button died on refresh.** The plan was safely stored, but the
+   strip that offers "Undo this plan" lived only in the browser tab that
+   approved it. Refresh the page, or walk to the other receptionist's machine,
+   and the way back was gone — even though nothing had been sent to a patient.
+2. **A manual transfer did not check who was qualified.** The per-patient
+   **Transfer** buttons checked "active", "on leave" and clashes, but not
+   whether the colleague offers the patient's service. A dental patient could
+   be handed to a GP. The automatic resolver had filtered correctly since day
+   one; this path never did. The UI also moved the card first and only warned
+   in the console, so a refused transfer left the grid showing a doctor who
+   never took the patient.
+3. **Stranded was only visible on the calendar.** No badge anywhere else. If
+   reception sat on the queue, a patient booked under a doctor on leave waited
+   silently.
+
+### What shipped
+- **A transfer must be to a doctor who offers the service (T-734).** New
+  `DisruptionRefusal(code, text)` (with `DisruptionUndoError` now a subclass of
+  it). `reassign_to_colleague` raises `NOT_QUALIFIED` with a plain sentence —
+  "Dr. Ada Unqualified does not offer Dental Examination, so Amina cannot be
+  moved to them." — before anything is saved and before any audit row is
+  written; the endpoint maps it to `409 NOT_QUALIFIED`. Undo is deliberately
+  **not** gated this way: it puts a patient back with the doctor who already
+  had them, so a later roster edit can never trap them on the leave day. The
+  live Transfer button now awaits Django before the card moves.
+- **The undo strip survives a refresh (T-735).** `GET
+  /api/v1/disruptions/batches/last/` returns the newest live plan with Django's
+  words already resolved (`id`, `doctor_name`, `placed_count`,
+  `unplaced_count`, `created_at`, `can_undo`, `undo_reason`), or `null`. Only
+  plans from the last 24 hours (`LAST_PLAN_WINDOW`) come back — an undo button
+  for last week's plan is a trap, not a safety net; older plans stay in
+  `DisruptionBatch` and `AuditLog` as history. The frontend reads it back on
+  mount. A slow reply can never overwrite a plan the tab just approved: every
+  local write bumps `_planSeq` and a stale answer is thrown away. A failed read
+  keeps whatever is on screen. The strip now also says "· N still without a
+  slot" when the plan left people behind.
+- **Stranded is visible from every page (T-736).** `Shell` owns the count: one
+  load on sign-in, a refresh on `slot.held` / `appointment.status_changed`, and
+  a 60-second poll. It hands the number to `LeftRail` as a prop, so the rail
+  stays presentational and **Schedule Grid** shows "⚠ N" (with a plain tooltip)
+  in place of the GRID tag. `loadStranded({ silent: true })` updates the number
+  without flipping the panel into "Refreshing…". No new backend surface — it is
+  the same `list_stranded` Django already decides. The panel's Refresh button
+  no longer receives the click event as its first argument.
+
+### Tests
+- T-734: `ManualReassignQualificationTests` (4), red first (import error on the
+  missing `DisruptionRefusal`), then green; disruption + leave + reschedule
+  **94/94 OK**.
+- T-735: `DisruptionLastBatchTests` (6), red first (2 failures + 4 errors, the
+  route did not exist), then green — auth, "no plan yet", the plan just
+  approved, "nothing left after undo", Django's refusal sentence for a blocked
+  plan, and a 3-day-old plan staying history.
+- T-736: no new backend tests (no new backend); proven in the browser.
+- **Full suite 352 tests / 352 pass, exit 0** in 577 s; `npm run build` clean.
+
+### Live proof
+With three probe patients on Fri 20 Nov under Dr. Bello:
+
+1. Approving with every colleague allowed placed all three (batch
+   `7d7ae764`). A **hard browser reload** of `/calendar` — nothing approved in
+   that page load — showed "Last plan: Dr. Bello Ibrahim · 3 moved" and
+   **Undo this plan**. That is the fix: the strip came back from the database.
+2. Undid it (3 patients back, leave removed, 6 notices `expired`), then
+   approved again with `colleague_ids: []` → 0 placed / 3 unplaced.
+3. On `/queue` the rail showed **"Schedule Grid ⚠ 3"** with the tooltip "3
+   patients are still booked under a doctor on leave — open the Schedule Grid".
+   The calendar strips read "3 patients still booked under a doctor on leave"
+   and "Last plan: Dr. Bello Ibrahim · 0 moved · 3 still without a slot".
+4. Clicking **Undo this plan** in the UI cleared both strips and the rail went
+   back to "GRID" — the badge is live, not a one-time read.
+
+Probes, notices and batches deleted afterwards; DB back to the 6 baseline
+appointments, 0 leave rows, 0 batches, no doctor on leave.
+
+### Still open (not in this step)
+- The stranded panel has no per-patient move action. The real route is
+  re-approving, and that second plan has `leave_created=False`, so it can never
+  be undone and it supersedes the first.
+- Workflow `08` never re-checks claim status before sending, so an undo can
+  still race a message that is already in flight.
+- `08`'s parse comment still documents the old claim ref (no placement
+  signature). Partner-facing doc drift only.
+
+### Files
+`backend/appointments/services/disruption_service.py`,
+`backend/appointments/views_appointment.py`,
+`backend/appointments/urls.py`,
+`backend/appointments/tests.py`,
+`frontend/src/services/apiService.js`,
+`frontend/src/stores/useCalendarStore.js`,
+`frontend/src/hooks/useCalendar.js`,
+`frontend/src/components/calendar/DoctorGridBookingCalendar.jsx`,
+`frontend/src/components/calendar/StrandedPatientsPanel.jsx`,
+`frontend/src/components/layout/Shell.jsx`,
+`frontend/src/components/layout/LeftRail.jsx`.
+
+---
+
 ## Next up - Phase 5 (partner handover)
 
-**Leave flow: steps 1-3 done (2026-11-19).** The leave story is complete:
-dated leave, a rolled-back preview, distribution with caps, a stranded queue,
-an honest undo and notify-once. Next work is partner handover — deploy
-staging, collect the partner credentials, then the joint acceptance run.
+**Leave flow: steps 1-3 plus hardening done (2026-11-19).** The leave story is
+complete: dated leave, a rolled-back preview, distribution with caps, a stranded
+queue, an honest undo that survives a refresh, notify-once, a manual transfer
+that refuses an unqualified doctor, and a stranded count on the rail from any
+page. Next work is partner handover - deploy staging, collect the partner
+credentials, then the joint acceptance run.
 
 ## Phase 5 (partner handover)
 
