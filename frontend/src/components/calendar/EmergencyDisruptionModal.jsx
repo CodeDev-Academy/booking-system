@@ -11,6 +11,7 @@ import {
   CalendarRange,
   Eye,
   Loader2,
+  Users,
 } from 'lucide-react';
 import { formatTime, formatDayLabel, toDateInputString } from '../../services/timeUtils';
 import { getService, getDoctor } from '../../services/slotEngine';
@@ -44,6 +45,10 @@ export const EmergencyDisruptionModal = ({
   onRestoreDuty,
   onSetLeaveWindow,
   onPreviewPlan,
+  onSetDistributionMode,
+  onToggleColleague,
+  onChooseSingle,
+  onSetColleagueCap,
 }) => {
   const [selectedColleague, setSelectedColleague] = useState(
     availableColleagues[0]?.id || ''
@@ -58,6 +63,9 @@ export const EmergencyDisruptionModal = ({
     preview,
     previewError,
     previewLoading,
+    distributionMode = 'auto',
+    chosenColleagueIds = [],
+    colleagueCaps = {},
   } = disruptionData || {};
 
   const startDay = leaveWindow?.startDay ?? disruptionData?.dayStart ?? null;
@@ -66,6 +74,11 @@ export const EmergencyDisruptionModal = ({
     ? Math.round((endDay - startDay) / DAY) + 1
     : 1;
   const isMultiDay = dayCount > 1;
+
+  // The plan needs at least one chosen colleague unless it is on auto split.
+  const needsChoice = distributionMode !== 'auto';
+  const choiceReady = chosenColleagueIds.length > 0;
+  const canPreview = !needsChoice || choiceReady;
 
   const handlePreview = async () => {
     if (isPreviewing || previewLoading) return;
@@ -252,13 +265,113 @@ export const EmergencyDisruptionModal = ({
           </div>
         </div>
 
+        {/* Distribution — who takes the patients. Auto split is the old
+            behaviour; the other two let the receptionist decide. */}
+        <div className="leave-window-card distribution-card">
+          <div className="leave-window-header">
+            <span className="field-label">
+              <Users size={13} /> Who takes these patients
+            </span>
+            <span className="badge-pill badge-neutral">
+              {distributionMode === 'auto'
+                ? 'Auto split'
+                : distributionMode === 'single'
+                  ? 'All to one'
+                  : `${chosenColleagueIds.length} chosen`}
+            </span>
+          </div>
+
+          <div className="leave-window-chips">
+            {[
+              { id: 'auto', label: 'Auto split', hint: 'Any on-duty colleague, first free slot wins' },
+              { id: 'chosen', label: 'Choose colleagues', hint: 'Pick who may take them, with a daily cap each' },
+              { id: 'single', label: 'All to one', hint: 'One colleague takes every patient they can' },
+            ].map((mode) => (
+              <button
+                key={mode.id}
+                type="button"
+                title={mode.hint}
+                className={`chip-toggle${distributionMode === mode.id ? ' is-active' : ''}`}
+                onClick={() => onSetDistributionMode?.(mode.id)}
+              >
+                {mode.label}
+              </button>
+            ))}
+          </div>
+
+          {needsChoice && (
+            <div className="distribution-list">
+              {availableColleagues.length === 0 ? (
+                <div className="leave-plan-error">
+                  <ShieldAlert size={14} />
+                  <span>No colleague is on duty on this day, so nobody can take these patients.</span>
+                </div>
+              ) : (
+                availableColleagues.map((colleague) => {
+                  const isChosen = chosenColleagueIds.includes(colleague.id);
+                  const cap = colleagueCaps?.[colleague.id];
+                  return (
+                    <div
+                      key={colleague.id}
+                      className={`distribution-row${isChosen ? ' is-chosen' : ''}`}
+                    >
+                      <label className="distribution-pick">
+                        <input
+                          type={distributionMode === 'single' ? 'radio' : 'checkbox'}
+                          name={
+                            distributionMode === 'single'
+                              ? 'distribution-single'
+                              : `distribution-${colleague.id}`
+                          }
+                          checked={isChosen}
+                          onChange={() => {
+                            if (distributionMode === 'single') {
+                              onChooseSingle?.(colleague.id);
+                            } else {
+                              onToggleColleague?.(colleague.id);
+                            }
+                          }}
+                        />
+                        <span className="distribution-name">{colleague.name}</span>
+                        <span className="distribution-specialty">{colleague.specialty}</span>
+                      </label>
+
+                      {distributionMode === 'chosen' && isChosen && (
+                        <label className="distribution-cap">
+                          <span className="field-hint">Max extra / day</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            className="input-base tabular-nums"
+                            value={cap ?? ''}
+                            placeholder="No limit"
+                            onChange={(e) => onSetColleagueCap?.(colleague.id, e.target.value)}
+                          />
+                        </label>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+
+          {needsChoice && !choiceReady && availableColleagues.length > 0 && (
+            <p className="distribution-hint">
+              Pick at least one colleague — until then the plan has nowhere to put these
+              patients.
+            </p>
+          )}
+        </div>
+
         {/* Preview = the real resolver, rolled back. Nothing saved, nothing sent. */}
         <div className="leave-plan-actions">
           <button
             type="button"
             className="btn-base btn-secondary"
             onClick={handlePreview}
-            disabled={isPreviewing || previewLoading}
+            disabled={isPreviewing || previewLoading || !canPreview}
           >
             {isPreviewing || previewLoading ? (
               <Loader2 size={14} className="spin-icon" />
@@ -268,9 +381,11 @@ export const EmergencyDisruptionModal = ({
             <span>{isPreviewing || previewLoading ? 'Building plan…' : 'Preview plan'}</span>
           </button>
           <span className="leave-plan-hint">
-            {preview
-              ? 'Preview is up to date for this period.'
-              : 'Shows every affected patient and where they would go.'}
+            {!canPreview
+              ? 'Choose at least one colleague first.'
+              : preview
+                ? 'Preview is up to date for this period.'
+                : 'Shows every affected patient and where they would go.'}
           </span>
         </div>
 
@@ -349,7 +464,9 @@ export const EmergencyDisruptionModal = ({
                       >
                         <span className="affected-patient-name">{r.patient_name}</span>
                         <span className="leave-plan-arrow">→</span>
-                        <span className="leave-plan-target">No free colleague — decide manually</span>
+                        <span className="leave-plan-target">
+                          {r.unplaced_text || 'No free colleague — decide manually'}
+                        </span>
                       </li>
                     ))}
                   </ul>

@@ -224,6 +224,10 @@ export const DoctorGridBookingCalendar = ({
   const autoResolveDisruption = useCalendarStore((state) => state.autoResolveDisruption);
   const setLeaveWindow = useCalendarStore((state) => state.setLeaveWindow);
   const previewDisruptionPlan = useCalendarStore((state) => state.previewDisruptionPlan);
+  const setDistributionMode = useCalendarStore((state) => state.setDistributionMode);
+  const toggleColleagueChoice = useCalendarStore((state) => state.toggleColleagueChoice);
+  const chooseSingleColleague = useCalendarStore((state) => state.chooseSingleColleague);
+  const setColleagueCap = useCalendarStore((state) => state.setColleagueCap);
   const restoreDoctorDuty = useCalendarStore((state) => state.restoreDoctorDuty);
 
   // Item C — red double-booking alert. Polls the backend every 10s; the
@@ -1351,6 +1355,10 @@ export const DoctorGridBookingCalendar = ({
           onAutoResolve={autoResolveDisruption}
           onSetLeaveWindow={setLeaveWindow}
           onPreviewPlan={previewDisruptionPlan}
+          onSetDistributionMode={setDistributionMode}
+          onToggleColleague={toggleColleagueChoice}
+          onChooseSingle={chooseSingleColleague}
+          onSetColleagueCap={setColleagueCap}
           onRestoreDuty={restoreDoctorDuty}
         />
       )}

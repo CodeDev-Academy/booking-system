@@ -43,6 +43,19 @@ const resolveBackendDoctor = async (doctorName) => {
   return match;
 };
 
+// Roster doctors -> backend directory entries. The two spell names differently,
+// so this uses the same token matcher as the single-doctor lookup. A doctor
+// that cannot be matched is returned with `backend: null` and the caller must
+// refuse the plan rather than silently drop them.
+const resolveChosenColleagues = async (chosenDocs) => {
+  const directory = await apiService.fetchStaffDirectory();
+  return chosenDocs.map((doc) => ({
+    rosterId: doc.id,
+    name: doc.name,
+    backend: (directory?.doctors || []).find((d) => doctorNamesMatch(d.name, doc.name)) || null,
+  }));
+};
+
 // Local-midnight day bounds -> the ISO window the backend resolver expects.
 const leaveWindowPayload = (startDay, endDay) => ({
   leave_start: new Date(startDay).toISOString(),
@@ -130,7 +143,8 @@ export const useCalendarStore = create(
 
   // Emergency Disruption Modal (Risk R-15). `leaveWindow` is the planned leave
   // (whole days, inclusive); `preview` is the backend's rolled-back dry run of
-  // the very resolver that Approve will run.
+  // the very resolver that Approve will run. `distributionMode` is the
+  // receptionist's choice of who takes the patients (Step 2).
   disruptionModal: {
     isOpen: false,
     doctorId: null,
@@ -140,6 +154,9 @@ export const useCalendarStore = create(
     preview: null,
     previewLoading: false,
     previewError: null,
+    distributionMode: 'auto',
+    chosenColleagueIds: [],
+    colleagueCaps: {},
   },
 
   // In-App Toast
@@ -396,6 +413,9 @@ export const useCalendarStore = create(
         preview: null,
         previewLoading: false,
         previewError: null,
+        distributionMode: 'auto',
+        chosenColleagueIds: [],
+        colleagueCaps: {},
       },
     });
   },
@@ -418,8 +438,102 @@ export const useCalendarStore = create(
     });
   },
 
+  // Distribution (Step 2): who takes the patients and how many extra each may
+  // take on any one day. Any change throws the old preview away.
+  setDistributionMode: (mode) => {
+    set((state) => ({
+      disruptionModal: {
+        ...state.disruptionModal,
+        distributionMode: mode,
+        preview: null,
+        previewError: null,
+      },
+    }));
+  },
+
+  toggleColleagueChoice: (rosterId) => {
+    set((state) => {
+      const chosen = state.disruptionModal.chosenColleagueIds || [];
+      const nextChosen = chosen.includes(rosterId)
+        ? chosen.filter((id) => id !== rosterId)
+        : [...chosen, rosterId];
+      return {
+        disruptionModal: {
+          ...state.disruptionModal,
+          chosenColleagueIds: nextChosen,
+          preview: null,
+          previewError: null,
+        },
+      };
+    });
+  },
+
+  chooseSingleColleague: (rosterId) => {
+    set((state) => ({
+      disruptionModal: {
+        ...state.disruptionModal,
+        chosenColleagueIds: rosterId ? [rosterId] : [],
+        preview: null,
+        previewError: null,
+      },
+    }));
+  },
+
+  setColleagueCap: (rosterId, value) => {
+    set((state) => {
+      const caps = { ...(state.disruptionModal.colleagueCaps || {}) };
+      if (value === '' || value === null || value === undefined) {
+        delete caps[rosterId];
+      } else {
+        const parsed = Number(value);
+        caps[rosterId] = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+      }
+      return {
+        disruptionModal: {
+          ...state.disruptionModal,
+          colleagueCaps: caps,
+          preview: null,
+          previewError: null,
+        },
+      };
+    });
+  },
+
+  // Roster choice -> the ids the backend resolver expects, plus caps keyed the
+  // same way. Throws (never guesses) when a chosen doctor is not in the
+  // directory or nobody was chosen.
+  _distributionPayload: async () => {
+    const modal = get().disruptionModal;
+    const mode = modal.distributionMode || 'auto';
+    if (mode === 'auto') return { colleague_ids: null, colleague_caps: null };
+
+    const roster = get().doctors;
+    const chosenDocs = (modal.chosenColleagueIds || [])
+      .map((id) => roster.find((doc) => doc.id === id))
+      .filter(Boolean);
+    if (chosenDocs.length === 0) {
+      throw new Error('Pick at least one colleague for this plan.');
+    }
+
+    const resolved = await resolveChosenColleagues(chosenDocs);
+    const unmatched = resolved.filter((item) => !item.backend).map((item) => item.name);
+    if (unmatched.length > 0) {
+      throw new Error(`Could not find ${unmatched.join(', ')} in the clinic staff directory.`);
+    }
+
+    const colleague_ids = resolved.map((item) => item.backend.id);
+    const colleague_caps = {};
+    resolved.forEach((item) => {
+      const cap = modal.colleagueCaps?.[item.rosterId];
+      if (cap === undefined || cap === null) return;
+      colleague_caps[item.backend.id] = Math.max(0, Number(cap) || 0);
+    });
+    return { colleague_ids, colleague_caps };
+  },
+
   // Dry run: the backend runs the REAL resolver inside a rolled-back
-  // transaction. Same placements, same counts, nothing saved, nothing sent.
+  // transaction, with the same chosen colleagues and caps. Same placements,
+  // same counts, nothing saved, nothing sent.
   previewDisruptionPlan: async (reason = 'Planned Leave') => {
     const modal = get().disruptionModal;
     const docId = modal.doctorId;
@@ -437,7 +551,7 @@ export const useCalendarStore = create(
       if (useAppModeStore.getState().isDemoMode) {
         // Demo mode has no backend: plan locally from the blocks on screen and
         // say so. Nothing is claimed about patient messages.
-        const report = get()._demoDisruptionPreview(docId, dayStart);
+        const report = get()._demoDisruptionPreview(docId, dayStart, dayEnd);
         set((state) => ({
           disruptionModal: {
             ...state.disruptionModal,
@@ -451,9 +565,10 @@ export const useCalendarStore = create(
       }
 
       const backendDoctor = await resolveBackendDoctor(doctorName);
+      const distribution = await get()._distributionPayload();
       const report = await apiService.previewDisruption(
         backendDoctor.id,
-        { reason, ...leaveWindowPayload(dayStart, dayEnd) }
+        { reason, ...leaveWindowPayload(dayStart, dayEnd), ...distribution }
       );
       set((state) => ({
         disruptionModal: {
@@ -480,55 +595,198 @@ export const useCalendarStore = create(
   },
 
   // Local-only plan used by the demo simulator. Same shape as the backend
-  // report so one panel renders both.
-  _demoDisruptionPreview: (docId, dayStart) => {
-    const { blocks } = get();
-    const dayEnd = dayStart + 24 * 60 * MIN;
+  // report and the same rules: chosen colleagues only, caps counted per doctor
+  // per day, priority "same time" then "earliest free slot that day".
+  _demoDisruptionPreview: (docId, startDay, endDay = startDay) => {
+    const modal = get().disruptionModal;
+    const mode = modal.distributionMode || 'auto';
+    const chosenIds = modal.chosenColleagueIds || [];
+    const caps = modal.colleagueCaps || {};
     const now = Date.now();
-    const affected = blocks.filter(
-      (b) =>
-        b.doctorId === docId &&
-        (b.type === 'appointment' || b.type === 'hold') &&
-        (!b.status || b.status === 'confirmed' || b.status === 'held') &&
-        !(b.holdExpiresAt && b.holdExpiresAt < now) &&
-        b.start >= dayStart &&
-        b.start < dayEnd
-    );
-    const colleagues = get().doctors.filter(
+
+    let colleagues = get().doctors.filter(
       (d) => d.id !== docId && d.isOnDuty && !d.isEmergencyLeave
     );
+    if (mode !== 'auto') {
+      colleagues = colleagues.filter((d) => chosenIds.includes(d.id));
+    }
 
-    const results = affected.map((apt) => {
-      const durationMin = apt.durationMin || 30;
-      const bufferMin = apt.bufferMin !== undefined ? apt.bufferMin : 10;
-      const busyWithoutApt = blocks.filter(
-        (b) =>
-          b.appointmentId !== (apt.appointmentId || apt.id) &&
-          b.id !== apt.id &&
-          b.id !== `${apt.appointmentId || apt.id}-buffer`
-      );
-      const free = colleagues.find(
-        (c) =>
-          validateSlot({ doctorId: c.id, start: apt.start, durationMin, bufferMin }, busyWithoutApt).ok
-      );
-      return {
-        appointment_code: apt.appointmentId || apt.id,
-        patient_name: apt.patientName,
-        start_datetime: new Date(apt.start).toISOString(),
-        outcome: free ? 'reassigned' : 'unplaced',
-        new_doctor: free ? free.name : null,
-      };
+    const dayKeyOf = (ts) => {
+      const d = new Date(ts);
+      return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    };
+    const dayLabel = (ts) =>
+      new Date(ts).toLocaleDateString('en-GB', {
+        weekday: 'short',
+        day: '2-digit',
+        month: 'short',
+      });
+
+    // A working copy, so patient 2 sees where patient 1 landed — the same way
+    // the backend resolver plans against its own moves.
+    let projected = [...get().blocks];
+    const placedByDay = {};
+    const capsHit = new Set();
+    let capNote = null;
+    const results = [];
+
+    const capAllows = (doctorId, dayKey) => {
+      const cap = caps[doctorId];
+      if (cap === undefined || cap === null) return true;
+      return (placedByDay[`${doctorId}|${dayKey}`] || 0) < Number(cap);
+    };
+    const noteCap = (doctor, ts) => {
+      capsHit.add(doctor.name);
+      if (capNote) return;
+      const used = placedByDay[`${doctor.id}|${dayKeyOf(ts)}`] || 0;
+      capNote = `${doctor.name} hit the cap you set for ${dayLabel(ts)} (${used} of ${Number(
+        caps[doctor.id]
+      )}).`;
+    };
+
+    for (let dayStart = startDay; dayStart <= endDay; dayStart += 24 * 60 * MIN) {
+      const dayEndTs = dayStart + 24 * 60 * MIN;
+      const affected = projected
+        .filter(
+          (b) =>
+            b.doctorId === docId &&
+            (b.type === 'appointment' || b.type === 'hold') &&
+            (!b.status || b.status === 'confirmed' || b.status === 'held') &&
+            !(b.holdExpiresAt && b.holdExpiresAt < now) &&
+            b.start >= dayStart &&
+            b.start < dayEndTs
+        )
+        .sort((a, b) => a.start - b.start);
+
+      affected.forEach((apt) => {
+        const aptKey = apt.appointmentId || apt.id;
+        const durationMin = apt.durationMin || 30;
+        const bufferMin = apt.bufferMin !== undefined ? apt.bufferMin : 10;
+        const busyWithoutApt = projected.filter(
+          (b) => b.appointmentId !== aptKey && b.id !== apt.id && b.id !== `${aptKey}-buffer`
+        );
+
+        let placed = null;
+        for (const colleague of colleagues) {
+          if (!capAllows(colleague.id, dayKeyOf(apt.start))) {
+            noteCap(colleague, apt.start);
+            continue;
+          }
+          const validation = validateSlot(
+            { doctorId: colleague.id, start: apt.start, durationMin, bufferMin },
+            busyWithoutApt
+          );
+          if (validation.ok) {
+            placed = { doctorId: colleague.id, start: apt.start };
+            break;
+          }
+        }
+
+        if (!placed) {
+          for (const colleague of colleagues) {
+            for (
+              let ts = Math.max(dayStart, apt.start);
+              ts + durationMin * MIN <= dayEndTs;
+              ts += 15 * MIN
+            ) {
+              if (ts === apt.start) continue;
+              if (!capAllows(colleague.id, dayKeyOf(ts))) {
+                noteCap(colleague, ts);
+                continue;
+              }
+              const validation = validateSlot(
+                { doctorId: colleague.id, start: ts, durationMin, bufferMin },
+                busyWithoutApt
+              );
+              if (validation.ok) {
+                placed = { doctorId: colleague.id, start: ts };
+                break;
+              }
+            }
+            if (placed) break;
+          }
+        }
+
+        if (placed) {
+          const key = `${placed.doctorId}|${dayKeyOf(placed.start)}`;
+          placedByDay[key] = (placedByDay[key] || 0) + 1;
+          const newEnd = placed.start + durationMin * MIN;
+          projected = projected.map((b) => {
+            if (b.appointmentId === aptKey || b.id === apt.id) {
+              return { ...b, doctorId: placed.doctorId, start: placed.start, end: newEnd };
+            }
+            if (b.id === `${aptKey}-buffer`) {
+              return {
+                ...b,
+                doctorId: placed.doctorId,
+                start: newEnd,
+                end: newEnd + bufferMin * MIN,
+              };
+            }
+            return b;
+          });
+        }
+
+        const placedDoctor = placed
+          ? get().doctors.find((d) => d.id === placed.doctorId)
+          : null;
+        let unplacedReason = null;
+        let unplacedText = null;
+        if (!placed) {
+          if (colleagues.length === 0) {
+            unplacedReason = 'NO_COLLEAGUE_CHOSEN';
+            unplacedText = 'No colleague is selected for this plan.';
+          } else if (capNote) {
+            unplacedReason = 'ALL_AT_CAP';
+            unplacedText = `${capNote} No other chosen colleague could take this patient.`;
+          } else {
+            unplacedReason = 'NO_FREE_SLOT';
+            unplacedText = `No free slot with a chosen colleague on ${dayLabel(apt.start)}.`;
+          }
+        }
+
+        results.push({
+          appointment_id: apt.id,
+          appointment_code: aptKey,
+          patient_name: apt.patientName,
+          start_datetime: new Date(apt.start).toISOString(),
+          outcome: placed ? 'reassigned' : 'unplaced',
+          placement: placed ? 'same_day_same_time' : null,
+          old_doctor: getDoctor(docId)?.name || 'Doctor',
+          new_doctor: placedDoctor?.name || null,
+          new_start: new Date(placed ? placed.start : apt.start).toISOString(),
+          new_end: new Date(
+            placed ? placed.start + durationMin * MIN : apt.end
+          ).toISOString(),
+          unplaced_reason: unplacedReason,
+          unplaced_text: unplacedText,
+        });
+      });
+    }
+
+    const placedByDoctor = {};
+    Object.entries(placedByDay).forEach(([key, count]) => {
+      const doctorId = key.split('|')[0];
+      const name = get().doctors.find((d) => d.id === doctorId)?.name || 'Colleague';
+      placedByDoctor[name] = (placedByDoctor[name] || 0) + count;
     });
+    const placedCount = results.filter((r) => r.outcome === 'reassigned').length;
 
     return {
       preview: true,
       demo: true,
       doctor_name: getDoctor(docId)?.name || 'Doctor',
-      auto_resolved_count: results.filter((r) => r.outcome === 'reassigned').length,
-      same_day_count: results.filter((r) => r.outcome === 'reassigned').length,
+      auto_resolved_count: placedCount,
+      same_day_count: placedCount,
       next_day_count: 0,
-      unplaced_count: results.filter((r) => r.outcome !== 'reassigned').length,
+      unplaced_count: results.length - placedCount,
       messages_queued_count: 0,
+      distribution: {
+        colleague_ids: mode === 'auto' ? null : chosenIds,
+        colleague_caps: mode === 'auto' ? {} : caps,
+        placed_by_doctor: placedByDoctor,
+        caps_hit: [...capsHit].sort(),
+      },
       results,
     };
   },
@@ -544,6 +802,9 @@ export const useCalendarStore = create(
         preview: null,
         previewLoading: false,
         previewError: null,
+        distributionMode: 'auto',
+        chosenColleagueIds: [],
+        colleagueCaps: {},
       },
     }),
 
@@ -580,6 +841,9 @@ export const useCalendarStore = create(
         preview: null,
         previewLoading: false,
         previewError: null,
+        distributionMode: 'auto',
+        chosenColleagueIds: [],
+        colleagueCaps: {},
       },
       toast: {
         tone: 'success',
@@ -913,86 +1177,37 @@ export const useCalendarStore = create(
     }));
 
     if (useAppModeStore.getState().isDemoMode) {
-      const colleagues = get().doctors.filter(
-        (d) => d.id !== docId && d.isOnDuty && !d.isEmergencyLeave
-      );
       const dayStart =
-        get().disruptionModal.dayStart ?? startOfDayOffset(get().currentDateOffset);
-      const dayEnd = dayStart + 24 * 60 * MIN;
-      const newBlocks = [...get().blocks];
-      let sameDay = 0;
-      const unplaced = [];
-
-      affected.forEach((apt) => {
-        const aptKey = apt.appointmentId || apt.id;
-        const durationMin = apt.durationMin || 30;
-        const bufferMin = apt.bufferMin !== undefined ? apt.bufferMin : 10;
-        const busyWithoutApt = newBlocks.filter(
-          (b) =>
-            b.appointmentId !== aptKey &&
-            b.id !== apt.id &&
-            b.id !== `${aptKey}-buffer`
+        get().disruptionModal.leaveWindow?.startDay ??
+        get().disruptionModal.dayStart ??
+        startOfDayOffset(get().currentDateOffset);
+      const dayEnd = get().disruptionModal.leaveWindow?.endDay ?? dayStart;
+      // One local planner for preview and approve, so the demo cannot promise
+      // one thing and do another.
+      const report = get()._demoDisruptionPreview(docId, dayStart, dayEnd);
+      const roster = get().doctors;
+      const newBlocks = get().blocks.map((block) => {
+        const result = report.results.find(
+          (r) =>
+            r.outcome === 'reassigned' &&
+            (r.appointment_code === block.appointmentId ||
+              r.appointment_code === block.id ||
+              r.appointment_id === block.id)
         );
-
-        let placed = null;
-        // Priority 1: a colleague free at the exact same time.
-        for (const colleague of colleagues) {
-          const validation = validateSlot(
-            { doctorId: colleague.id, start: apt.start, durationMin, bufferMin },
-            busyWithoutApt
-          );
-          if (validation.ok) {
-            placed = { doctorId: colleague.id, start: apt.start };
-            break;
-          }
-        }
-        // Priority 2: earliest free 15-minute slot the same day.
-        if (!placed) {
-          for (const colleague of colleagues) {
-            for (
-              let ts = Math.max(dayStart, apt.start);
-              ts + durationMin * MIN <= dayEnd;
-              ts += 15 * MIN
-            ) {
-              if (ts === apt.start) continue;
-              const validation = validateSlot(
-                { doctorId: colleague.id, start: ts, durationMin, bufferMin },
-                busyWithoutApt
-              );
-              if (validation.ok) {
-                placed = { doctorId: colleague.id, start: ts };
-                break;
-              }
-            }
-            if (placed) break;
-          }
-        }
-
-        if (placed) {
-          sameDay += 1;
-          const newEnd = placed.start + durationMin * MIN;
-          for (let i = 0; i < newBlocks.length; i++) {
-            const b = newBlocks[i];
-            const isApt =
-              b.appointmentId === aptKey || b.id === apt.id;
-            const isBuffer = b.id === `${aptKey}-buffer`;
-            if (isApt) {
-              newBlocks[i] = { ...b, doctorId: placed.doctorId, start: placed.start, end: newEnd };
-            } else if (isBuffer) {
-              newBlocks[i] = {
-                ...b,
-                doctorId: placed.doctorId,
-                start: newEnd,
-                end: newEnd + bufferMin * MIN,
-              };
-            }
-          }
-        } else {
-          unplaced.push(apt);
-        }
+        if (!result) return block;
+        const newStart = new Date(result.new_start).getTime();
+        const newEnd = new Date(result.new_end).getTime();
+        const newDoctorId = result.new_doctor
+          ? roster.find((doc) => doctorNamesMatch(doc.name, result.new_doctor))?.id || block.doctorId
+          : block.doctorId;
+        return { ...block, doctorId: newDoctorId, start: newStart, end: newEnd };
       });
 
-      const remainingKeys = unplaced.map((u) => u.appointmentId || u.id);
+      const remainingKeys = report.results
+        .filter((r) => r.outcome !== 'reassigned')
+        .map((r) => r.appointment_code);
+      const placedCount = report.auto_resolved_count;
+
       set((state) => ({
         blocks: newBlocks,
         disruptionModal: {
@@ -1005,19 +1220,19 @@ export const useCalendarStore = create(
           ),
         },
         toast: {
-          tone: unplaced.length === 0 ? 'success' : 'amber',
+          tone: remainingKeys.length === 0 ? 'success' : 'amber',
           text:
-            unplaced.length === 0
-              ? `Demo auto-resolve: all ${sameDay} affected appointments re-placed on the calendar. No patient messages are sent in demo mode.`
-              : `Demo auto-resolve: ${sameDay} re-placed locally, ${unplaced.length} need manual transfer. No patient messages are sent in demo mode.`,
+            remainingKeys.length === 0
+              ? `Demo auto-resolve: all ${placedCount} affected appointments re-placed on the calendar. No patient messages are sent in demo mode.`
+              : `Demo auto-resolve: ${placedCount} re-placed locally, ${remainingKeys.length} need manual transfer. No patient messages are sent in demo mode.`,
         },
       }));
-      if (unplaced.length === 0) {
+      if (remainingKeys.length === 0) {
         soundService.playChime();
       } else {
         soundService.playAlert();
       }
-      return { success: true, sameDay, unplaced: unplaced.length };
+      return { success: true, sameDay: placedCount, unplaced: remainingKeys.length };
     }
 
     try {
@@ -1035,9 +1250,10 @@ export const useCalendarStore = create(
         get().disruptionModal.dayStart ??
         startOfDayOffset(get().currentDateOffset);
       const dayEnd = get().disruptionModal.leaveWindow?.endDay ?? dayStart;
+      const distribution = await get()._distributionPayload();
       const report = await apiService.autoResolveDisruption(
         backendDoctor.id,
-        { reason, ...leaveWindowPayload(dayStart, dayEnd) }
+        { reason, ...leaveWindowPayload(dayStart, dayEnd), ...distribution }
       );
 
       // Map backend doctor names ("Dr. Amina Bello") to local doctor ids.

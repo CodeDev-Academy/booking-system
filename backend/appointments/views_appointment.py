@@ -40,6 +40,30 @@ def get_appointment_or_404(identifier):
         return get_object_or_404(Appointment, appointment_code=identifier)
 
 
+def read_distribution_choice(request):
+    """
+    Step 2: read the receptionist's distribution choice from the request body.
+
+    Both resolver endpoints use this, so preview and approve always read the
+    same fields. Absent fields mean "any available colleague, no caps" — the
+    original behaviour — which keeps older clients working.
+    """
+    colleague_ids = request.data.get('colleague_ids')
+    colleague_caps = request.data.get('colleague_caps')
+
+    if colleague_ids is not None:
+        if not isinstance(colleague_ids, list):
+            raise ValueError('colleague_ids must be a list of doctor ids.')
+        colleague_ids = [str(value) for value in colleague_ids]
+
+    if colleague_caps is not None:
+        if not isinstance(colleague_caps, dict):
+            raise ValueError('colleague_caps must map a doctor id to a whole number.')
+        colleague_caps = {str(key): value for key, value in colleague_caps.items()}
+
+    return colleague_ids, colleague_caps
+
+
 class SlotHoldView(APIView):
     """
     POST /api/v1/slots/hold/ & /api/v1/appointments/hold/
@@ -318,17 +342,32 @@ class DisruptionPreviewView(APIView):
             )
 
         try:
+            colleague_ids, colleague_caps = read_distribution_choice(request)
+        except ValueError as distribution_err:
+            return Response(
+                {'error': 'INVALID_DISTRIBUTION', 'detail': str(distribution_err)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
             report = DisruptionService.preview_disruption(
                 doctor_id=doctor_id,
                 leave_start_dt=leave_start,
                 leave_end_dt=leave_end,
                 reason=reason,
                 performed_by=request.user.email,
+                colleague_ids=colleague_ids,
+                colleague_caps=colleague_caps,
             )
         except Doctor.DoesNotExist:
             return Response(
                 {'error': 'DOCTOR_NOT_FOUND', 'detail': 'No doctor matches this id.'},
                 status=status.HTTP_404_NOT_FOUND,
+            )
+        except ValueError as distribution_err:
+            return Response(
+                {'error': 'INVALID_DISTRIBUTION', 'detail': str(distribution_err)},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         report['delivery_pushed'] = False
@@ -372,17 +411,32 @@ class DisruptionAutoResolveView(APIView):
             )
 
         try:
+            colleague_ids, colleague_caps = read_distribution_choice(request)
+        except ValueError as distribution_err:
+            return Response(
+                {'error': 'INVALID_DISTRIBUTION', 'detail': str(distribution_err)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
             report = DisruptionService.auto_resolve_disruption(
                 doctor_id=doctor_id,
                 leave_start_dt=leave_start,
                 leave_end_dt=leave_end,
                 reason=reason,
                 performed_by=request.user.email,
+                colleague_ids=colleague_ids,
+                colleague_caps=colleague_caps,
             )
         except Doctor.DoesNotExist:
             return Response(
                 {'error': 'DOCTOR_NOT_FOUND', 'detail': 'No doctor matches this id.'},
                 status=status.HTTP_404_NOT_FOUND,
+            )
+        except ValueError as distribution_err:
+            return Response(
+                {'error': 'INVALID_DISTRIBUTION', 'detail': str(distribution_err)},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         items = [message for result in report['results'] for message in result['messages']]

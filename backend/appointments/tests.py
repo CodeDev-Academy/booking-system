@@ -6281,6 +6281,367 @@ class DisruptionPreviewTests(APITestCase):
         self.assertEqual(res.data['error'], 'INVALID_DATETIME')
 
 
+class DisruptionDistributionTests(TestCase):
+    """
+    Step 2 — the receptionist chooses who takes the patients.
+
+    `colleague_ids` is a hard allow-list (only those doctors are considered),
+    and `colleague_caps` limits how many EXTRA patients this plan may give a
+    doctor on any ONE day (a cap of 1 still means 1 on Monday and 1 on Tuesday).
+    The same pass runs for preview and approve, so the plan stays honest.
+    """
+
+    def setUp(self):
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+        self.doctor = Doctor.objects.create(
+            name='Dr. Bello Distribute', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5], shift_start=datetime.time(9, 0),
+            shift_end=datetime.time(17, 0), max_daily_appointments=12,
+        )
+        self.okafor = Doctor.objects.create(
+            name='Dr. Chinwe Okafor', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6], shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(16, 0), max_daily_appointments=14,
+        )
+        self.babawo = Doctor.objects.create(
+            name='Dr. Babawo', specialty='Consultant Surgery',
+            working_days=[1, 2, 3, 4, 5, 6], shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(16, 0), max_daily_appointments=14,
+        )
+        self.unqualified = Doctor.objects.create(
+            name='Dr. No Skills', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6], shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(16, 0), max_daily_appointments=14,
+        )
+        self.service = Service.objects.create(
+            name='Dental Examination', category='Dental Care',
+            duration_minutes=30, buffer_minutes=10, price=15000.00,
+        )
+        for doc in (self.doctor, self.okafor, self.babawo):
+            DoctorService.objects.create(doctor=doc, service=self.service)
+
+    def _next_monday(self):
+        today = timezone.now().date()
+        return today + datetime.timedelta(days=(1 - today.isoweekday()) % 7 + 7)
+
+    def _book(self, doctor, day, hour, minute=0, phone='+2348055557800'):
+        start = timezone.make_aware(datetime.datetime.combine(day, datetime.time(hour, minute)))
+        return HoldService.acquire_slot(
+            doctor_id=doctor.id, service_id=self.service.id,
+            start_datetime=start,
+            end_datetime=start + datetime.timedelta(minutes=30),
+            patient_name='Amina Distribute', patient_phone=phone, is_hold=False,
+        )
+
+    def _resolve(self, day=None, colleague_ids=None, colleague_caps=None, max_lookahead_days=0):
+        day = day or self._next_monday()
+        return DisruptionService.auto_resolve_disruption(
+            doctor_id=self.doctor.id,
+            leave_start_dt=timezone.make_aware(
+                datetime.datetime.combine(day, datetime.time(8, 0))
+            ),
+            leave_end_dt=timezone.make_aware(
+                datetime.datetime.combine(day, datetime.time(23, 59))
+            ),
+            max_lookahead_days=max_lookahead_days,
+            colleague_ids=colleague_ids,
+            colleague_caps=colleague_caps,
+        )
+
+    def test_allow_list_restricts_who_receives_patients(self):
+        """Only the chosen colleague may take this patient."""
+        self._book(self.doctor, self._next_monday(), 11, phone='+2348055557801')
+        report = self._resolve(colleague_ids=[str(self.babawo.id)])
+
+        self.assertEqual(report['results'][0]['new_doctor'], 'Dr. Babawo')
+        self.assertFalse(
+            Appointment.objects.filter(doctor=self.okafor).exists(),
+            'Dr. Okafor was not chosen and must not receive the patient',
+        )
+
+    def test_cap_spills_the_next_patient_to_another_chosen_colleague(self):
+        for hour, phone in ((10, '+2348055557802'), (11, '+2348055557803'), (12, '+2348055557804')):
+            self._book(self.doctor, self._next_monday(), hour, phone=phone)
+
+        report = self._resolve(
+            colleague_ids=[str(self.okafor.id), str(self.babawo.id)],
+            colleague_caps={str(self.okafor.id): 1},
+        )
+
+        self.assertEqual(report['distribution']['placed_by_doctor'].get('Dr. Chinwe Okafor'), 1)
+        self.assertEqual(report['distribution']['placed_by_doctor'].get('Dr. Babawo'), 2)
+        self.assertEqual(report['unplaced_count'], 0)
+        self.assertIn('Dr. Chinwe Okafor', report['distribution']['caps_hit'])
+
+    def test_cap_zero_means_do_not_use_that_doctor(self):
+        self._book(self.doctor, self._next_monday(), 11, phone='+2348055557805')
+        report = self._resolve(
+            colleague_ids=[str(self.okafor.id), str(self.babawo.id)],
+            colleague_caps={str(self.okafor.id): 0},
+        )
+
+        self.assertEqual(report['results'][0]['new_doctor'], 'Dr. Babawo')
+        self.assertFalse(Appointment.objects.filter(doctor=self.okafor).exists())
+
+    def test_cap_applies_per_day_not_per_leave_plan(self):
+        monday = self._next_monday()
+        tuesday = monday + datetime.timedelta(days=1)
+        self._book(self.doctor, monday, 11, phone='+2348055557806')
+        self._book(self.doctor, tuesday, 11, phone='+2348055557807')
+
+        report = DisruptionService.auto_resolve_disruption(
+            doctor_id=self.doctor.id,
+            leave_start_dt=timezone.make_aware(datetime.datetime.combine(monday, datetime.time(8, 0))),
+            leave_end_dt=timezone.make_aware(datetime.datetime.combine(tuesday, datetime.time(23, 59))),
+            max_lookahead_days=0,
+            colleague_ids=[str(self.okafor.id)],
+            colleague_caps={str(self.okafor.id): 1},
+        )
+
+        self.assertEqual(report['auto_resolved_count'], 2)
+        self.assertEqual(report['distribution']['placed_by_doctor'].get('Dr. Chinwe Okafor'), 2)
+        days = sorted(
+            timezone.localtime(Appointment.objects.get(appointment_code=r['appointment_code']).start_datetime).date()
+            for r in report['results']
+        )
+        self.assertEqual(days, [monday, tuesday])
+
+    def test_one_colleague_plan_receives_every_patient(self):
+        for hour, phone in ((10, '+2348055557808'), (11, '+2348055557809'), (12, '+2348055557810')):
+            self._book(self.doctor, self._next_monday(), hour, phone=phone)
+
+        report = self._resolve(colleague_ids=[str(self.babawo.id)])
+
+        self.assertEqual(report['auto_resolved_count'], 3)
+        self.assertEqual(report['distribution']['placed_by_doctor'], {'Dr. Babawo': 3})
+
+    def test_unqualified_choice_is_named_not_silently_dropped(self):
+        self._book(self.doctor, self._next_monday(), 11, phone='+2348055557811')
+        report = self._resolve(colleague_ids=[str(self.unqualified.id)])
+
+        result = report['results'][0]
+        self.assertEqual(result['outcome'], 'unplaced')
+        self.assertEqual(result['unplaced_reason'], 'NONE_QUALIFIED')
+        self.assertIn('Dental Examination', result['unplaced_text'])
+        self.assertIn('Dr. No Skills', result['unplaced_text'])
+
+    def test_all_at_cap_is_named_with_the_doctor(self):
+        self._book(self.doctor, self._next_monday(), 11, phone='+2348055557812')
+        report = self._resolve(
+            colleague_ids=[str(self.okafor.id)],
+            colleague_caps={str(self.okafor.id): 0},
+        )
+
+        result = report['results'][0]
+        self.assertEqual(result['outcome'], 'unplaced')
+        self.assertEqual(result['unplaced_reason'], 'ALL_AT_CAP')
+        self.assertIn('Dr. Chinwe Okafor', result['unplaced_text'])
+        self.assertIn('0 of 0', result['unplaced_text'])
+
+    def test_no_chosen_colleague_is_an_honest_empty_plan(self):
+        self._book(self.doctor, self._next_monday(), 11, phone='+2348055557813')
+        report = self._resolve(colleague_ids=[])
+
+        result = report['results'][0]
+        self.assertEqual(result['outcome'], 'unplaced')
+        self.assertEqual(result['unplaced_reason'], 'NO_COLLEAGUE_CHOSEN')
+
+    def test_cap_counts_extra_patients_only(self):
+        """A doctor with a busy morning can still take the cap in extras."""
+        existing_day = self._next_monday()
+        self._book(self.okafor, existing_day, 9, phone='+2348055557814')
+        self._book(self.doctor, existing_day, 11, phone='+2348055557815')
+
+        report = self._resolve(
+            colleague_ids=[str(self.okafor.id)],
+            colleague_caps={str(self.okafor.id): 1},
+        )
+
+        self.assertEqual(report['auto_resolved_count'], 1)
+        self.assertEqual(
+            Appointment.objects.filter(doctor=self.okafor, status='confirmed').count(), 2
+        )
+
+    def test_report_echoes_the_chosen_distribution(self):
+        self._book(self.doctor, self._next_monday(), 11, phone='+2348055557816')
+        report = self._resolve(
+            colleague_ids=[str(self.okafor.id)],
+            colleague_caps={str(self.okafor.id): 2},
+        )
+
+        distribution = report['distribution']
+        self.assertEqual(distribution['colleague_ids'], [str(self.okafor.id)])
+        self.assertEqual(distribution['colleague_caps'], {str(self.okafor.id): 2})
+        self.assertEqual(distribution['placed_by_doctor'], {'Dr. Chinwe Okafor': 1})
+
+    def test_preview_matches_approve_under_caps(self):
+        for hour, phone in ((10, '+2348055557817'), (11, '+2348055557818'), (12, '+2348055557819')):
+            self._book(self.doctor, self._next_monday(), hour, phone=phone)
+
+        kwargs = {
+            'doctor_id': self.doctor.id,
+            'leave_start_dt': timezone.make_aware(
+                datetime.datetime.combine(self._next_monday(), datetime.time(8, 0))
+            ),
+            'leave_end_dt': timezone.make_aware(
+                datetime.datetime.combine(self._next_monday(), datetime.time(23, 59))
+            ),
+            'max_lookahead_days': 0,
+            'colleague_ids': [str(self.okafor.id), str(self.babawo.id)],
+            'colleague_caps': {str(self.okafor.id): 1},
+        }
+        preview = DisruptionService.preview_disruption(**kwargs)
+        planned = [
+            (r['appointment_code'], r['new_doctor'], r['new_start'])
+            for r in preview['results']
+        ]
+        self.assertFalse(Appointment.objects.filter(doctor=self.okafor).exists())
+
+        approved = DisruptionService.auto_resolve_disruption(**kwargs)
+        actual = [
+            (r['appointment_code'], r['new_doctor'], r['new_start'])
+            for r in approved['results']
+        ]
+        self.assertEqual(planned, actual)
+        self.assertEqual(
+            preview['distribution']['placed_by_doctor'],
+            approved['distribution']['placed_by_doctor'],
+        )
+
+    def test_unknown_colleague_is_rejected(self):
+        self._book(self.doctor, self._next_monday(), 11, phone='+2348055557820')
+        with self.assertRaises(ValueError):
+            self._resolve(colleague_ids=[str(uuid.uuid4())])
+
+    def test_negative_cap_is_rejected(self):
+        self._book(self.doctor, self._next_monday(), 11, phone='+2348055557821')
+        with self.assertRaises(ValueError):
+            self._resolve(
+                colleague_ids=[str(self.okafor.id)],
+                colleague_caps={str(self.okafor.id): -1},
+            )
+
+    def test_leaving_doctor_cannot_be_in_the_plan(self):
+        self._book(self.doctor, self._next_monday(), 11, phone='+2348055557822')
+        with self.assertRaises(ValueError):
+            self._resolve(colleague_ids=[str(self.doctor.id)])
+
+
+class DisruptionDistributionEndpointTests(APITestCase):
+    """
+    Step 2 — both resolver endpoints accept the same distribution payload, so
+    preview and approve can never read different plans.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Distribute', email='sarah.distribute@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+        self.doctor = Doctor.objects.create(
+            name='Dr. Bello Endpoint', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5], shift_start=datetime.time(9, 0),
+            shift_end=datetime.time(17, 0), max_daily_appointments=12,
+        )
+        self.okafor = Doctor.objects.create(
+            name='Dr. Chinwe Endpoint', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6], shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(16, 0), max_daily_appointments=14,
+        )
+        self.service = Service.objects.create(
+            name='Dental Examination', category='Dental Care',
+            duration_minutes=30, buffer_minutes=10, price=15000.00,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.service)
+        DoctorService.objects.create(doctor=self.okafor, service=self.service)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _next_monday(self):
+        today = timezone.now().date()
+        return today + datetime.timedelta(days=(1 - today.isoweekday()) % 7 + 7)
+
+    def _book(self, phone='+2348055557830'):
+        day = self._next_monday()
+        start = timezone.make_aware(datetime.datetime.combine(day, datetime.time(11, 0)))
+        return HoldService.acquire_slot(
+            doctor_id=self.doctor.id, service_id=self.service.id,
+            start_datetime=start, end_datetime=start + datetime.timedelta(minutes=30),
+            patient_name='Amina Endpoint', patient_phone=phone, is_hold=False,
+        )
+
+    def _body(self, **extra):
+        day = self._next_monday()
+        return {
+            'reason': 'Planned leave',
+            'leave_start': timezone.make_aware(
+                datetime.datetime.combine(day, datetime.time(8, 0))
+            ).isoformat(),
+            'leave_end': timezone.make_aware(
+                datetime.datetime.combine(day, datetime.time(23, 59))
+            ).isoformat(),
+            **extra,
+        }
+
+    def test_preview_accepts_the_chosen_colleague_and_cap(self):
+        self._book()
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.post(
+            f"/api/v1/disruptions/{self.doctor.id}/preview/",
+            self._body(colleague_ids=[str(self.okafor.id)], colleague_caps={str(self.okafor.id): 1}),
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['distribution']['colleague_ids'], [str(self.okafor.id)])
+        self.assertEqual(res.data['results'][0]['new_doctor'], 'Dr. Chinwe Endpoint')
+
+    def test_auto_resolve_applies_the_same_choice(self):
+        self._book()
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.post(
+            f"/api/v1/disruptions/{self.doctor.id}/auto-resolve/",
+            self._body(colleague_ids=[str(self.okafor.id)]),
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['results'][0]['new_doctor'], 'Dr. Chinwe Endpoint')
+
+    def test_wrong_shape_is_a_clear_400(self):
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.post(
+            f"/api/v1/disruptions/{self.doctor.id}/preview/",
+            self._body(colleague_caps=[1, 2]),
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res.data['error'], 'INVALID_DISTRIBUTION')
+        self.assertIn('colleague_caps', res.data['detail'])
+
+    def test_unknown_colleague_is_a_clear_400(self):
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.post(
+            f"/api/v1/disruptions/{self.doctor.id}/preview/",
+            self._body(colleague_ids=[str(uuid.uuid4())]),
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res.data['error'], 'INVALID_DISTRIBUTION')
+        self.assertIn('active doctor', res.data['detail'])
+
+
 class DispatchContractEnrichmentTests(APITestCase):
     """
     Task 3.5 — Workflow D contract enrichment:

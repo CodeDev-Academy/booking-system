@@ -284,6 +284,68 @@ class DisruptionService:
         )
 
     @classmethod
+    def _build_distribution(cls, doctor, colleague_ids=None, colleague_caps=None):
+        """
+        Turn the receptionist's distribution choice into an allow-list and
+        per-day caps.
+
+        - `colleague_ids` absent/None: any available colleague may take patients
+          (the original auto-split behaviour).
+        - `colleague_ids` given: only those doctors are considered. An empty list
+          is a deliberate "nobody", and every patient comes back unplaced.
+        - `colleague_caps` maps a doctor id to the most EXTRA patients this plan
+          may give them on any one day. Cap 0 means "do not use this doctor".
+        """
+        caps = {}
+        for raw_id, raw_cap in (colleague_caps or {}).items():
+            try:
+                cap = int(raw_cap)
+            except (TypeError, ValueError):
+                raise ValueError('Colleague caps must be whole numbers.')
+            if cap < 0:
+                raise ValueError('Colleague caps cannot be negative.')
+            caps[str(raw_id)] = cap
+
+        allowed = None
+        if colleague_ids is not None:
+            ids = list(dict.fromkeys(str(value) for value in colleague_ids))
+            if str(doctor.id) in ids:
+                raise ValueError(
+                    'The doctor who is going on leave cannot take their own patients.'
+                )
+            if not ids:
+                allowed = set()
+            else:
+                known = {
+                    str(pk) for pk in Doctor.objects.filter(
+                        id__in=[value for value in ids], is_active=True
+                    ).values_list('id', flat=True)
+                }
+                missing = [value for value in ids if value not in known]
+                if missing:
+                    raise ValueError(
+                        'The plan names a colleague who is not an active doctor.'
+                    )
+                allowed = known
+
+        return allowed, caps
+
+    @staticmethod
+    def _cap_allows(caps, placed_by_day, doctor_id, day):
+        """True while the plan has given this doctor fewer than their cap on `day`."""
+        cap = caps.get(str(doctor_id))
+        if cap is None:
+            return True
+        return placed_by_day.get((str(doctor_id), day), 0) < cap
+
+    @staticmethod
+    def _cap_note(caps, placed_by_day, doctor, day):
+        cap = caps.get(str(doctor.id))
+        used = placed_by_day.get((str(doctor.id), day), 0)
+        day_label = day.strftime('%a, %d %b')
+        return f'{doctor.name} hit the cap you set for {day_label} ({used} of {cap}).'
+
+    @classmethod
     def _colleague_can_take_at_same_time(cls, appointment, colleague):
         """Priority-1 check: qualified, on duty, inside shift, under ceiling,
         and conflict-free (with sterilization buffer) at the appointment's
@@ -405,7 +467,8 @@ class DisruptionService:
     @transaction.atomic
     def auto_resolve_disruption(cls, doctor_id, leave_start_dt=None, leave_end_dt=None,
                                 reason="Emergency Leave", performed_by="receptionist",
-                                max_lookahead_days=3):
+                                max_lookahead_days=3, colleague_ids=None,
+                                colleague_caps=None):
         """
         One-click emergency-leave resolution: marks the doctor on leave, then
         for EVERY impacted appointment tries, in order — a qualified colleague
@@ -413,6 +476,12 @@ class DisruptionService:
         first), then the next day(s). Each placed patient gets WhatsApp + SMS
         notices queued (Django's words). Nothing is sent from here: the
         endpoint (B.2) pushes the returned items to n8n for delivery.
+
+        Distribution (Step 2): `colleague_ids` narrows the plan to the chosen
+        doctors, and `colleague_caps` limits how many EXTRA patients this plan
+        may give each doctor on any one day. Both are enforced in the same pass
+        the preview runs, so the plan the receptionist approves is the plan that
+        was previewed.
         """
         clinic = ClinicSetting.get_settings()
         now = timezone.now()
@@ -423,6 +492,8 @@ class DisruptionService:
             )
 
         doctor = Doctor.objects.select_for_update().get(id=doctor_id)
+        allowed_ids, caps = cls._build_distribution(doctor, colleague_ids, colleague_caps)
+
         cls.record_leave_window(
             doctor, leave_start_dt, leave_end_dt, reason, performed_by,
             leave_type='emergency',
@@ -435,10 +506,22 @@ class DisruptionService:
             start_datetime__lte=leave_end_dt,
         ).select_related('service').order_by('start_datetime')
 
-        colleagues = list(
-            Doctor.objects.filter(is_active=True, is_on_leave=False).exclude(id=doctor.id)
-        )
+        colleagues = [
+            colleague
+            for colleague in Doctor.objects.filter(
+                is_active=True, is_on_leave=False
+            ).exclude(id=doctor.id)
+            if allowed_ids is None or str(colleague.id) in allowed_ids
+        ]
+        names_by_id = {
+            str(pk): name
+            for pk, name in Doctor.objects.filter(is_active=True).values_list('id', 'name')
+        }
         engine = AvailabilityEngine()
+
+        # (doctor_id, date) -> how many patients this plan already gave them.
+        placed_by_day = {}
+        caps_hit = set()
 
         results = []
         same_day_count = 0
@@ -448,13 +531,35 @@ class DisruptionService:
 
         for appt in impacted_appts:
             old_doctor_name = appt.doctor.name
+            local_start = timezone.localtime(appt.start_datetime)
             placement = None
             placed_doctor = None
+            cap_note = None
+            qualified_ids = {
+                str(pk) for pk in DoctorService.objects.filter(
+                    service=appt.service
+                ).values_list('doctor_id', flat=True)
+            }.intersection({str(colleague.id) for colleague in colleagues})
+            qualified_count = len(qualified_ids)
+
+            def note_cap(colleague, day):
+                nonlocal cap_note
+                caps_hit.add(colleague.name)
+                if cap_note is None:
+                    cap_note = cls._cap_note(caps, placed_by_day, colleague, day)
 
             # Priority 1: a qualified colleague free at the EXACT same time.
             for colleague in colleagues:
+                if not cls._cap_allows(caps, placed_by_day, colleague.id, local_start.date()):
+                    # Only blame the cap when the colleague could otherwise
+                    # have taken this patient; qualification is reported first.
+                    if str(colleague.id) in qualified_ids:
+                        note_cap(colleague, local_start.date())
+                    continue
                 if cls._colleague_can_take_at_same_time(appt, colleague):
                     cls._apply_move(appt, colleague, appt.start_datetime, appt.end_datetime, performed_by)
+                    key = (str(colleague.id), local_start.date())
+                    placed_by_day[key] = placed_by_day.get(key, 0) + 1
                     placement = 'same_day_same_time'
                     placed_doctor = colleague
                     break
@@ -464,7 +569,6 @@ class DisruptionService:
             # qualifications, ceilings, lunch, rules, advance notice and
             # sterilization buffers; the move re-validates under lock anyway.
             if placement is None:
-                local_start = timezone.localtime(appt.start_datetime)
                 for offset in range(0, max_lookahead_days + 1):
                     target_date = (local_start + datetime.timedelta(days=offset)).date()
                     slots = engine.get_available_slots_for_date(
@@ -474,15 +578,23 @@ class DisruptionService:
                     )
                     slots.sort(key=lambda s: s['start_datetime'])
                     for slot in slots:
+                        slot_doctor_id = str(slot['doctor_id'])
+                        if allowed_ids is not None and slot_doctor_id not in allowed_ids:
+                            continue
                         slot_start = datetime.datetime.fromisoformat(slot['start_datetime'])
                         if offset == 0 and slot_start == appt.start_datetime:
                             continue  # the same-time case is Priority 1's job
+                        slot_doctor = Doctor.objects.get(id=slot_doctor_id)
+                        if not cls._cap_allows(caps, placed_by_day, slot_doctor_id, target_date):
+                            note_cap(slot_doctor, target_date)
+                            continue
                         slot_end = datetime.datetime.fromisoformat(slot['end_datetime'])
-                        slot_doctor = Doctor.objects.get(id=slot['doctor_id'])
                         try:
                             cls._apply_move(appt, slot_doctor, slot_start, slot_end, performed_by)
                         except SlotConflictException:
                             continue
+                        key = (slot_doctor_id, target_date)
+                        placed_by_day[key] = placed_by_day.get(key, 0) + 1
                         placement = 'same_day_new_time' if offset == 0 else 'next_day_or_later'
                         placed_doctor = slot_doctor
                         break
@@ -490,6 +602,8 @@ class DisruptionService:
                         break
 
             messages = []
+            unplaced_reason = None
+            unplaced_text = None
             if placement:
                 messages = cls._queue_notice_messages(appt, old_doctor_name, clinic)
                 messages_queued_count += len(messages)
@@ -500,6 +614,33 @@ class DisruptionService:
             else:
                 unplaced_count += 1
                 placement = None
+                if not colleagues:
+                    unplaced_reason = 'NO_COLLEAGUE_CHOSEN'
+                    unplaced_text = 'No colleague is selected for this plan.'
+                elif qualified_count == 0:
+                    unplaced_reason = 'NONE_QUALIFIED'
+                    chosen_names = ', '.join(colleague.name for colleague in colleagues)
+                    unplaced_text = (
+                        f'No chosen colleague is qualified for {appt.service.name}'
+                        f' ({chosen_names}).'
+                    )
+                elif cap_note:
+                    unplaced_reason = 'ALL_AT_CAP'
+                    unplaced_text = (
+                        f'{cap_note} No other chosen colleague could take this patient.'
+                    )
+                else:
+                    unplaced_reason = 'NO_FREE_SLOT'
+                    if max_lookahead_days == 0:
+                        unplaced_text = (
+                            f'No free slot with a chosen colleague on '
+                            f'{local_start.strftime("%a, %d %b")}.'
+                        )
+                    else:
+                        unplaced_text = (
+                            f'No free slot with a chosen colleague within '
+                            f'{max_lookahead_days} day{"" if max_lookahead_days == 1 else "s"}.'
+                        )
 
             results.append({
                 'appointment_id': str(appt.id),
@@ -512,8 +653,15 @@ class DisruptionService:
                 'new_doctor': placed_doctor.name if placed_doctor else None,
                 'new_start': appt.start_datetime.isoformat(),
                 'new_end': appt.end_datetime.isoformat(),
+                'unplaced_reason': unplaced_reason,
+                'unplaced_text': unplaced_text,
                 'messages': messages,
             })
+
+        placed_by_doctor = {}
+        for (placed_id, _day), count in placed_by_day.items():
+            name = names_by_id.get(placed_id, 'Colleague')
+            placed_by_doctor[name] = placed_by_doctor.get(name, 0) + count
 
         AuditLog.objects.create(
             entity_name='Doctor',
@@ -528,6 +676,9 @@ class DisruptionService:
                 'unplaced_count': unplaced_count,
                 'messages_queued': messages_queued_count,
                 'reason': reason,
+                'colleague_ids': sorted(allowed_ids) if allowed_ids is not None else None,
+                'colleague_caps': caps,
+                'placed_by_doctor': placed_by_doctor,
             },
         )
 
@@ -540,22 +691,29 @@ class DisruptionService:
             'next_day_count': next_day_count,
             'unplaced_count': unplaced_count,
             'messages_queued_count': messages_queued_count,
+            'distribution': {
+                'colleague_ids': sorted(allowed_ids) if allowed_ids is not None else None,
+                'colleague_caps': caps,
+                'placed_by_doctor': placed_by_doctor,
+                'caps_hit': sorted(caps_hit),
+            },
             'results': results,
         }
 
     @classmethod
     def preview_disruption(cls, doctor_id, leave_start_dt=None, leave_end_dt=None,
                            reason="Planned Leave", performed_by="preview",
-                           max_lookahead_days=3):
+                           max_lookahead_days=3, colleague_ids=None,
+                           colleague_caps=None):
         """
         Dry run of auto_resolve_disruption — the honest kind.
 
         The REAL resolver runs inside a transaction that is always rolled back,
         so a preview can never drift from what the approve button would do.
-        Same priority rules, same conflict checks against already-planned moves,
-        same per-patient report. Nothing is written: no leave flag, no moved
-        appointment, no queued message, no audit row. The view never registers
-        the n8n push for a preview.
+        Same priority rules, same chosen colleagues, same caps, same conflict
+        checks against already-planned moves, same per-patient report. Nothing
+        is written: no leave flag, no moved appointment, no queued message, no
+        audit row. The view never registers the n8n push for a preview.
 
         A 30-day leave is a large simulation; the caller should keep the range
         sane and treat the report as a plan, not a promise (a colleague can be
@@ -572,6 +730,8 @@ class DisruptionService:
                     reason=reason,
                     performed_by=performed_by,
                     max_lookahead_days=max_lookahead_days,
+                    colleague_ids=colleague_ids,
+                    colleague_caps=colleague_caps,
                 )
                 raise _PreviewRollback
         except _PreviewRollback:

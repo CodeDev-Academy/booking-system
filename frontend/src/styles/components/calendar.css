@@ -1481,6 +1481,86 @@
   min-width: 0;
 }
 
+/* Step 2 — distribution chooser inside the disruption cockpit. */
+.distribution-card {
+  margin-top: 10px;
+}
+
+.distribution-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.distribution-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  min-width: 0;
+}
+
+.distribution-row.is-chosen {
+  border-color: var(--amber);
+  background: rgba(255, 181, 71, 0.06);
+}
+
+.distribution-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.distribution-pick input {
+  accent-color: var(--amber);
+  flex: none;
+}
+
+.distribution-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.distribution-specialty {
+  font-size: 10px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.distribution-cap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.distribution-cap .input-base {
+  width: 84px;
+  min-width: 0;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+.distribution-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--amber-strong, var(--amber));
+}
+
 .leave-plan-error {
   display: flex;
   align-items: center;
