@@ -23,7 +23,7 @@ import '../../styles/components/leftRail.css';
  * Pure presentational component governed by tasteskill.dev aesthetics.
  * Features desktop collapse, mobile overlay drawer, live status counts, and offline demo toggle.
  */
-export const LeftRail = () => {
+export const LeftRail = ({ strandedCount = 0 }) => {
   const { currentStaff: authStaff, lockWorkstation, logout } = useAuthStore();
   const {
     isSidebarCollapsed,
@@ -116,9 +116,18 @@ export const LeftRail = () => {
           >
             <CalendarIcon size={18} className="nav-icon" />
             <span className="nav-label">Schedule Grid</span>
-            <span className="badge-pill badge-neutral mono-tag" style={{ fontSize: '9px' }}>
-              GRID
-            </span>
+            {strandedCount > 0 ? (
+              <span
+                className="nav-count-badge nav-count-badge-danger tabular-nums"
+                title={`${strandedCount} patient${strandedCount === 1 ? ' is' : 's are'} still booked under a doctor on leave — open the Schedule Grid`}
+              >
+                ⚠ {strandedCount}
+              </span>
+            ) : (
+              <span className="badge-pill badge-neutral mono-tag" style={{ fontSize: '9px' }}>
+                GRID
+              </span>
+            )}
           </NavLink>
 
           <NavLink

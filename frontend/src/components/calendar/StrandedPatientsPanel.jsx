@@ -138,7 +138,7 @@ export const StrandedPatientsPanel = ({
           <button
             type="button"
             className="btn-base btn-secondary"
-            onClick={onRefresh}
+            onClick={() => onRefresh()}
             disabled={loading}
           >
             {loading ? 'Refreshing…' : 'Refresh'}

@@ -1409,13 +1409,18 @@ export const useCalendarStore = create(
 
   // Django decides who is stranded. Demo mode derives the same list from the
   // doctors marked on leave on screen, so the pitch shows the real behaviour.
-  loadStranded: async () => {
+  //
+  // `silent` is for background refreshes (the Shell poll and SSE): it updates
+  // the numbers without flipping the panel into "Refreshing…".
+  loadStranded: async ({ silent = false } = {}) => {
     if (useAppModeStore.getState().isDemoMode) {
       const demo = get()._demoStranded();
       set({ stranded: { ...demo, loading: false, error: null } });
       return demo;
     }
-    set((state) => ({ stranded: { ...state.stranded, loading: true, error: null } }));
+    if (!silent) {
+      set((state) => ({ stranded: { ...state.stranded, loading: true, error: null } }));
+    }
     try {
       const data = await apiService.fetchStranded();
       const next = {

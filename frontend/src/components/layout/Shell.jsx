@@ -19,9 +19,30 @@ import { soundService } from '../../services/soundService';
 export const Shell = () => {
   const { isMobileDrawerOpen, closeMobileDrawer } = useAppModeStore();
   const { isLocked, isAuthenticated } = useAuthStore();
+  // Fix 5 — stranded patients must be visible from anywhere in the hub, not
+  // only on the calendar page. The count is read here (the container) and
+  // handed to the rail as a prop.
+  const strandedCount = useCalendarStore((state) => state.stranded?.count || 0);
 
   // Active idle timer listener for the 20-minute inactivity privacy lock
   usePinLock();
+
+  // Fix 5 — a stranded patient (still booked under a doctor on leave) has to
+  // be visible while reception sits on the queue, not only on the calendar.
+  // Quiet refresh: no loading flash, and a failed read keeps the last count.
+  useEffect(() => {
+    if (!isAuthenticated) return undefined;
+
+    const refreshStranded = () => {
+      if (useCalendarStore.getState().loadStranded) {
+        useCalendarStore.getState().loadStranded({ silent: true });
+      }
+    };
+
+    refreshStranded();
+    const timer = setInterval(refreshStranded, 60000);
+    return () => clearInterval(timer);
+  }, [isAuthenticated]);
 
   useEffect(() => {
     if (!isAuthenticated) return undefined;
@@ -40,6 +61,9 @@ export const Shell = () => {
         }
         if (useCalendarStore.getState().syncFromBackend) {
           useCalendarStore.getState().syncFromBackend();
+        }
+        if (useCalendarStore.getState().loadStranded) {
+          useCalendarStore.getState().loadStranded({ silent: true });
         }
         soundService.playChime();
       } else if (evt.type === 'request.reviewing') {
@@ -88,7 +112,7 @@ export const Shell = () => {
         <PrivacyLockModal />
       ) : (
         <>
-          <LeftRail />
+          <LeftRail strandedCount={strandedCount} />
           <div className="main-stage">
             <Header />
             <main className="content-viewport" id="main-content">
