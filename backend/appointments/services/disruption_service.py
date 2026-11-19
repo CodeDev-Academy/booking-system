@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 from django.db import transaction
 from django.utils import timezone
 from appointments.models import (
@@ -8,6 +9,7 @@ from appointments.models import (
     Appointment,
     AuditLog,
     ClinicSetting,
+    DisruptionBatch,
     InteractionLog,
 )
 from .availability import AvailabilityEngine
@@ -17,6 +19,15 @@ from .sweep_service import PROVIDER_BY_CHANNEL
 
 class _PreviewRollback(Exception):
     """Internal sentinel: unwinds a preview transaction so nothing is saved."""
+
+
+class DisruptionUndoError(Exception):
+    """A refusal to undo a distribution, with Django's words for the reason."""
+
+    def __init__(self, code, text):
+        super().__init__(text)
+        self.code = code
+        self.text = text
 
 
 class DisruptionService:
@@ -267,6 +278,10 @@ class DisruptionService:
     # ------------------------------------------------------------------
 
     DISRUPTION_CLAIM_PREFIX = 'disrupt-'
+    # A message that reached the patient is history: it can never be unsent.
+    DELIVERED_NOTICE_STATUSES = ('sent', 'delivered', 'answered')
+    # A message that has not reached the patient can still be withdrawn.
+    UNDELIVERED_NOTICE_STATUSES = ('queued', 'failed')
 
     @classmethod
     def disruption_notice_message(cls, appointment, old_doctor_name, clinic):
@@ -281,6 +296,36 @@ class DisruptionService:
             f"You are now booked with {appointment.doctor.name} on {date_str} at {time_str} "
             f"at {clinic.clinic_name}. We apologise for the change. "
             f"Please call {clinic.phone} if this does not suit you. Ref {appointment.appointment_code}."
+        )
+
+    @classmethod
+    def disruption_correction_message(cls, appointment, old_doctor_name, clinic):
+        """The one message a patient gets when a delivered plan changed again."""
+        local_start = timezone.localtime(appointment.start_datetime)
+        date_str = local_start.strftime('%a %d %b')
+        time_str = local_start.strftime('%I:%M %p').lstrip('0')
+        return (
+            f"Correction: Hello {appointment.patient_name}, your "
+            f"{appointment.service.name} appointment has changed again. "
+            f"You are now booked with {appointment.doctor.name} on {date_str} at {time_str} "
+            f"at {clinic.clinic_name}. Please call {clinic.phone} if this does not suit you. "
+            f"Ref {appointment.appointment_code}."
+        )
+
+    @staticmethod
+    def _placement_signature(appointment):
+        """Short, stable fingerprint of WHERE and WHEN this patient now sits."""
+        raw = (
+            f"{appointment.doctor_id}|{appointment.start_datetime.isoformat()}|"
+            f"{appointment.end_datetime.isoformat()}"
+        )
+        return hashlib.sha1(raw.encode('utf-8')).hexdigest()[:10]
+
+    @classmethod
+    def _notice_claim_ref(cls, appointment, channel, signature):
+        return (
+            f"{cls.DISRUPTION_CLAIM_PREFIX}{appointment.appointment_code}-"
+            f"{signature}-{channel}"
         )
 
     @classmethod
@@ -380,7 +425,8 @@ class DisruptionService:
         ) is None
 
     @classmethod
-    def _apply_move(cls, appointment, new_doctor, new_start, new_end, performed_by):
+    def _apply_move(cls, appointment, new_doctor, new_start, new_end, performed_by,
+                    action='DISRUPTION_AUTO_RESOLVE_MOVE'):
         """The zero-double-booking save: lock the target doctor row, re-validate
         the block, then move. Raises SlotConflictException and leaves the
         appointment untouched on any clash."""
@@ -413,7 +459,7 @@ class DisruptionService:
         AuditLog.objects.create(
             entity_name='Appointment',
             entity_id=appointment.id,
-            action='DISRUPTION_AUTO_RESOLVE_MOVE',
+            action=action,
             performed_by=performed_by,
             changes={
                 'from_doctor': old_doctor_name,
@@ -426,12 +472,49 @@ class DisruptionService:
 
     @classmethod
     def _queue_notice_messages(cls, appointment, old_doctor_name, clinic):
-        """WhatsApp + SMS notice per placed patient, guarded by deterministic
-        claim rows. Returns the deliverable item dicts (words included)."""
+        """
+        Queue the WhatsApp + SMS notice for the patient's CURRENT placement.
+
+        Notify-once, versioned by the placement itself:
+
+        - the claim ref carries a signature of (doctor, start, end), so the
+          exact same placement can never be announced twice;
+        - a previously queued (undelivered) notice for an older placement is
+          marked `expired`, so the patient never receives two conflicting
+          times and the stale one is not delivered by a later sweep;
+        - if a notice for this appointment was ALREADY delivered, one
+          "Correction:" message per channel is queued for the new placement.
+
+        Returns the deliverable item dicts (words included) that were newly
+        created; an empty list means there is nothing new to send.
+        """
+        signature = cls._placement_signature(appointment)
         words = cls.disruption_notice_message(appointment, old_doctor_name, clinic)
+        correction_words = cls.disruption_correction_message(
+            appointment, old_doctor_name, clinic
+        )
+        prefix = f"{cls.DISRUPTION_CLAIM_PREFIX}{appointment.appointment_code}-"
         items = []
+
         for channel in ('sms', 'whatsapp'):
-            claim_ref = f"{cls.DISRUPTION_CLAIM_PREFIX}{appointment.appointment_code}-{channel}"
+            claim_ref = cls._notice_claim_ref(appointment, channel, signature)
+            if InteractionLog.objects.filter(external_ref=claim_ref).exists():
+                continue  # this exact placement was already announced
+
+            prior = InteractionLog.objects.filter(
+                direction='outbound', channel=channel,
+                external_ref__startswith=prefix,
+            ).exclude(external_ref=claim_ref)
+            delivered = prior.filter(
+                status__in=cls.DELIVERED_NOTICE_STATUSES
+            ).exists()
+            # Withdraw anything the patient has not received yet: it names a
+            # time that no longer holds.
+            prior.filter(status__in=cls.UNDELIVERED_NOTICE_STATUSES).update(
+                status='expired'
+            )
+
+            message = correction_words if delivered else words
             draft = {
                 'request_id': appointment.appointment_code,
                 'id': str(appointment.id),
@@ -443,7 +526,8 @@ class DisruptionService:
                 'doctor_name': appointment.doctor.name,
                 'start_datetime': appointment.start_datetime.isoformat(),
                 'claim_ref': claim_ref,
-                'message': words,
+                'message': message,
+                'correction': delivered,
             }
             _, created = InteractionLog.objects.get_or_create(
                 external_ref=claim_ref,
@@ -456,7 +540,11 @@ class DisruptionService:
                     'patient_phone': appointment.patient_phone,
                     'appointment': appointment,
                     'booking_request': appointment.booking_request,
-                    'summary': 'Emergency disruption reassignment notice queued for delivery',
+                    'summary': (
+                        'Disruption correction notice queued for delivery'
+                        if delivered else
+                        'Emergency disruption reassignment notice queued for delivery'
+                    ),
                 },
             )
             if created:
@@ -494,7 +582,15 @@ class DisruptionService:
         doctor = Doctor.objects.select_for_update().get(id=doctor_id)
         allowed_ids, caps = cls._build_distribution(doctor, colleague_ids, colleague_caps)
 
-        cls.record_leave_window(
+        start_date = timezone.localtime(leave_start_dt).date()
+        end_date = timezone.localtime(leave_end_dt).date()
+        # Did this plan plant the leave, or was the doctor already booked off?
+        # Undo may only remove a leave it created itself.
+        leave_pre_existing = doctor.leaves.filter(
+            start_date__lte=end_date
+        ).exclude(end_date__lt=start_date).exists()
+
+        leave = cls.record_leave_window(
             doctor, leave_start_dt, leave_end_dt, reason, performed_by,
             leave_type='emergency',
         )
@@ -531,6 +627,9 @@ class DisruptionService:
 
         for appt in impacted_appts:
             old_doctor_name = appt.doctor.name
+            original_doctor_id = str(appt.doctor_id)
+            original_start = appt.start_datetime
+            original_end = appt.end_datetime
             local_start = timezone.localtime(appt.start_datetime)
             placement = None
             placed_doctor = None
@@ -647,15 +746,21 @@ class DisruptionService:
                 'appointment_code': appt.appointment_code,
                 'patient_name': appt.patient_name,
                 'patient_phone': appt.patient_phone,
+                'service_name': appt.service.name,
                 'outcome': 'reassigned' if placement else 'unplaced',
                 'placement': placement,
                 'old_doctor': old_doctor_name,
+                'old_doctor_id': original_doctor_id,
+                'old_start': original_start.isoformat(),
+                'old_end': original_end.isoformat(),
                 'new_doctor': placed_doctor.name if placed_doctor else None,
+                'new_doctor_id': str(placed_doctor.id) if placed_doctor else None,
                 'new_start': appt.start_datetime.isoformat(),
                 'new_end': appt.end_datetime.isoformat(),
                 'unplaced_reason': unplaced_reason,
                 'unplaced_text': unplaced_text,
                 'messages': messages,
+                'notice_refs': [message['claim_ref'] for message in messages],
             })
 
         placed_by_doctor = {}
@@ -682,6 +787,62 @@ class DisruptionService:
             },
         )
 
+        placements = []
+        unplaced = []
+        for result in results:
+            if result['outcome'] == 'reassigned':
+                placements.append({
+                    'appointment_id': result['appointment_id'],
+                    'appointment_code': result['appointment_code'],
+                    'patient_name': result['patient_name'],
+                    'patient_phone': result['patient_phone'],
+                    'service_name': result['service_name'],
+                    'from_doctor_id': result['old_doctor_id'],
+                    'from_doctor_name': result['old_doctor'],
+                    'from_start': result['old_start'],
+                    'from_end': result['old_end'],
+                    'to_doctor_id': result['new_doctor_id'],
+                    'to_doctor_name': result['new_doctor'],
+                    'to_start': result['new_start'],
+                    'to_end': result['new_end'],
+                    'placement': result['placement'],
+                    'notice_refs': result['notice_refs'],
+                })
+            else:
+                unplaced.append({
+                    'appointment_id': result['appointment_id'],
+                    'appointment_code': result['appointment_code'],
+                    'patient_name': result['patient_name'],
+                    'patient_phone': result['patient_phone'],
+                    'service_name': result['service_name'],
+                    'start_datetime': result['new_start'],
+                    'end_datetime': result['new_end'],
+                    'unplaced_reason': result['unplaced_reason'],
+                    'unplaced_text': result['unplaced_text'],
+                })
+
+        # Nothing was affected (a harmless repeat approve): no batch, so the
+        # real plan that placed these patients stays undoable.
+        batch = None
+        if results:
+            batch = DisruptionBatch.objects.create(
+                doctor=doctor,
+                leave=leave,
+                leave_created=not leave_pre_existing,
+                performed_by=performed_by,
+                reason=reason,
+                leave_start=leave_start_dt,
+                leave_end=leave_end_dt,
+                distribution={
+                    'colleague_ids': sorted(allowed_ids) if allowed_ids is not None else None,
+                    'colleague_caps': caps,
+                    'placed_by_doctor': placed_by_doctor,
+                    'caps_hit': sorted(caps_hit),
+                },
+                placements=placements,
+                unplaced=unplaced,
+            )
+
         return {
             'doctor_id': str(doctor.id),
             'doctor_name': doctor.name,
@@ -697,6 +858,7 @@ class DisruptionService:
                 'placed_by_doctor': placed_by_doctor,
                 'caps_hit': sorted(caps_hit),
             },
+            'batch': cls._batch_summary(batch) if batch else None,
             'results': results,
         }
 
@@ -740,3 +902,324 @@ class DisruptionService:
         report['preview'] = True
         report['nothing_saved'] = True
         return report
+
+    # ------------------------------------------------------------------
+    # Step 3 — the safety net: a stranded queue, an honest undo of the last
+    # distribution, and the durable batch row both read from.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_iso(value):
+        parsed = datetime.datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        if timezone.is_naive(parsed):
+            parsed = timezone.make_aware(parsed)
+        return parsed
+
+    @classmethod
+    def _undo_blocker(cls, batch):
+        """
+        Why this batch cannot be undone, as (code, plain text), or None.
+
+        Undo is deliberately narrow: it may only remove a leave this very plan
+        created, while none of its notices has reached a patient, no later plan
+        covers the same days, and every patient is still exactly where this
+        plan put them.
+        """
+        if batch.undone_at is not None:
+            return (
+                'ALREADY_UNDONE',
+                'This plan was already undone.',
+            )
+        if not batch.leave_created:
+            return (
+                'LEAVE_NOT_FROM_PLAN',
+                'The leave for this plan was already in place before it ran, so '
+                'undo would put patients back on a leave day. Change the leave '
+                'itself instead.',
+            )
+
+        start_day = timezone.localtime(batch.leave_start).date()
+        end_day = timezone.localtime(batch.leave_end).date()
+        later_plans = DisruptionBatch.objects.filter(
+            doctor_id=batch.doctor_id,
+            undone_at__isnull=True,
+            created_at__gt=batch.created_at,
+        ).exclude(id=batch.id)
+        for other in later_plans:
+            other_start = timezone.localtime(other.leave_start).date()
+            other_end = timezone.localtime(other.leave_end).date()
+            if other_start <= end_day and start_day <= other_end:
+                label = other_start.strftime('%a, %d %b')
+                if other_end != other_start:
+                    label = f"{label} – {other_end.strftime('%a, %d %b')}"
+                return (
+                    'SUPERSEDED',
+                    f'A later plan for {batch.doctor.name} covers the same days '
+                    f'({label}). Undo that one first.',
+                )
+
+        refs = [
+            ref
+            for placement in batch.placements
+            for ref in placement.get('notice_refs', [])
+        ]
+        if refs and InteractionLog.objects.filter(
+            external_ref__in=refs,
+            status__in=cls.DELIVERED_NOTICE_STATUSES,
+        ).exists():
+            return (
+                'NOTICES_DELIVERED',
+                'Some notices from this plan have already reached patients, so '
+                'it cannot be undone automatically. Move those patients by hand.',
+            )
+
+        for placement in batch.placements:
+            appointment = Appointment.objects.filter(
+                id=placement['appointment_id']
+            ).select_related('doctor').first()
+            if appointment is None:
+                return (
+                    'MOVES_CHANGED',
+                    f"{placement['patient_name']} is no longer on this plan.",
+                )
+            expected_start = cls._parse_iso(placement['to_start'])
+            if (
+                str(appointment.doctor_id) != str(placement['to_doctor_id'])
+                or appointment.start_datetime != expected_start
+            ):
+                return (
+                    'MOVES_CHANGED',
+                    f"{placement['patient_name']} was moved again after this "
+                    f"plan ran, so undo would overwrite that change.",
+                )
+        return None
+
+    @classmethod
+    def _batch_summary(cls, batch):
+        if batch is None:
+            return None
+        blocker = cls._undo_blocker(batch)
+        return {
+            'id': str(batch.id),
+            'can_undo': blocker is None,
+            'undo_reason': blocker[1] if blocker else None,
+            'undone_at': batch.undone_at.isoformat() if batch.undone_at else None,
+        }
+
+    @classmethod
+    @transaction.atomic
+    def undo_disruption_batch(cls, batch_id, performed_by='receptionist'):
+        """
+        Put every patient from the last approved distribution back where they
+        were and withdraw the leave this plan created.
+
+        All-or-nothing: if any patient's old slot has been taken in the
+        meantime, nothing moves, the leave stays, and the caller gets a named
+        reason (`SLOT_TAKEN`). Queued notices are marked `expired` so a stale
+        time is never delivered after the undo.
+        """
+        try:
+            batch = DisruptionBatch.objects.select_for_update().get(id=batch_id)
+        except DisruptionBatch.DoesNotExist:
+            raise
+
+        blocker = cls._undo_blocker(batch)
+        if blocker:
+            raise DisruptionUndoError(*blocker)
+
+        doctor = Doctor.objects.select_for_update().get(id=batch.doctor_id)
+
+        leave_removed = False
+        if batch.leave_id:
+            leave_row = DoctorLeave.objects.filter(id=batch.leave_id).first()
+            if leave_row is not None:
+                leave_row.delete()
+                leave_removed = True
+        doctor.sync_leave_flag()
+
+        restored = 0
+        for placement in batch.placements:
+            appointment = Appointment.objects.select_for_update().get(
+                id=placement['appointment_id']
+            )
+            try:
+                cls._apply_move(
+                    appointment,
+                    doctor,
+                    cls._parse_iso(placement['from_start']),
+                    cls._parse_iso(placement['from_end']),
+                    performed_by,
+                    action='DISRUPTION_UNDO_MOVE',
+                )
+            except SlotConflictException as exc:
+                raise DisruptionUndoError(
+                    'SLOT_TAKEN',
+                    f"{placement['patient_name']} cannot go back: {exc}",
+                )
+            restored += 1
+
+        refs = [
+            ref
+            for placement in batch.placements
+            for ref in placement.get('notice_refs', [])
+        ]
+        expired_notices = 0
+        if refs:
+            expired_notices = InteractionLog.objects.filter(
+                external_ref__in=refs,
+                status__in=cls.UNDELIVERED_NOTICE_STATUSES,
+            ).update(status='expired')
+
+        batch.undone_at = timezone.now()
+        batch.undone_by = performed_by
+        batch.save(update_fields=['undone_at', 'undone_by'])
+
+        AuditLog.objects.create(
+            entity_name='Doctor',
+            entity_id=doctor.id,
+            action='DISRUPTION_BATCH_UNDONE',
+            performed_by=performed_by,
+            changes={
+                'doctor_name': doctor.name,
+                'batch_id': str(batch.id),
+                'restored_count': restored,
+                'leave_removed': leave_removed,
+                'notices_expired': expired_notices,
+            },
+        )
+
+        return {
+            'batch_id': str(batch.id),
+            'doctor_id': str(doctor.id),
+            'doctor_name': doctor.name,
+            'restored_count': restored,
+            'leave_removed': leave_removed,
+            'notices_expired': expired_notices,
+            'message': (
+                f"Undid the last plan for {doctor.name}: "
+                f"{restored} patient{'' if restored == 1 else 's'} moved back"
+                f"{' and the leave removed' if leave_removed else ''}."
+            ),
+        }
+
+    @classmethod
+    def list_stranded(cls, today=None):
+        """
+        Every patient still booked under a doctor who is on leave.
+
+        These are the people a distribution could not place (or who were booked
+        after the leave was declared). Grouped by day and doctor, each patient
+        carries the reason Django gave when a plan failed to place them.
+        """
+        today = today or timezone.localdate()
+        now_start = timezone.make_aware(
+            datetime.datetime.combine(today, datetime.time.min)
+        )
+
+        # Doctor -> its live/future leave rows (and the legacy off-duty flag).
+        on_leave = {}
+        for leave in DoctorLeave.objects.select_related('doctor').all():
+            if leave.end_date is not None and leave.end_date < today:
+                continue
+            if leave.end_date is not None and leave.end_date < leave.start_date:
+                continue
+            entry = on_leave.setdefault(
+                leave.doctor_id,
+                {'doctor': leave.doctor, 'leaves': [], 'legacy': False},
+            )
+            entry['leaves'].append(leave)
+
+        for doctor in Doctor.objects.filter(is_on_leave=True):
+            if doctor.leaves.exists():
+                continue
+            entry = on_leave.setdefault(
+                doctor.id, {'doctor': doctor, 'leaves': [], 'legacy': False}
+            )
+            entry['legacy'] = True
+
+        days = {}
+        total = 0
+
+        for doctor_id, entry in on_leave.items():
+            doctor = entry['doctor']
+            leaves = entry['leaves']
+            legacy = entry['legacy'] and not leaves
+            if not leaves and not legacy:
+                continue
+
+            # The newest live plan explains why a patient is still here.
+            reasons = {}
+            for batch in DisruptionBatch.objects.filter(
+                doctor_id=doctor_id, undone_at__isnull=True
+            ).order_by('-created_at'):
+                for item in batch.unplaced:
+                    reasons.setdefault(
+                        item.get('appointment_code'),
+                        (
+                            str(batch.id),
+                            item.get('unplaced_reason'),
+                            item.get('unplaced_text'),
+                        ),
+                    )
+
+            appointments = Appointment.objects.filter(
+                doctor_id=doctor_id,
+                status__in=['confirmed', 'held'],
+                start_datetime__gte=now_start,
+            ).select_related('service').order_by('start_datetime')
+
+            for appointment in appointments:
+                local_start = timezone.localtime(appointment.start_datetime)
+                day = local_start.date()
+                leave = next(
+                    (candidate for candidate in leaves if candidate.covers(day)),
+                    None,
+                )
+                if leave is None and not legacy:
+                    continue
+
+                batch_id, reason, reason_text = reasons.get(
+                    appointment.appointment_code, (None, None, None)
+                )
+                key = (day, str(doctor_id))
+                group = days.setdefault(key, {
+                    'date': day.isoformat(),
+                    'label': day.strftime('%a, %d %b'),
+                    'doctor_id': str(doctor_id),
+                    'doctor_name': doctor.name,
+                    'leave_id': str(leave.id) if leave else None,
+                    'leave_reason': leave.reason if leave else 'Off duty (no end date)',
+                    'leave_type': leave.leave_type if leave else 'other',
+                    'leave_start': leave.start_date.isoformat() if leave else None,
+                    'leave_end': (
+                        leave.end_date.isoformat() if leave and leave.end_date else None
+                    ),
+                    'patients': [],
+                })
+                group['patients'].append({
+                    'appointment_id': str(appointment.id),
+                    'appointment_code': appointment.appointment_code,
+                    'patient_name': appointment.patient_name,
+                    'patient_phone': appointment.patient_phone,
+                    'service_name': appointment.service.name,
+                    'status': appointment.status,
+                    'start_datetime': appointment.start_datetime.isoformat(),
+                    'end_datetime': appointment.end_datetime.isoformat(),
+                    'time_label': local_start.strftime('%I:%M %p').lstrip('0'),
+                    'hold_expires_at': (
+                        appointment.hold_expires_at.isoformat()
+                        if appointment.hold_expires_at else None
+                    ),
+                    'unplaced_reason': reason,
+                    'unplaced_text': reason_text,
+                    'batch_id': batch_id,
+                })
+                total += 1
+
+        ordered = [
+            days[key]
+            for key in sorted(days, key=lambda k: (k[0], days[k]['doctor_name']))
+        ]
+        flat = [patient for group in ordered for patient in group['patients']]
+        return {'count': total, 'days': ordered, 'patients': flat}
+

@@ -38,6 +38,14 @@ export const useCalendar = () => {
     }
   }, [isDemoMode, store.syncFromBackend]);
 
+  // Step 3 — who is still stranded. Django decides; demo mode derives the list
+  // from the doctors on leave on screen.
+  useEffect(() => {
+    if (store.loadStranded) {
+      store.loadStranded();
+    }
+  }, [isDemoMode, store.loadStranded]);
+
   // Auto-dismiss in-app toast
   useEffect(() => {
     if (!store.toast) return undefined;

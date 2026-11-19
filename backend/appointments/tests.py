@@ -10,6 +10,7 @@ from .models import (
     StaffUser,
     Doctor,
     DoctorLeave,
+    DisruptionBatch,
     Service,
     DoctorService,
     AvailabilityRule,
@@ -23,7 +24,7 @@ from .models import (
 )
 from .services.availability import AvailabilityEngine
 from .services.hold_service import HoldService, SlotConflictException
-from .services.disruption_service import DisruptionService
+from .services.disruption_service import DisruptionService, DisruptionUndoError
 from .services.conflict_service import ConflictService
 from .services.sweep_service import SweepService
 
@@ -8181,3 +8182,501 @@ class DoctorLeavePlanTests(APITestCase):
 
 
 
+
+
+# ======================================================================
+# Leave flow Step 3 - stranded queue, undo of the last distribution,
+# and notify-once.
+# ======================================================================
+
+
+class _DisruptionFixture(TestCase):
+    """Shared three-doctor clinic for the Step 3 classes below."""
+
+    def setUp(self):
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+        self.doctor = Doctor.objects.create(
+            name='Dr. Bello Strand', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5], shift_start=datetime.time(9, 0),
+            shift_end=datetime.time(17, 0), max_daily_appointments=12,
+        )
+        self.colleague = Doctor.objects.create(
+            name='Dr. Chinwe Strand', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6], shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(16, 0), max_daily_appointments=14,
+        )
+        self.third = Doctor.objects.create(
+            name='Dr. Tunde Strand', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6], shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(16, 0), max_daily_appointments=14,
+        )
+        self.service = Service.objects.create(
+            name='Dental Examination', category='Dental Care',
+            duration_minutes=30, buffer_minutes=10, price=15000.00,
+        )
+        for doc in (self.doctor, self.colleague, self.third):
+            DoctorService.objects.create(doctor=doc, service=self.service)
+
+    def _next_monday(self):
+        today = timezone.now().date()
+        return today + datetime.timedelta(days=(1 - today.isoweekday()) % 7 + 7)
+
+    def _book(self, doctor, day, hour, minute=0, name='Strand Patient',
+              phone='+2348055567000', is_hold=False):
+        start = timezone.make_aware(
+            datetime.datetime.combine(day, datetime.time(hour, minute))
+        )
+        return HoldService.acquire_slot(
+            doctor_id=doctor.id, service_id=self.service.id,
+            start_datetime=start,
+            end_datetime=start + datetime.timedelta(minutes=30),
+            patient_name=name, patient_phone=phone, is_hold=is_hold,
+        )
+
+    def _window(self, start_day, end_day=None):
+        end_day = end_day or start_day
+        return {
+            'leave_start_dt': timezone.make_aware(
+                datetime.datetime.combine(start_day, datetime.time(8, 0))
+            ),
+            'leave_end_dt': timezone.make_aware(
+                datetime.datetime.combine(end_day, datetime.time(23, 59))
+            ),
+        }
+
+    def _approve(self, start_day, end_day=None, **kwargs):
+        window = self._window(start_day, end_day)
+        return DisruptionService.auto_resolve_disruption(
+            doctor_id=self.doctor.id, **window, **kwargs
+        )
+
+
+class StrandedPatientsTests(_DisruptionFixture):
+    """
+    Step 3a - nobody disappears. Every confirmed/held patient still booked
+    under a doctor who is on leave is listed, grouped by day, with Django's
+    own reason when a plan could not place them.
+    """
+
+    def test_unplaced_patient_is_listed_on_the_leave_day(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, name='Amina Stranded')
+        report = self._approve(monday, colleague_ids=[], max_lookahead_days=0)
+        self.assertEqual(report['unplaced_count'], 1)
+
+        stranded = DisruptionService.list_stranded()
+
+        self.assertEqual(stranded['count'], 1)
+        day = stranded['days'][0]
+        self.assertEqual(day['date'], monday.isoformat())
+        self.assertEqual(day['doctor_name'], 'Dr. Bello Strand')
+        patient = day['patients'][0]
+        self.assertEqual(patient['appointment_code'], appt.appointment_code)
+        self.assertEqual(patient['patient_name'], 'Amina Stranded')
+        self.assertEqual(patient['unplaced_reason'], 'NO_COLLEAGUE_CHOSEN')
+        self.assertIn('No colleague is selected', patient['unplaced_text'])
+        self.assertEqual(patient['batch_id'], report['batch']['id'])
+
+    def test_placed_and_cancelled_patients_are_not_stranded(self):
+        monday = self._next_monday()
+        placed = self._book(self.doctor, monday, 10, 0, name='Placed Away',
+                            phone='+2348055567001')
+        cancelled = self._book(self.doctor, monday, 13, 0, name='Called Off',
+                               phone='+2348055567002')
+        self._approve(monday)
+        placed.refresh_from_db()
+        self.assertEqual(placed.doctor.id, self.colleague.id)
+        cancelled.status = 'cancelled'
+        cancelled.save(update_fields=['status'])
+
+        stranded = DisruptionService.list_stranded()
+
+        self.assertEqual(stranded['count'], 0)
+        self.assertEqual(stranded['days'], [])
+
+    def test_groups_by_day_and_counts_every_patient(self):
+        monday = self._next_monday()
+        tuesday = monday + datetime.timedelta(days=1)
+        self._book(self.doctor, monday, 10, 0, name='Mon One', phone='+2348055567003')
+        self._book(self.doctor, monday, 15, 0, name='Mon Two', phone='+2348055567004')
+        self._book(self.doctor, tuesday, 10, 0, name='Tue One', phone='+2348055567005')
+
+        self._approve(monday, tuesday, colleague_ids=[], max_lookahead_days=0)
+        stranded = DisruptionService.list_stranded()
+
+        self.assertEqual(stranded['count'], 3)
+        self.assertEqual([day['date'] for day in stranded['days']],
+                         [monday.isoformat(), tuesday.isoformat()])
+        self.assertEqual(len(stranded['days'][0]['patients']), 2)
+        self.assertEqual(len(stranded['days'][1]['patients']), 1)
+        # patients inside a day are ordered by time
+        times = [p['time_label'] for p in stranded['days'][0]['patients']]
+        self.assertEqual(times, ['10:00 AM', '3:00 PM'])
+
+    def test_held_patient_is_listed_with_its_expiry(self):
+        monday = self._next_monday()
+        self._book(self.doctor, monday, 11, 0, name='Holding Patient',
+                   phone='+2348055567006', is_hold=True)
+        self._approve(monday, colleague_ids=[], max_lookahead_days=0)
+
+        stranded = DisruptionService.list_stranded()
+
+        self.assertEqual(stranded['count'], 1)
+        self.assertEqual(stranded['days'][0]['patients'][0]['status'], 'held')
+        self.assertIsNotNone(stranded['days'][0]['patients'][0]['hold_expires_at'])
+
+    def test_legacy_off_duty_doctor_is_included(self):
+        tomorrow = timezone.now().date() + datetime.timedelta(days=1)
+        while tomorrow.isoweekday() > 5:
+            tomorrow += datetime.timedelta(days=1)
+        appt = self._book(self.doctor, tomorrow, 10, 0, phone='+2348055567007')
+        self.doctor.is_on_leave = True
+        self.doctor.save(update_fields=['is_on_leave'])
+
+        stranded = DisruptionService.list_stranded()
+
+        self.assertEqual(stranded['count'], 1)
+        self.assertEqual(stranded['days'][0]['patients'][0]['appointment_code'],
+                         appt.appointment_code)
+        self.assertIsNone(stranded['days'][0]['leave_id'])
+
+    def test_planned_leave_without_any_batch_still_lists_patients(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567008')
+        DisruptionService.record_leave_window(
+            self.doctor, **self._window(monday), reason='Annual leave',
+            performed_by='receptionist', leave_type='annual',
+        )
+
+        stranded = DisruptionService.list_stranded()
+
+        self.assertEqual(stranded['count'], 1)
+        self.assertEqual(stranded['days'][0]['patients'][0]['appointment_code'],
+                         appt.appointment_code)
+        self.assertIsNone(stranded['days'][0]['patients'][0]['batch_id'])
+
+
+class DisruptionUndoTests(_DisruptionFixture):
+    """
+    Step 3b - undo the LAST distribution. Only while nothing has reached a
+    patient and no later plan has touched the same days.
+    """
+
+    def _undo(self, batch_id):
+        return DisruptionService.undo_disruption_batch(batch_id, performed_by='sarah@clinic.com')
+
+    def test_undo_restores_every_patient_and_removes_the_leave(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567101')
+        original_start = appt.start_datetime
+        report = self._approve(monday)
+        batch_id = report['batch']['id']
+        self.assertTrue(report['batch']['can_undo'])
+
+        result = self._undo(batch_id)
+
+        appt.refresh_from_db()
+        self.assertEqual(appt.doctor.id, self.doctor.id)
+        self.assertEqual(appt.start_datetime, original_start)
+        self.assertEqual(result['restored_count'], 1)
+        self.assertTrue(result['leave_removed'])
+        self.assertEqual(DoctorLeave.objects.filter(doctor=self.doctor).count(), 0)
+        self.assertFalse(self.doctor.__class__.objects.get(id=self.doctor.id).is_on_leave)
+        self.assertTrue(AuditLog.objects.filter(action='DISRUPTION_BATCH_UNDONE').exists())
+        # the queued notice must never reach the patient now
+        self.assertFalse(
+            InteractionLog.objects.filter(
+                appointment=appt, status__in=['queued', 'sent', 'delivered']
+            ).exists()
+        )
+
+    def test_batch_reports_why_it_cannot_be_undone(self):
+        monday = self._next_monday()
+        self._book(self.doctor, monday, 11, 0, phone='+2348055567102')
+        DisruptionService.record_leave_window(
+            self.doctor, **self._window(monday), reason='Already booked',
+            performed_by='receptionist', leave_type='annual',
+        )
+        report = self._approve(monday)
+
+        self.assertFalse(report['batch']['can_undo'])
+        self.assertIn('already in place', report['batch']['undo_reason'])
+
+    def test_undo_refuses_after_a_notice_reached_the_patient(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567103')
+        report = self._approve(monday)
+        InteractionLog.objects.filter(appointment=appt).update(status='delivered')
+
+        with self.assertRaises(DisruptionUndoError) as caught:
+            self._undo(report['batch']['id'])
+
+        self.assertEqual(caught.exception.code, 'NOTICES_DELIVERED')
+        appt.refresh_from_db()
+        self.assertEqual(appt.doctor.id, self.colleague.id)
+        self.assertEqual(DoctorLeave.objects.filter(doctor=self.doctor).count(), 1)
+
+    def test_undo_refuses_when_the_leave_predates_the_plan(self):
+        monday = self._next_monday()
+        self._book(self.doctor, monday, 11, 0, phone='+2348055567104')
+        DisruptionService.record_leave_window(
+            self.doctor, **self._window(monday), reason='Annual',
+            performed_by='receptionist', leave_type='annual',
+        )
+        report = self._approve(monday)
+
+        with self.assertRaises(DisruptionUndoError) as caught:
+            self._undo(report['batch']['id'])
+
+        self.assertEqual(caught.exception.code, 'LEAVE_NOT_FROM_PLAN')
+
+    def test_undo_refuses_when_a_later_plan_covers_the_same_days(self):
+        monday = self._next_monday()
+        self._book(self.doctor, monday, 11, 0, phone='+2348055567105')
+        first = self._approve(monday)
+
+        # Reception cancels the leave, a new patient books in, then the leave
+        # is declared again with a fresh plan for the same day.
+        DoctorLeave.objects.filter(doctor=self.doctor).delete()
+        self.doctor.sync_leave_flag()
+        self._book(self.doctor, monday, 15, 0, phone='+2348055567106')
+        second = self._approve(monday)
+
+        with self.assertRaises(DisruptionUndoError) as caught:
+            self._undo(first['batch']['id'])
+
+        self.assertEqual(caught.exception.code, 'SUPERSEDED')
+        self.assertNotEqual(first['batch']['id'], second['batch']['id'])
+
+    def test_a_later_plan_on_other_days_does_not_block_undo(self):
+        monday = self._next_monday()
+        tuesday = monday + datetime.timedelta(days=1)
+        self._book(self.doctor, monday, 11, 0, phone='+2348055567107')
+        self._book(self.doctor, tuesday, 11, 0, phone='+2348055567108')
+        first = self._approve(monday, colleague_ids=[], max_lookahead_days=0)
+        self._approve(tuesday, colleague_ids=[], max_lookahead_days=0)
+
+        result = self._undo(first['batch']['id'])
+
+        self.assertEqual(result['restored_count'], 0)  # nothing was moved
+        self.assertTrue(result['leave_removed'])
+
+    def test_undo_refuses_when_the_patient_was_moved_again(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567109')
+        report = self._approve(monday)
+        DisruptionService.reassign_to_colleague(
+            appt.id, self.third.id, performed_by='sarah@clinic.com'
+        )
+
+        with self.assertRaises(DisruptionUndoError) as caught:
+            self._undo(report['batch']['id'])
+
+        self.assertEqual(caught.exception.code, 'MOVES_CHANGED')
+
+    def test_undo_refuses_twice(self):
+        monday = self._next_monday()
+        self._book(self.doctor, monday, 11, 0, phone='+2348055567110')
+        report = self._approve(monday)
+        self._undo(report['batch']['id'])
+
+        with self.assertRaises(DisruptionUndoError) as caught:
+            self._undo(report['batch']['id'])
+
+        self.assertEqual(caught.exception.code, 'ALREADY_UNDONE')
+
+    def test_undo_rolls_back_everything_when_an_old_slot_was_taken(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567111')
+        squatter = self._book(self.colleague, monday, 9, 0, name='Later Booking',
+                              phone='+2348055567112')
+        report = self._approve(monday)
+        # Someone bypassed the leave check and took the freed slot.
+        squatter.doctor = self.doctor
+        squatter.start_datetime = timezone.make_aware(
+            datetime.datetime.combine(monday, datetime.time(11, 0))
+        )
+        squatter.end_datetime = squatter.start_datetime + datetime.timedelta(minutes=30)
+        squatter.save(update_fields=['doctor', 'start_datetime', 'end_datetime'])
+
+        with self.assertRaises(DisruptionUndoError) as caught:
+            self._undo(report['batch']['id'])
+
+        self.assertEqual(caught.exception.code, 'SLOT_TAKEN')
+        appt.refresh_from_db()
+        self.assertEqual(appt.doctor.id, self.colleague.id)
+        self.assertEqual(DoctorLeave.objects.filter(doctor=self.doctor).count(), 1)
+
+
+class NotifyOnceTests(_DisruptionFixture):
+    """
+    Step 3c - one truthful message per placement. The same placement is never
+    announced twice; a plan that changed before delivery leaves no stale
+    message behind; a patient who already heard the old plan gets exactly one
+    correction.
+    """
+
+    def test_same_placement_is_queued_only_once(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567201')
+        self._approve(monday)
+        before = InteractionLog.objects.filter(appointment=appt).count()
+        self.assertEqual(before, 2)
+        appt.refresh_from_db()
+
+        items = DisruptionService._queue_notice_messages(
+            appt, 'Dr. Bello Strand', self.clinic
+        )
+
+        self.assertEqual(items, [])
+        self.assertEqual(InteractionLog.objects.filter(appointment=appt).count(), before)
+
+    def test_undelivered_stale_notice_is_expired_before_the_new_one(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567202')
+        self._approve(monday)
+        # A manual 1-click reassignment moves the patient again before delivery.
+        DisruptionService.reassign_to_colleague(
+            appt.id, self.third.id, performed_by='sarah@clinic.com'
+        )
+        appt.refresh_from_db()
+
+        items = DisruptionService._queue_notice_messages(
+            appt, 'Dr. Bello Strand', self.clinic
+        )
+
+        self.assertEqual(sorted(i['channel'] for i in items), ['sms', 'whatsapp'])
+        self.assertIn('Dr. Tunde Strand', items[0]['message'])
+        live = InteractionLog.objects.filter(appointment=appt).exclude(status='expired')
+        self.assertEqual(live.count(), 2)
+        self.assertTrue(all(row.status == 'queued' for row in live))
+        self.assertEqual(
+            InteractionLog.objects.filter(
+                appointment=appt, status='expired'
+            ).count(), 2
+        )
+
+    def test_delivered_notice_gets_one_correction(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567203')
+        self._approve(monday)
+        InteractionLog.objects.filter(appointment=appt).update(status='delivered')
+        DisruptionService.reassign_to_colleague(
+            appt.id, self.third.id, performed_by='sarah@clinic.com'
+        )
+        appt.refresh_from_db()
+
+        items = DisruptionService._queue_notice_messages(
+            appt, 'Dr. Bello Strand', self.clinic
+        )
+
+        self.assertEqual(len(items), 2)
+        self.assertTrue(items[0]['message'].startswith('Correction:'))
+        self.assertIn('Dr. Tunde Strand', items[0]['message'])
+        # Delivered rows are history and stay untouched.
+        self.assertEqual(
+            InteractionLog.objects.filter(
+                appointment=appt, status='delivered'
+            ).count(), 2
+        )
+        # Repeating the same move never queues a second correction.
+        again = DisruptionService._queue_notice_messages(
+            appt, 'Dr. Bello Strand', self.clinic
+        )
+        self.assertEqual(again, [])
+        self.assertEqual(
+            InteractionLog.objects.filter(appointment=appt, status='queued').count(), 2
+        )
+
+
+class DisruptionStrandedEndpointTests(_DisruptionFixture, APITestCase):
+    """GET /api/v1/disruptions/stranded/ - staff-only stranded queue."""
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Strand', email='sarah.strand@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_requires_staff_auth(self):
+        res = self.client.get('/api/v1/disruptions/stranded/')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_the_stranded_patients(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567301')
+        self._approve(monday, colleague_ids=[], max_lookahead_days=0)
+        self.client.force_authenticate(user=self.receptionist)
+
+        res = self.client.get('/api/v1/disruptions/stranded/')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(
+            res.data['days'][0]['patients'][0]['appointment_code'],
+            appt.appointment_code,
+        )
+
+
+class DisruptionUndoEndpointTests(_DisruptionFixture, APITestCase):
+    """POST /api/v1/disruptions/batches/{id}/undo/"""
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Undo', email='sarah.undo@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+
+    def tearDown(self):
+        cache.clear()
+
+    def _url(self, batch_id):
+        return f'/api/v1/disruptions/batches/{batch_id}/undo/'
+
+    def test_requires_staff_auth(self):
+        res = self.client.post(self._url(uuid.uuid4()), {}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_undo_restores_the_plan(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567401')
+        report = self._approve(monday)
+        self.client.force_authenticate(user=self.receptionist)
+
+        res = self.client.post(self._url(report['batch']['id']), {}, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['restored_count'], 1)
+        appt.refresh_from_db()
+        self.assertEqual(appt.doctor.id, self.doctor.id)
+
+    def test_blocked_undo_is_a_conflict_with_a_reason(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567402')
+        report = self._approve(monday)
+        InteractionLog.objects.filter(appointment=appt).update(status='delivered')
+        self.client.force_authenticate(user=self.receptionist)
+
+        res = self.client.post(self._url(report['batch']['id']), {}, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['error'], 'NOTICES_DELIVERED')
+        self.assertTrue(res.data['detail'])
+
+    def test_unknown_batch_is_404(self):
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.post(self._url(uuid.uuid4()), {}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)

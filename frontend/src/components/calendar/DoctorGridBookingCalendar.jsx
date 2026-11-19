@@ -30,6 +30,7 @@ import { useCalendarStore } from '../../stores/useCalendarStore';
 import { useStaffStore } from '../../stores/useStaffStore';
 import { useAuthStore } from '../../stores/useAuthStore';
 import { EmergencyDisruptionModal } from './EmergencyDisruptionModal';
+import { StrandedPatientsPanel } from './StrandedPatientsPanel';
 import { DoubleBookingAlert, DoubleBookingCountChip } from './DoubleBookingAlert';
 import { useDoubleBookingAlert } from '../../hooks/useDoubleBookingAlert';
 import '../../styles/components/grid-booking-calendar.css';
@@ -229,6 +230,16 @@ export const DoctorGridBookingCalendar = ({
   const chooseSingleColleague = useCalendarStore((state) => state.chooseSingleColleague);
   const setColleagueCap = useCalendarStore((state) => state.setColleagueCap);
   const restoreDoctorDuty = useCalendarStore((state) => state.restoreDoctorDuty);
+
+  // Step 3 — stranded queue + undo of the last distribution.
+  const stranded = useCalendarStore((state) => state.stranded);
+  const strandedPanelOpen = useCalendarStore((state) => state.strandedPanelOpen);
+  const openStrandedPanel = useCalendarStore((state) => state.openStrandedPanel);
+  const closeStrandedPanel = useCalendarStore((state) => state.closeStrandedPanel);
+  const loadStranded = useCalendarStore((state) => state.loadStranded);
+  const lastDistribution = useCalendarStore((state) => state.lastDistribution);
+  const undoingDistribution = useCalendarStore((state) => state.undoingDistribution);
+  const undoLastDistribution = useCalendarStore((state) => state.undoLastDistribution);
 
   // Item C — red double-booking alert. Polls the backend every 10s; the
   // overlay + red chip stay until the clash is fixed.
@@ -680,6 +691,53 @@ export const DoctorGridBookingCalendar = ({
           </button>
         </div>
       </div>
+
+      {/* Step 3 — who still has no slot, and an honest undo of the last plan. */}
+      {stranded.count > 0 && (
+        <div className="stranded-strip">
+          <span className="stranded-strip-count tabular-nums">
+            {stranded.count}
+          </span>
+          <span className="stranded-strip-text">
+            patient{stranded.count === 1 ? '' : 's'} still booked under a doctor
+            on leave
+          </span>
+          <span className="stranded-strip-hint">
+            Nobody here has been messaged; each row says why they could not be
+            placed.
+          </span>
+          <button
+            type="button"
+            className="btn-base btn-secondary stranded-strip-action"
+            onClick={openStrandedPanel}
+          >
+            Review patients
+          </button>
+        </div>
+      )}
+
+      {lastDistribution && (
+        <div className="plan-undo-strip">
+          <span className="stranded-strip-text">
+            Last plan: {lastDistribution.doctorName}
+            {typeof lastDistribution.placedCount === 'number'
+              ? ` · ${lastDistribution.placedCount} moved`
+              : ''}
+          </span>
+          {lastDistribution.canUndo ? (
+            <button
+              type="button"
+              className="plan-undo-btn"
+              onClick={undoLastDistribution}
+              disabled={undoingDistribution}
+            >
+              {undoingDistribution ? 'Undoing…' : 'Undo this plan'}
+            </button>
+          ) : (
+            <span className="plan-undo-why">{lastDistribution.undoReason}</span>
+          )}
+        </div>
+      )}
 
       {/* 3. Horizontal Specialty Category Pills Bar (From Clinic Memory) */}
       <div className="specialty-pills-bar">
@@ -1362,6 +1420,15 @@ export const DoctorGridBookingCalendar = ({
           onRestoreDuty={restoreDoctorDuty}
         />
       )}
+
+      {/* Step 3 — the stranded queue Django reports, grouped by day with the
+          plain reason each patient could not be placed. */}
+      <StrandedPatientsPanel
+        isOpen={strandedPanelOpen}
+        stranded={stranded}
+        onClose={closeStrandedPanel}
+        onRefresh={loadStranded}
+      />
 
       {/* Item C — full-screen red double-booking alert. Names the doctor, both
           appointment codes and the exact overlap; the chip stays red after

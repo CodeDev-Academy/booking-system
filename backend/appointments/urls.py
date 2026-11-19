@@ -28,6 +28,8 @@ from .views_appointment import (
     ReassignLeaveView,
     DisruptionAutoResolveView,
     DisruptionPreviewView,
+    DisruptionStrandedView,
+    DisruptionBatchUndoView,
     DoubleBookingConflictsView,
     RescheduleAppointmentView,
     AppointmentActionView,
@@ -146,6 +148,8 @@ urlpatterns = [
     path('appointments/<str:id>/reassign-leave/', ReassignLeaveView.as_view(), name='appointment-reassign-leave'),
     path('disruptions/<uuid:doctor_id>/preview/', DisruptionPreviewView.as_view(), name='disruption-preview'),
     path('disruptions/<uuid:doctor_id>/auto-resolve/', DisruptionAutoResolveView.as_view(), name='disruption-auto-resolve'),
+    path('disruptions/stranded/', DisruptionStrandedView.as_view(), name='disruption-stranded'),
+    path('disruptions/batches/<uuid:batch_id>/undo/', DisruptionBatchUndoView.as_view(), name='disruption-batch-undo'),
     path('conflicts/double-bookings/', DoubleBookingConflictsView.as_view(), name='conflicts-double-bookings'),
     path('appointments/<str:id>/<str:action>/', AppointmentActionView.as_view(), name='appointment-action'),
 

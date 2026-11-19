@@ -11,11 +11,11 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 
-from .models import Appointment, Doctor, FollowUpTask, AuditLog, ClinicSetting
+from .models import Appointment, Doctor, FollowUpTask, AuditLog, ClinicSetting, DisruptionBatch
 from .permissions import IsStaffAuthenticated
 from .services.hold_service import HoldService, SlotConflictException
 from .services.slot_selection import select_slot_offer
-from .services.disruption_service import DisruptionService
+from .services.disruption_service import DisruptionService, DisruptionUndoError
 from .services.conflict_service import ConflictService
 from .services.dispatch_service import fire_and_forget_webhook
 from .services.webhook_security import has_staff_or_webhook_access, resolve_webhook_secret, verify_webhook_secret
@@ -467,6 +467,45 @@ class DisruptionAutoResolveView(APIView):
         report['delivery_pushed'] = bool(items) and bool(os.environ.get('N8N_DISRUPTION_WEBHOOK_URL'))
 
         return Response(report, status=status.HTTP_200_OK)
+
+
+class DisruptionStrandedView(APIView):
+    """
+    GET /api/v1/disruptions/stranded/
+    Step 3 — every patient still booked under a doctor who is on leave,
+    grouped by day, with Django's reason when a plan could not place them.
+    """
+    permission_classes = [IsStaffAuthenticated]
+
+    def get(self, request):
+        return Response(DisruptionService.list_stranded(), status=status.HTTP_200_OK)
+
+
+class DisruptionBatchUndoView(APIView):
+    """
+    POST /api/v1/disruptions/batches/{batch_id}/undo/
+    Step 3 — put the last approved distribution back, while nothing has
+    reached a patient and no later plan covers the same days.
+    """
+    permission_classes = [IsStaffAuthenticated]
+
+    def post(self, request, batch_id):
+        performed_by = getattr(request.user, 'email', '') or 'receptionist'
+        try:
+            result = DisruptionService.undo_disruption_batch(
+                batch_id=batch_id, performed_by=performed_by
+            )
+        except DisruptionBatch.DoesNotExist:
+            return Response(
+                {'error': 'BATCH_NOT_FOUND', 'detail': 'No distribution matches this id.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except DisruptionUndoError as exc:
+            return Response(
+                {'error': exc.code, 'detail': exc.text},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(result, status=status.HTTP_200_OK)
 
 
 class DoubleBookingConflictsView(APIView):

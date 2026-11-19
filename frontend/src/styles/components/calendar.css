@@ -2288,5 +2288,285 @@
   text-align: center;
 }
 
+/* ------------------------------------------------------------------
+   Step 3 — stranded queue strip + undo of the last distribution.
+   Calm, factual surfaces: amber for "needs you", hairline dividers,
+   tabular numbers for times and counts.
+   ------------------------------------------------------------------ */
+
+.stranded-strip,
+.plan-undo-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--amber-border);
+  background: var(--amber-soft);
+  color: var(--text);
+}
+
+.plan-undo-strip {
+  border-color: var(--line);
+  background: var(--surface-2);
+}
+
+.stranded-strip-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: var(--radius-full);
+  background: var(--amber);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.stranded-strip-text {
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.stranded-strip-hint,
+.plan-undo-why {
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.stranded-strip-action,
+.plan-undo-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.plan-undo-btn {
+  border: 1px solid var(--amber-border);
+  background: var(--surface-1);
+  color: var(--amber);
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+}
+
+.plan-undo-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.stranded-surface {
+  width: 660px;
+}
+
+.stranded-badge {
+  background: var(--amber-soft);
+  border-color: var(--amber-border);
+  color: var(--amber);
+}
+
+.stranded-count-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--radius-full);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.stranded-intro {
+  margin: 4px 0 14px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.stranded-empty {
+  padding: 22px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--line);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.stranded-empty-error {
+  border-style: solid;
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.stranded-day-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.stranded-day {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  overflow: hidden;
+  min-width: 0;
+}
+
+.stranded-day-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+  min-width: 0;
+}
+
+.stranded-day-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.stranded-day-doctor {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.stranded-day-reason {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 55%;
+}
+
+.stranded-patient-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+
+.stranded-patient-row:first-of-type {
+  border-top: none;
+}
+
+.stranded-patient-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.stranded-patient-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.stranded-patient-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.stranded-patient-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 0;
+  flex: 0 1 auto;
+  text-align: right;
+}
+
+.stranded-patient-phone {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.stranded-patient-phone:hover {
+  color: var(--amber);
+}
+
+.stranded-hold-chip {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--amber-border);
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.stranded-reason {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .stranded-surface {
+    width: 100%;
+  }
+
+  .stranded-patient-row {
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .stranded-patient-side {
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .stranded-day-reason {
+    margin-left: 0;
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  .stranded-strip-action,
+  .plan-undo-btn {
+    margin-left: 0;
+  }
+}
+
+
 
 

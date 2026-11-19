@@ -372,6 +372,22 @@ export const apiService = {
     });
   },
 
+  // Step 3 — patients still booked under a doctor who is on leave. Django
+  // decides who is stranded and gives the plain reason for anyone a plan
+  // could not place.
+  async fetchStranded() {
+    return request('/disruptions/stranded/');
+  },
+
+  // Undo the last approved distribution. The backend refuses (409) once a
+  // notice has reached a patient or a later plan covers the same days.
+  async undoDisruptionBatch(batchId) {
+    return request(`/disruptions/batches/${batchId}/undo/`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  },
+
   // Read-only double-booking feed for the red dashboard alert. The backend
   // decides what counts as a clash; this method only fetches the list.
   async fetchDoubleBookings() {

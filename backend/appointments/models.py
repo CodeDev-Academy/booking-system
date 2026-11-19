@@ -318,6 +318,46 @@ class DoctorLeave(models.Model):
         )
 
 
+class DisruptionBatch(models.Model):
+    """
+    One approved leave distribution: what was moved, from where, to where,
+    which notices carried the news, and whether the receptionist undid it.
+
+    The audit log is prose for humans; this row is the durable contract Undo
+    works from. `placements` is a list of dicts (appointment, from/to doctor
+    and times, notice refs); `unplaced` keeps the named failures for the
+    stranded queue and for later reporting.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    doctor = models.ForeignKey(
+        Doctor, on_delete=models.CASCADE, related_name='disruption_batches'
+    )
+    leave = models.ForeignKey(
+        DoctorLeave, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='disruption_batches',
+    )
+    leave_created = models.BooleanField(default=False)
+    performed_by = models.CharField(max_length=255, blank=True, default='')
+    reason = models.CharField(max_length=255, blank=True, default='')
+    leave_start = models.DateTimeField()
+    leave_end = models.DateTimeField()
+    distribution = models.JSONField(default=dict, blank=True)
+    placements = models.JSONField(default=list, blank=True)
+    unplaced = models.JSONField(default=list, blank=True)
+    undone_at = models.DateTimeField(null=True, blank=True)
+    undone_by = models.CharField(max_length=255, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = 'disruption_batches'
+        ordering = ['-created_at']
+        verbose_name = 'Disruption Batch'
+        verbose_name_plural = 'Disruption Batches'
+
+    def __str__(self):
+        return f"{self.doctor.name} · {self.created_at:%Y-%m-%d %H:%M}"
+
+
 class Service(models.Model):
     """
     Clinical treatments and consultations with standard duration,

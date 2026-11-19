@@ -159,6 +159,14 @@ export const useCalendarStore = create(
     colleagueCaps: {},
   },
 
+  // Step 3 safety net. `stranded` is Django's list of patients still booked
+  // under a doctor who is on leave; `lastDistribution` is the plan that was
+  // just approved, so it can be undone while nothing has reached a patient.
+  stranded: { count: 0, days: [], patients: [], loading: false, error: null },
+  lastDistribution: null,
+  undoingDistribution: false,
+  strandedPanelOpen: false,
+
   // In-App Toast
   toast: null,
 
@@ -1232,6 +1240,18 @@ export const useCalendarStore = create(
       } else {
         soundService.playAlert();
       }
+      set({
+        lastDistribution: {
+          id: null,
+          canUndo: false,
+          undoReason:
+            'Demo mode — this plan was simulated on screen, so there is nothing saved to undo.',
+          doctorName,
+          placedCount,
+          demo: true,
+        },
+      });
+      get().loadStranded();
       return { success: true, sameDay: placedCount, unplaced: remainingKeys.length };
     }
 
@@ -1330,7 +1350,21 @@ export const useCalendarStore = create(
       } else {
         soundService.playAlert();
       }
+      const batch = report.batch || null;
+      set({
+        lastDistribution: batch
+          ? {
+              id: batch.id,
+              canUndo: Boolean(batch.can_undo),
+              undoReason: batch.undo_reason || null,
+              doctorName: report.doctor_name || doctorName,
+              placedCount: report.auto_resolved_count || 0,
+              createdAt: Date.now(),
+            }
+          : null,
+      });
       get().syncFromBackend();
+      get().loadStranded();
       return { success: true, report };
     } catch (err) {
       console.warn('Auto-resolve disruption failed:', err);
@@ -1344,6 +1378,132 @@ export const useCalendarStore = create(
       });
       soundService.playAlert();
       return { success: false, message: err?.message || 'Auto-resolve failed' };
+    }
+  },
+
+  // --- Step 3: stranded queue + undo of the last distribution ---
+
+  openStrandedPanel: () => set({ strandedPanelOpen: true }),
+  closeStrandedPanel: () => set({ strandedPanelOpen: false }),
+
+  // Django decides who is stranded. Demo mode derives the same list from the
+  // doctors marked on leave on screen, so the pitch shows the real behaviour.
+  loadStranded: async () => {
+    if (useAppModeStore.getState().isDemoMode) {
+      const demo = get()._demoStranded();
+      set({ stranded: { ...demo, loading: false, error: null } });
+      return demo;
+    }
+    set((state) => ({ stranded: { ...state.stranded, loading: true, error: null } }));
+    try {
+      const data = await apiService.fetchStranded();
+      const next = {
+        count: data?.count || 0,
+        days: data?.days || [],
+        patients: data?.patients || [],
+        loading: false,
+        error: null,
+      };
+      set({ stranded: next });
+      return next;
+    } catch (err) {
+      set((state) => ({
+        stranded: {
+          ...state.stranded,
+          loading: false,
+          error: err?.details?.detail || err?.message || 'Could not load stranded patients',
+        },
+      }));
+      return null;
+    }
+  },
+
+  _demoStranded: () => {
+    const { blocks, doctors } = get();
+    const groups = {};
+    (blocks || []).forEach((block) => {
+      const doctor = doctors.find((d) => d.id === block.doctorId);
+      if (!doctor?.isEmergencyLeave) return;
+      if (block.type !== 'appointment' && block.type !== 'hold') return;
+      const when = new Date(block.start);
+      if (!Number.isFinite(when.getTime()) || when.getTime() < Date.now()) return;
+      const date = `${when.getFullYear()}-${String(when.getMonth() + 1).padStart(2, '0')}-${String(when.getDate()).padStart(2, '0')}`;
+      const key = `${date}|${doctor.id}`;
+      if (!groups[key]) {
+        groups[key] = {
+          date,
+          label: when.toLocaleDateString('en-GB', {
+            weekday: 'short',
+            day: '2-digit',
+            month: 'short',
+          }),
+          doctor_id: doctor.id,
+          doctor_name: doctor.name,
+          leave_reason: doctor.emergencyReason || 'On leave (demo)',
+          patients: [],
+        };
+      }
+      groups[key].patients.push({
+        appointment_id: block.appointmentId || block.id,
+        appointment_code: block.appointmentId || block.id,
+        patient_name: block.patientName || block.label || 'Patient',
+        patient_phone: block.patientPhone || '',
+        service_name: block.serviceName || 'Consultation',
+        status: block.status || block.type,
+        time_label: when.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+        unplaced_reason: null,
+        unplaced_text: null,
+        batch_id: null,
+      });
+    });
+    const days = Object.values(groups).sort((a, b) =>
+      a.date === b.date
+        ? a.doctor_name.localeCompare(b.doctor_name)
+        : a.date.localeCompare(b.date)
+    );
+    const patients = days.flatMap((day) => day.patients);
+    return { count: patients.length, days, patients };
+  },
+
+  // Undo the last approved distribution. The backend is the guard: it refuses
+  // once a notice has reached a patient or a later plan covers the same days,
+  // and its plain reason replaces the button with an explanation.
+  undoLastDistribution: async () => {
+    const last = get().lastDistribution;
+    if (!last?.id) {
+      return {
+        success: false,
+        message:
+          (last && last.undoReason) || 'There is no saved plan to undo.',
+      };
+    }
+    set({ undoingDistribution: true });
+    try {
+      const result = await apiService.undoDisruptionBatch(last.id);
+      set({
+        undoingDistribution: false,
+        lastDistribution: null,
+        toast: {
+          tone: 'success',
+          text: result?.message || 'The last plan was undone.',
+        },
+      });
+      await get().syncFromBackend();
+      await get().loadStranded();
+      soundService.playChime();
+      return { success: true, result };
+    } catch (err) {
+      const detail =
+        err?.details?.detail || err?.message || 'Could not undo this plan';
+      set((state) => ({
+        undoingDistribution: false,
+        lastDistribution: state.lastDistribution
+          ? { ...state.lastDistribution, canUndo: false, undoReason: detail }
+          : null,
+        toast: { tone: 'amber', text: `Undo refused: ${detail}` },
+      }));
+      soundService.playAlert();
+      return { success: false, message: detail };
     }
   },
 
