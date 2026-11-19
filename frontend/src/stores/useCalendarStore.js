@@ -164,6 +164,10 @@ export const useCalendarStore = create(
   // just approved, so it can be undone while nothing has reached a patient.
   stranded: { count: 0, days: [], patients: [], loading: false, error: null },
   lastDistribution: null,
+  // Bumped every time this tab itself writes lastDistribution. A read-back
+  // that started before that write must not overwrite it (see
+  // loadLastDistribution).
+  _planSeq: 0,
   undoingDistribution: false,
   strandedPanelOpen: false,
 
@@ -1255,6 +1259,7 @@ export const useCalendarStore = create(
         soundService.playAlert();
       }
       set({
+        _planSeq: get()._planSeq + 1,
         lastDistribution: {
           id: null,
           canUndo: false,
@@ -1366,6 +1371,7 @@ export const useCalendarStore = create(
       }
       const batch = report.batch || null;
       set({
+        _planSeq: get()._planSeq + 1,
         lastDistribution: batch
           ? {
               id: batch.id,
@@ -1373,6 +1379,7 @@ export const useCalendarStore = create(
               undoReason: batch.undo_reason || null,
               doctorName: report.doctor_name || doctorName,
               placedCount: report.auto_resolved_count || 0,
+              unplacedCount: report.unplaced_count || 0,
               createdAt: Date.now(),
             }
           : null,
@@ -1428,6 +1435,43 @@ export const useCalendarStore = create(
           error: err?.details?.detail || err?.message || 'Could not load stranded patients',
         },
       }));
+      return null;
+    }
+  },
+
+  // Fix 1 — bring the undo strip back after a refresh (or on another
+  // receptionist's machine). The batch has always been durable in the
+  // database; before this, the strip lived only in the tab that approved it.
+  //
+  // A slow reply must never overwrite a plan this tab just approved: the
+  // request captures the write counter first and drops its own answer if the
+  // counter moved. A failed read keeps whatever is on screen.
+  loadLastDistribution: async () => {
+    if (useAppModeStore.getState().isDemoMode) return null;
+    const seq = get()._planSeq || 0;
+    try {
+      const data = await apiService.fetchLastDisruptionBatch();
+      if ((get()._planSeq || 0) !== seq) return get().lastDistribution;
+
+      const batch = data?.batch || null;
+      if (!batch) {
+        set({ lastDistribution: null });
+        return null;
+      }
+
+      const next = {
+        id: batch.id,
+        canUndo: Boolean(batch.can_undo),
+        undoReason: batch.undo_reason || null,
+        doctorName: batch.doctor_name,
+        placedCount: batch.placed_count || 0,
+        unplacedCount: batch.unplaced_count || 0,
+        createdAt: batch.created_at ? new Date(batch.created_at).getTime() : null,
+      };
+      set({ lastDistribution: next });
+      return next;
+    } catch (err) {
+      console.warn('Could not load the last distribution:', err);
       return null;
     }
   },
@@ -1496,6 +1540,7 @@ export const useCalendarStore = create(
       const result = await apiService.undoDisruptionBatch(last.id);
       set({
         undoingDistribution: false,
+        _planSeq: get()._planSeq + 1,
         lastDistribution: null,
         toast: {
           tone: 'success',
@@ -1511,6 +1556,7 @@ export const useCalendarStore = create(
         err?.details?.detail || err?.message || 'Could not undo this plan';
       set((state) => ({
         undoingDistribution: false,
+        _planSeq: state._planSeq + 1,
         lastDistribution: state.lastDistribution
           ? { ...state.lastDistribution, canUndo: false, undoReason: detail }
           : null,

@@ -305,6 +305,9 @@ class DisruptionService:
     DELIVERED_NOTICE_STATUSES = ('sent', 'delivered', 'answered')
     # A message that has not reached the patient can still be withdrawn.
     UNDELIVERED_NOTICE_STATUSES = ('queued', 'failed')
+    # How long the "last plan" strip stays available after an approve. A plan
+    # from last week is history, not a one-click rollback.
+    LAST_PLAN_WINDOW = datetime.timedelta(hours=24)
 
     @classmethod
     def disruption_notice_message(cls, appointment, old_doctor_name, clinic):
@@ -1123,6 +1126,42 @@ class DisruptionService:
                 f"{restored} patient{'' if restored == 1 else 's'} moved back"
                 f"{' and the leave removed' if leave_removed else ''}."
             ),
+        }
+
+    @classmethod
+    def latest_batch(cls):
+        """
+        The plan the undo strip should show after a reload, or None.
+
+        The batch row was always durable; the strip used to live only in the
+        browser tab that approved it, so a refresh (or a second receptionist)
+        lost the only way back. Only the current day's plan comes back: an
+        "Undo" button for a plan from last week is not a safety net, it is a
+        trap. Everything older stays in DisruptionBatch and AuditLog as
+        history.
+        """
+        cutoff = timezone.now() - cls.LAST_PLAN_WINDOW
+        batch = (
+            DisruptionBatch.objects.filter(
+                undone_at__isnull=True, created_at__gte=cutoff
+            )
+            .select_related('doctor')
+            .order_by('-created_at')
+            .first()
+        )
+        if batch is None:
+            return None
+
+        blocker = cls._undo_blocker(batch)
+        return {
+            'id': str(batch.id),
+            'doctor_id': str(batch.doctor_id),
+            'doctor_name': batch.doctor.name,
+            'placed_count': len(batch.placements),
+            'unplaced_count': len(batch.unplaced),
+            'created_at': batch.created_at.isoformat(),
+            'can_undo': blocker is None,
+            'undo_reason': blocker[1] if blocker else None,
         }
 
     @classmethod

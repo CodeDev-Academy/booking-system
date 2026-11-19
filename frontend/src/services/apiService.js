@@ -388,6 +388,12 @@ export const apiService = {
     });
   },
 
+  // Fix 1 — the plan behind the undo strip. The batch is durable; this is how
+  // a refreshed tab (or a second receptionist) gets the safety net back.
+  async fetchLastDisruptionBatch() {
+    return request('/disruptions/batches/last/');
+  },
+
   // Read-only double-booking feed for the red dashboard alert. The backend
   // decides what counts as a clash; this method only fetches the list.
   async fetchDoubleBookings() {

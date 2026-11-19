@@ -488,6 +488,21 @@ class DisruptionStrandedView(APIView):
         return Response(DisruptionService.list_stranded(), status=status.HTTP_200_OK)
 
 
+class DisruptionLastBatchView(APIView):
+    """
+    GET /api/v1/disruptions/batches/last/
+    Fix 1 — the plan behind the undo strip. The batch is durable; this is how
+    a refreshed tab (or a second receptionist) gets the safety net back.
+    """
+    permission_classes = [IsStaffAuthenticated]
+
+    def get(self, request):
+        return Response(
+            {'batch': DisruptionService.latest_batch()},
+            status=status.HTTP_200_OK,
+        )
+
+
 class DisruptionBatchUndoView(APIView):
     """
     POST /api/v1/disruptions/batches/{batch_id}/undo/

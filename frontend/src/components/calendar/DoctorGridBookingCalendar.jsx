@@ -723,6 +723,10 @@ export const DoctorGridBookingCalendar = ({
             {typeof lastDistribution.placedCount === 'number'
               ? ` · ${lastDistribution.placedCount} moved`
               : ''}
+            {typeof lastDistribution.unplacedCount === 'number' &&
+            lastDistribution.unplacedCount > 0
+              ? ` · ${lastDistribution.unplacedCount} still without a slot`
+              : ''}
           </span>
           {lastDistribution.canUndo ? (
             <button

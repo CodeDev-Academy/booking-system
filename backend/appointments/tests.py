@@ -8777,3 +8777,90 @@ class ManualReassignQualificationTests(_DisruptionFixture, APITestCase):
 
         appt.refresh_from_db()
         self.assertEqual(appt.doctor.id, self.doctor.id)
+
+
+# ======================================================================
+# Fix 1 - the undo strip must survive a refresh (and another receptionist).
+# The batch was always in the database; nothing ever read it back.
+# ======================================================================
+
+
+class DisruptionLastBatchTests(_DisruptionFixture, APITestCase):
+    """GET /api/v1/disruptions/batches/last/ - what the strip shows on load."""
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.receptionist = StaffUser.objects.create(
+            full_name='Sarah Reload', email='sarah.reload@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.receptionist.set_password('SarahPass123!')
+        self.receptionist.save()
+
+    def tearDown(self):
+        cache.clear()
+
+    def _get(self):
+        self.client.force_authenticate(user=self.receptionist)
+        return self.client.get('/api/v1/disruptions/batches/last/')
+
+    def test_requires_staff_auth(self):
+        res = self.client.get('/api/v1/disruptions/batches/last/')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_no_plan_yet_means_no_strip(self):
+        res = self._get()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIsNone(res.data['batch'])
+
+    def test_returns_the_plan_that_was_just_approved(self):
+        monday = self._next_monday()
+        self._book(self.doctor, monday, 11, 0, phone='+2348055567601')
+        report = self._approve(monday)
+
+        res = self._get()
+
+        batch = res.data['batch']
+        self.assertEqual(batch['id'], report['batch']['id'])
+        self.assertEqual(batch['doctor_name'], 'Dr. Bello Strand')
+        self.assertEqual(batch['placed_count'], 1)
+        self.assertEqual(batch['unplaced_count'], 0)
+        self.assertTrue(batch['can_undo'])
+        self.assertIsNone(batch['undo_reason'])
+
+    def test_after_undo_there_is_nothing_left_to_undo(self):
+        monday = self._next_monday()
+        self._book(self.doctor, monday, 11, 0, phone='+2348055567602')
+        report = self._approve(monday)
+        DisruptionService.undo_disruption_batch(
+            report['batch']['id'], performed_by='sarah@clinic.com'
+        )
+
+        res = self._get()
+
+        self.assertIsNone(res.data['batch'])
+
+    def test_a_blocked_plan_comes_back_with_djangos_reason(self):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, 11, 0, phone='+2348055567603')
+        self._approve(monday)
+        InteractionLog.objects.filter(appointment=appt).update(status='delivered')
+
+        res = self._get()
+
+        batch = res.data['batch']
+        self.assertFalse(batch['can_undo'])
+        self.assertIn('reached patients', batch['undo_reason'])
+
+    def test_a_plan_from_days_ago_is_history_not_a_button(self):
+        monday = self._next_monday()
+        self._book(self.doctor, monday, 11, 0, phone='+2348055567604')
+        report = self._approve(monday)
+        DisruptionBatch.objects.filter(id=report['batch']['id']).update(
+            created_at=timezone.now() - datetime.timedelta(days=3)
+        )
+
+        res = self._get()
+
+        self.assertIsNone(res.data['batch'])

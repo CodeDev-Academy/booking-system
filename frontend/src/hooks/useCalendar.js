@@ -46,6 +46,14 @@ export const useCalendar = () => {
     }
   }, [isDemoMode, store.loadStranded]);
 
+  // Fix 1 — the undo strip survives a refresh. The plan is durable; this reads
+  // it back on mount so a reloaded tab (or another receptionist) still has it.
+  useEffect(() => {
+    if (store.loadLastDistribution) {
+      store.loadLastDistribution();
+    }
+  }, [isDemoMode, store.loadLastDistribution]);
+
   // Auto-dismiss in-app toast
   useEffect(() => {
     if (!store.toast) return undefined;
