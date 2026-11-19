@@ -169,6 +169,7 @@ export const useCalendarStore = create(
   // loadLastDistribution).
   _planSeq: 0,
   undoingDistribution: false,
+  movingStrandedId: null,
   strandedPanelOpen: false,
 
   // In-App Toast
@@ -1517,6 +1518,18 @@ export const useCalendarStore = create(
         unplaced_reason: null,
         unplaced_text: null,
         batch_id: null,
+        colleagues: doctors
+          .filter(
+            (d) => d.id !== doctor.id && !d.isEmergencyLeave && d.isActive !== false
+          )
+          .map((d) => ({
+            id: d.id,
+            name: d.name,
+            specialty: d.specialty || '',
+            available: true,
+            reason: null,
+            text: null,
+          })),
       });
     });
     const days = Object.values(groups).sort((a, b) =>
@@ -1526,6 +1539,77 @@ export const useCalendarStore = create(
     );
     const patients = days.flatMap((day) => day.patients);
     return { count: patients.length, days, patients };
+  },
+
+  // Gap 2 — move ONE stranded patient to a colleague who is free at that
+  // time. The panel only offers what Django already said it would accept;
+  // Django is still the gate (qualified, free, not on leave) and its sentence
+  // is what the toast shows when it refuses.
+  //
+  // This is deliberately not a plan batch. A patient the plan could not place
+  // is not on that batch's placement list, so moving them by hand never blocks
+  // undoing the plan (undo restores the placed ones and removes the leave).
+  // If the plan HAD placed them, a hand move makes the batch report
+  // MOVES_CHANGED — the truth, because undo would overwrite that change.
+  moveStrandedPatient: async (patient, doctorId, doctorName) => {
+    if (!patient?.appointment_id || !doctorId) {
+      return { success: false, message: 'Pick a colleague first.' };
+    }
+    const patientName = patient.patient_name || 'The patient';
+    const target = doctorName || 'the colleague';
+    const when = patient.time_label ? ` at ${patient.time_label}` : '';
+
+    if (useAppModeStore.getState().isDemoMode) {
+      set((state) => ({
+        blocks: state.blocks.map((b) =>
+          b.appointmentId === patient.appointment_id ||
+          b.id === patient.appointment_id ||
+          b.id === `${patient.appointment_id}-buffer`
+            ? { ...b, doctorId }
+            : b
+        ),
+        toast: {
+          tone: 'success',
+          text: `Demo: ${patientName} moved to ${target}${when}. Nothing was saved or sent.`,
+        },
+      }));
+      get().loadStranded();
+      soundService.playChime();
+      return { success: true };
+    }
+
+    set({ movingStrandedId: patient.appointment_id });
+    try {
+      await apiService.reassignDoctorLeave(
+        patient.appointment_id,
+        doctorId,
+        'Moved from the stranded list'
+      );
+      set({
+        movingStrandedId: null,
+        toast: {
+          tone: 'success',
+          text: `Moved ${patientName} to ${target}${when}.`,
+        },
+      });
+      await get().syncFromBackend();
+      await get().loadStranded();
+      soundService.playChime();
+      return { success: true };
+    } catch (err) {
+      const detail =
+        err?.details?.detail ||
+        err?.message ||
+        `Could not move ${patientName} to ${target}.`;
+      set({
+        movingStrandedId: null,
+        toast: { tone: 'amber', text: detail },
+      });
+      soundService.playAlert();
+      // The colleague may have filled up since the list was drawn.
+      get().loadStranded({ silent: true });
+      return { success: false, message: detail };
+    }
   },
 
   // Undo the last approved distribution. The backend is the guard: it refuses

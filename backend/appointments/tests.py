@@ -8864,3 +8864,142 @@ class DisruptionLastBatchTests(_DisruptionFixture, APITestCase):
         res = self._get()
 
         self.assertIsNone(res.data['batch'])
+
+
+# ======================================================================
+# Gap 2 - the stranded panel needs a real per-patient move. Django decides
+# who can take the patient at that exact time, using the same gate the move
+# itself uses (_apply_move): qualified, active, working that day, inside
+# their shift, under the daily limit, and free at that time.
+# ======================================================================
+
+
+class StrandedMoveOptionsTests(_DisruptionFixture):
+    """Every stranded patient lists the colleagues who could take them,
+    each with Django's own reason when they cannot."""
+
+    def _options_for(self, appointment_code):
+        stranded = DisruptionService.list_stranded()
+        for day in stranded['days']:
+            for patient in day['patients']:
+                if patient['appointment_code'] == appointment_code:
+                    return patient['colleagues']
+        self.fail(f'{appointment_code} is not in the stranded list')
+
+    def _strand_one(self, hour=11, minute=0, name='Move Candidate',
+                    phone='+2348055567700'):
+        monday = self._next_monday()
+        appt = self._book(self.doctor, monday, hour, minute, name=name, phone=phone)
+        self._approve(monday, colleague_ids=[], max_lookahead_days=0)
+        return monday, appt
+
+    def test_only_colleagues_who_offer_the_service_are_offered(self):
+        unqualified = Doctor.objects.create(
+            name='Dr. Ada General', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6], shift_start=datetime.time(8, 0),
+            shift_end=datetime.time(16, 0), max_daily_appointments=10,
+        )
+        monday, appt = self._strand_one()
+
+        options = self._options_for(appt.appointment_code)
+
+        names = [option['name'] for option in options]
+        self.assertNotIn(unqualified.name, names)
+        self.assertIn('Dr. Chinwe Strand', names)
+        self.assertIn('Dr. Tunde Strand', names)
+
+    def test_a_free_qualified_colleague_is_available(self):
+        monday, appt = self._strand_one()
+
+        options = self._options_for(appt.appointment_code)
+        chinwe = next(o for o in options if o['name'] == 'Dr. Chinwe Strand')
+
+        self.assertTrue(chinwe['available'])
+        self.assertIsNone(chinwe['reason'])
+        self.assertIsNone(chinwe['text'])
+        self.assertTrue(chinwe['id'])
+
+    def test_a_busy_colleague_carries_djangos_reason(self):
+        monday, appt = self._strand_one()
+        self._book(self.colleague, monday, 11, 0, name='Already There',
+                   phone='+2348055567701')
+
+        options = self._options_for(appt.appointment_code)
+        chinwe = next(o for o in options if o['name'] == 'Dr. Chinwe Strand')
+
+        self.assertFalse(chinwe['available'])
+        self.assertEqual(chinwe['reason'], 'BUSY')
+        self.assertEqual(chinwe['text'], 'Busy at 11:00 AM.')
+
+    def test_a_colleague_at_the_daily_limit_is_named_as_such(self):
+        monday, appt = self._strand_one()
+        self.third.max_daily_appointments = 1
+        self.third.save()
+        self._book(self.third, monday, 14, 0, name='Filling The Day',
+                   phone='+2348055567702')
+
+        options = self._options_for(appt.appointment_code)
+        tunde = next(o for o in options if o['name'] == 'Dr. Tunde Strand')
+
+        self.assertFalse(tunde['available'])
+        self.assertEqual(tunde['reason'], 'AT_CAP')
+        self.assertEqual(tunde['text'], 'Already at the daily limit (1 of 1).')
+
+    def test_a_colleague_on_leave_that_day_is_named_as_such(self):
+        monday, appt = self._strand_one()
+        DoctorLeave.objects.create(
+            doctor=self.third, start_date=monday, end_date=monday,
+            leave_type='sick', reason='Sick leave',
+        )
+
+        options = self._options_for(appt.appointment_code)
+        tunde = next(o for o in options if o['name'] == 'Dr. Tunde Strand')
+
+        self.assertFalse(tunde['available'])
+        self.assertEqual(tunde['reason'], 'ON_LEAVE')
+        self.assertEqual(tunde['text'], 'On leave that day.')
+
+    def test_a_colleague_off_duty_that_weekday_is_named_as_such(self):
+        monday, appt = self._strand_one()
+        self.third.working_days = [2, 3, 4, 5, 6]
+        self.third.save()
+
+        options = self._options_for(appt.appointment_code)
+        tunde = next(o for o in options if o['name'] == 'Dr. Tunde Strand')
+
+        self.assertFalse(tunde['available'])
+        self.assertEqual(tunde['reason'], 'OFF_DUTY')
+        self.assertEqual(tunde['text'], 'Not on duty that day.')
+
+    def test_a_colleague_outside_their_shift_is_named_as_such(self):
+        monday, appt = self._strand_one(hour=11)
+        self.third.shift_start = datetime.time(8, 0)
+        self.third.shift_end = datetime.time(10, 30)
+        self.third.save()
+
+        options = self._options_for(appt.appointment_code)
+        tunde = next(o for o in options if o['name'] == 'Dr. Tunde Strand')
+
+        self.assertFalse(tunde['available'])
+        self.assertEqual(tunde['reason'], 'OUTSIDE_SHIFT')
+        self.assertEqual(tunde['text'], 'Outside their shift (8:00 AM to 10:30 AM).')
+
+    def test_available_colleagues_come_first(self):
+        monday, appt = self._strand_one()
+        self._book(self.colleague, monday, 11, 0, name='Already There',
+                   phone='+2348055567703')
+
+        options = self._options_for(appt.appointment_code)
+
+        availability = [option['available'] for option in options]
+        self.assertEqual(availability, sorted(availability, reverse=True))
+
+    def test_a_patient_nobody_qualifies_for_has_an_empty_list(self):
+        monday, appt = self._strand_one()
+        DoctorService.objects.filter(service=self.service).exclude(
+            doctor=self.doctor
+        ).delete()
+
+        options = self._options_for(appt.appointment_code)
+
+        self.assertEqual(options, [])

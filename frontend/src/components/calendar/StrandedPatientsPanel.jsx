@@ -1,14 +1,19 @@
-import React from 'react';
-import { AlertTriangle, X, Phone, Clock3 } from 'lucide-react';
+import React, { useState } from 'react';
+import { AlertTriangle, X, Phone, Clock3, ArrowRightLeft } from 'lucide-react';
 
 // Step 3 — the stranded queue, as Django reports it. Pure presentation: the
-// store owns loading, undo and refreshing; this panel only says what is true.
+// store owns loading, undo, moving and refreshing; this panel only says what
+// is true and hands the chosen colleague back.
 export const StrandedPatientsPanel = ({
   isOpen,
   stranded,
   onClose,
   onRefresh,
+  onMove,
+  movingId = null,
 }) => {
+  const [choice, setChoice] = useState({});
+
   if (!isOpen) return null;
 
   const {
@@ -127,6 +132,19 @@ export const StrandedPatientsPanel = ({
                         </span>
                       ) : null}
                     </div>
+
+                    <StrandedPatientMove
+                      patient={patient}
+                      choice={choice[patient.appointment_id] || ''}
+                      onChoose={(doctorId) =>
+                        setChoice((current) => ({
+                          ...current,
+                          [patient.appointment_id]: doctorId,
+                        }))
+                      }
+                      onMove={onMove}
+                      isMoving={movingId === patient.appointment_id}
+                    />
                   </div>
                 ))}
               </section>
@@ -152,6 +170,69 @@ export const StrandedPatientsPanel = ({
           </button>
         </div>
       </div>
+    </div>
+  );
+};
+
+// One patient, one move. Django already said who can take them at this exact
+// time and why the others cannot, so this is a list, not a guess: free
+// colleagues are selectable, the rest are shown with Django's reason.
+const StrandedPatientMove = ({ patient, choice, onChoose, onMove, isMoving }) => {
+  const colleagues = Array.isArray(patient.colleagues) ? patient.colleagues : [];
+  const available = colleagues.filter((colleague) => colleague.available);
+  const selected = colleagues.find((colleague) => colleague.id === choice) || null;
+
+  if (colleagues.length === 0) {
+    return (
+      <div className="stranded-patient-move">
+        <span className="stranded-move-hint">
+          No doctor in the clinic offers {patient.service_name}. This patient
+          needs a new time, not a move between colleagues.
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="stranded-patient-move">
+      <select
+        className="stranded-move-select"
+        value={choice}
+        onChange={(event) => onChoose(event.target.value)}
+        disabled={isMoving || available.length === 0}
+        aria-label={`Colleague to take ${patient.patient_name}`}
+      >
+        <option value="">
+          {available.length === 0 ? 'Nobody is free at this time' : 'Move to…'}
+        </option>
+        {colleagues.map((colleague) => (
+          <option
+            key={colleague.id}
+            value={colleague.id}
+            disabled={!colleague.available}
+          >
+            {colleague.available
+              ? colleague.name
+              : `${colleague.name} — ${colleague.text}`}
+          </option>
+        ))}
+      </select>
+
+      <button
+        type="button"
+        className="btn-base btn-secondary stranded-move-btn"
+        disabled={!selected || isMoving}
+        onClick={() => onMove(patient, selected.id, selected.name)}
+      >
+        <ArrowRightLeft size={12} />
+        <span>{isMoving ? 'Moving…' : 'Move patient'}</span>
+      </button>
+
+      {available.length === 0 ? (
+        <span className="stranded-move-hint">
+          Nobody is free at {patient.time_label}. Open the list to see why.
+        </span>
+      ) : null}
     </div>
   );
 };

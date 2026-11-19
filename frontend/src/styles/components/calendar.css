@@ -2570,3 +2570,66 @@
 
 
 
+
+/* Gap 2 - a real per-patient move in the stranded panel. Django says who is
+   free at that exact time; this is a list, not a guess. */
+.stranded-patient-row {
+  flex-wrap: wrap;
+}
+
+.stranded-patient-move {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 0 100%;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.stranded-move-select {
+  flex: 1 1 220px;
+  min-width: 0;
+  max-width: 340px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.stranded-move-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.stranded-move-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  font-size: 11px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.stranded-move-hint {
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .stranded-patient-move {
+    flex-wrap: wrap;
+  }
+
+  .stranded-move-select {
+    flex: 1 1 100%;
+    max-width: 100%;
+  }
+}

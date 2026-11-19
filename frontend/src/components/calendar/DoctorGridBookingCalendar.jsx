@@ -240,6 +240,8 @@ export const DoctorGridBookingCalendar = ({
   const lastDistribution = useCalendarStore((state) => state.lastDistribution);
   const undoingDistribution = useCalendarStore((state) => state.undoingDistribution);
   const undoLastDistribution = useCalendarStore((state) => state.undoLastDistribution);
+const moveStrandedPatient = useCalendarStore((state) => state.moveStrandedPatient);
+const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
 
   // Item C — red double-booking alert. Polls the backend every 10s; the
   // overlay + red chip stay until the clash is fixed.
@@ -1432,6 +1434,8 @@ export const DoctorGridBookingCalendar = ({
         stranded={stranded}
         onClose={closeStrandedPanel}
         onRefresh={loadStranded}
+        onMove={moveStrandedPatient}
+        movingId={movingStrandedId}
       />
 
       {/* Item C — full-screen red double-booking alert. Names the doctor, both

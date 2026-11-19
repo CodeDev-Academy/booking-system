@@ -1165,6 +1165,94 @@ class DisruptionService:
         }
 
     @classmethod
+    def _colleague_options(cls, appointment):
+        """
+        Who can take this stranded patient at this exact time, and why not.
+
+        Gap 2: the panel used to say "Move each one to a colleague" without
+        offering a move. The candidates here pass the same gate the move
+        itself will pass in _apply_move (qualified, active, working that day,
+        inside their shift, under the daily limit, free at that time), so the
+        button cannot offer a colleague the save would then refuse. Django
+        writes the reason, the panel only prints it.
+        """
+        local_start = timezone.localtime(appointment.start_datetime)
+        local_end = timezone.localtime(appointment.end_datetime)
+        day = local_start.date()
+        appointment_time = local_start.strftime('%I:%M %p').lstrip('0')
+
+        qualified_ids = DoctorService.objects.filter(
+            service_id=appointment.service_id
+        ).values_list('doctor_id', flat=True)
+
+        day_start = timezone.make_aware(
+            datetime.datetime.combine(day, datetime.time.min)
+        )
+        day_end = timezone.make_aware(
+            datetime.datetime.combine(day, datetime.time.max)
+        )
+
+        options = []
+        colleagues = (
+            Doctor.objects.filter(is_active=True, id__in=qualified_ids)
+            .exclude(id=appointment.doctor_id)
+            .order_by('name')
+        )
+        for colleague in colleagues:
+            reason = None
+            text = None
+
+            if colleague.is_on_leave_on(day):
+                reason, text = 'ON_LEAVE', 'On leave that day.'
+            elif day.isoweekday() not in colleague.working_days:
+                reason, text = 'OFF_DUTY', 'Not on duty that day.'
+            elif (
+                local_start.time() < colleague.shift_start
+                or local_end.time() > colleague.shift_end
+            ):
+                reason = 'OUTSIDE_SHIFT'
+                text = (
+                    'Outside their shift '
+                    f"({colleague.shift_start.strftime('%I:%M %p').lstrip('0')} "
+                    f"to {colleague.shift_end.strftime('%I:%M %p').lstrip('0')})."
+                )
+            else:
+                daily_count = Appointment.objects.filter(
+                    doctor=colleague,
+                    start_datetime__gte=day_start,
+                    start_datetime__lte=day_end,
+                    status__in=['confirmed', 'held', 'arrived', 'in_consultation'],
+                ).count()
+                if daily_count >= colleague.max_daily_appointments:
+                    reason = 'AT_CAP'
+                    text = (
+                        'Already at the daily limit '
+                        f'({daily_count} of {colleague.max_daily_appointments}).'
+                    )
+                elif HoldService.find_slot_conflict(
+                    colleague,
+                    appointment.start_datetime,
+                    appointment.end_datetime,
+                    service=appointment.service,
+                    exclude_appointment_id=appointment.id,
+                ) is not None:
+                    reason, text = 'BUSY', f'Busy at {appointment_time}.'
+
+            options.append({
+                'id': str(colleague.id),
+                'name': colleague.name,
+                'specialty': colleague.specialty,
+                'available': reason is None,
+                'reason': reason,
+                'text': text,
+            })
+
+        # Free colleagues first, then everyone else by name, so the panel's
+        # default choice is someone the move will actually accept.
+        options.sort(key=lambda option: (not option['available'], option['name']))
+        return options
+
+    @classmethod
     def list_stranded(cls, today=None):
         """
         Every patient still booked under a doctor who is on leave.
@@ -1275,6 +1363,7 @@ class DisruptionService:
                     'unplaced_reason': reason,
                     'unplaced_text': reason_text,
                     'batch_id': batch_id,
+                    'colleagues': cls._colleague_options(appointment),
                 })
                 total += 1
 
