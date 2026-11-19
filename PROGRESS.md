@@ -2225,13 +2225,106 @@ restored; DB clean.
 
 ---
 
-## Next up - leave flow step 3, then Phase 5 (partner handover)
+## 2026-11-19 - Leave flow step 3: stranded queue, undo, notify-once (built, live-proven)
 
-**Leave flow: steps 1-2 done (2026-11-19).** Step 3 is the safety net: a
-stranded queue for patients left without a slot, an undo for the last
-distribution, and notify-once so nobody gets two conflicting messages.
-Multi-doctor distribution and per-day caps are already in place; Step 3
-must not re-plan anyone who was already placed.
+### What was broken
+Two gaps left a patient able to fall through the cracks. First, if the plan
+could not place someone — no colleague chosen, nobody qualified, everyone at
+their cap, no free slot — the receptionist got a number and a reason in the
+modal, and then nothing. Close the modal and that patient was still booked
+under a doctor who is on leave, with no list anywhere that said so. Second,
+approving a plan was one-way: a wrong window or a wrong colleague choice
+moved real patients, queued real messages, and the only way back was to move
+each patient by hand — while the notices already promised a time that no
+longer held. And every re-run of the resolver could queue a second, different
+message for the same patient.
+
+### What shipped
+- Stranded queue (T-731): `DisruptionService.list_stranded()` lists every
+  `confirmed`/`held` appointment still booked under a doctor who is on leave,
+  grouped by day then doctor. Each patient carries the reason from the newest
+  live plan (`unplaced_reason` + Django's `unplaced_text`), or `null` when no
+  plan has ever covered them. Legacy "off duty, no end date" doctors are
+  included (`leave_id: null`), finished leaves are skipped, held patients keep
+  `hold_expires_at` so the countdown is honest, and a patient who booked AFTER
+  the leave was declared still appears. Served staff-only as
+  `GET /api/v1/disruptions/stranded/`.
+- Undo of the last distribution (T-732): a new `DisruptionBatch` row
+  (migration `0007`) records the leave, the distribution, every exact move
+  (from/to doctor and time, notice refs) and everyone left unplaced.
+  `POST /api/v1/disruptions/batches/<id>/undo/` puts every patient back,
+  removes the leave **only if that plan created it**, marks its undelivered
+  notices `expired`, and writes a `DISRUPTION_BATCH_UNDONE` audit row. Undo is
+  all-or-nothing and refuses with `409` plus a named code and a plain
+  sentence: `NOTICES_DELIVERED`, `LEAVE_NOT_FROM_PLAN`, `SUPERSEDED` (names
+  the days of the later plan), `MOVES_CHANGED`, `ALREADY_UNDONE`,
+  `SLOT_TAKEN`. `can_undo` / `undo_reason` on the approve response come from
+  the same `_undo_blocker` the endpoint uses, so the button and the guard
+  cannot disagree. An approve that affects nobody writes no batch, so a
+  harmless repeat approve cannot supersede the real plan.
+- Notify once (T-733): notice claim refs are versioned by the placement —
+  `disrupt-<code>-<sha1(doctor|start|end)[:10]>-<channel>`. The same placement
+  is never announced twice. A queued, undelivered notice for an older
+  placement is marked `expired` before the new one is written, so a stale time
+  is never delivered; a notice that already reached the patient is left alone
+  and gets exactly one `Correction: …` message per channel.
+- UI (T-733b): an amber strip on the calendar ("N patients still booked under
+  a doctor on leave" → **Review patients**) and a plan strip ("Last plan:
+  Dr. … · N moved" → **Undo this plan**, or Django's refusal sentence in
+  place of the button). The panel groups by day and doctor with time, service,
+  code, tap-to-call number, hold countdown and Django's `unplaced_text`
+  verbatim. Demo mode derives the list from the doctors marked on leave and
+  never pretends a simulated plan can be undone. Presentational components
+  only; state lives in `useCalendarStore` (`loadStranded`,
+  `undoLastDistribution`, `stranded`, `lastDistribution`).
+
+### Tests
+Red first: 24 new cases across `StrandedPatientsTests`,
+`DisruptionUndoTests`, `NotifyOnceTests`, `DisruptionStrandedEndpointTests`
+and `DisruptionUndoEndpointTests`. First run: 21 errors (model and methods
+still missing) plus the endpoint 401 guards; after the implementation, the
+last 2 failed on fixture wording (`03:00 PM` vs `3:00 PM`, and a stale
+in-memory appointment re-used for a notify-once check) — fixed, then 24/24.
+Disruption + leave set **74/74 OK** in 32.9 s.
+
+### Live proof
+Three probe patients on Fri 20 Nov (AP-0007 10:00, AP-0008 11:00, AP-0009
+12:00, Dr. Bello), approved through the real modal with only Dr. Babawo
+chosen at cap 1: preview said "3 affected / 2 can be placed / 1 need you",
+"Dr. Babawo · 2", and the button read "place 2 patients, leave 1 for you".
+After approve the calendar showed both strips; the panel listed AP-0009 at
+12:00 PM with Django's exact words "Dr. Babawo hit the cap you set for Fri,
+20 Nov (1 of 1). No other chosen colleague could take this patient."
+**Undo this plan** returned 200 in one call and the DB showed AP-0007/0008
+back with Dr. Bello at their original times, `DoctorLeave` rows 0,
+`is_on_leave` False, the batch marked undone, all 4 queued notices `expired`,
+audit `restored_count: 2, leave_removed: True, notices_expired: 4`, stranded
+`count: 0`, and both strips gone. Probes, their `InteractionLog` rows and the
+batch deleted; DB back to the 6 baseline appointments, no leave rows, no
+doctor on leave.
+
+### Files
+`backend/appointments/models.py`,
+`backend/appointments/migrations/0007_disruptionbatch.py`,
+`backend/appointments/services/disruption_service.py`,
+`backend/appointments/views_appointment.py`,
+`backend/appointments/urls.py`,
+`backend/appointments/tests.py`,
+`frontend/src/services/apiService.js`,
+`frontend/src/stores/useCalendarStore.js`,
+`frontend/src/hooks/useCalendar.js`,
+`frontend/src/components/calendar/StrandedPatientsPanel.jsx`,
+`frontend/src/components/calendar/DoctorGridBookingCalendar.jsx`,
+`frontend/src/styles/components/calendar.css`.
+
+---
+
+## Next up - Phase 5 (partner handover)
+
+**Leave flow: steps 1-3 done (2026-11-19).** The leave story is complete:
+dated leave, a rolled-back preview, distribution with caps, a stranded queue,
+an honest undo and notify-once. Next work is partner handover — deploy
+staging, collect the partner credentials, then the joint acceptance run.
 
 ## Phase 5 (partner handover)
 

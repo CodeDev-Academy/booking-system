@@ -263,6 +263,43 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
   qualified Dr. Babawo with cap 0 rendered "Dr. Babawo hit the cap you set for Wed, 18 Nov (0 of 0).
   No other chosen colleague could take this patient." Probes deleted, no leave rows, appointments
   restored.
+- [x] `T-731`: **Stranded queue (F.1)**: nobody disappears. `DisruptionService.list_stranded()` returns
+  every `confirmed`/`held` appointment still booked under a doctor who is on leave, grouped by day
+  then doctor, each patient carrying the reason the newest live plan gave when it could not place
+  them (`unplaced_reason` + Django's `unplaced_text`) or `null` when no plan ever covered them. It
+  reads dated `DoctorLeave` rows (legacy "off duty, no end date" doctors included with
+  `leave_id: null`), skips finished leaves and past appointments, keeps a held patient's
+  `hold_expires_at` so the countdown is honest, and lists patients who booked AFTER the leave was
+  declared with no batch at all. Served staff-only as `GET /api/v1/disruptions/stranded/`
+  (`{count, days, patients}`). 6 tests (`StrandedPatientsTests`) + 2 endpoint tests
+  (`DisruptionStrandedEndpointTests`).
+- [x] `T-732`: **Undo the last distribution (F.2)**: every approve now writes a `DisruptionBatch`
+  (migration `0007`) holding the leave it created, the distribution it used, the exact moves it made
+  (from/to doctor and time, notice refs) and everyone it could not place. `POST
+  /api/v1/disruptions/batches/<id>/undo/` puts every patient back where they were, removes the leave
+  **only if this plan created it**, marks its undelivered notices `expired`, and writes a
+  `DISRUPTION_BATCH_UNDONE` audit row. Undo is all-or-nothing and refuses with `409` + a named code
+  and plain sentence: `NOTICES_DELIVERED`, `LEAVE_NOT_FROM_PLAN`, `SUPERSEDED` (a later plan covers
+  the same days, and it says which days), `MOVES_CHANGED` (a patient was moved again), `ALREADY_UNDONE`,
+  `SLOT_TAKEN` (the old slot was taken — nothing moves, the leave stays). `can_undo` / `undo_reason`
+  on the approve response come from the same `_undo_blocker` the endpoint uses, so the button and the
+  guard can never disagree. An approve that affects nobody creates no batch, so a harmless repeat
+  approve cannot supersede the real plan. 9 tests (`DisruptionUndoTests`) + 4 endpoint tests
+  (`DisruptionUndoEndpointTests`).
+- [x] `T-733`: **Notify once (F.3)**: notice claim refs are versioned by the placement itself —
+  `disrupt-<code>-<sha1(doctor|start|end)[:10]>-<channel>` — so the same placement is never announced
+  twice, whatever re-pushes it. A queued (undelivered) notice for an older placement is marked
+  `expired` before the new one is written, so a stale time can never be delivered; a notice that
+  already reached the patient (`sent`/`delivered`/`answered`) is left untouched and the new placement
+  gets exactly one `Correction: …` message per channel, and a repeated identical move queues nothing.
+  3 tests (`NotifyOnceTests`).
+- [x] `T-733b`: **Stranded + undo UI (F.4)**: the calendar shows a calm amber strip ("N patients still
+  booked under a doctor on leave" → **Review patients**) and a plan strip ("Last plan: Dr. … · N
+  moved" → **Undo this plan**, or Django's refusal sentence in place of the button). The panel groups
+  patients by day and doctor, with time, service, code, a tap-to-call number, the hold countdown and
+  Django's `unplaced_text` verbatim. Demo mode derives the same list from the doctors marked on leave
+  and never pretends a simulated plan can be undone. Presentational components only; all state lives
+  in `useCalendarStore` (`loadStranded`, `undoLastDistribution`, `stranded`, `lastDistribution`).
 
 ---
 
@@ -305,6 +342,7 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 | 2026-11-18 | Brain Agent | `Item C / T-723-T-725` | **PASSED** | Double-booking detector + staff endpoint + full-screen red alert with 10s re-check. Detector 12 tests and endpoint 3 tests written red-first (NotImplementedError / 404), then green; full Django suite green. Live proof: two deliberately overlapping confirmed appointments on Dr. Bello -> overlay named AP-0007 / AP-0008 and the exact 12:15-12:30 PM overlap -> "View in calendar" selected the clash day + doctor, "Silence alert" dismissed the overlay while the red chip stayed, chip click reopened it; deleting one probe cleared the chip after 3.6 s. Probe rows deleted, doctors restored, DB clean. |
 | 2026-11-18 | Brain Agent | `Leave flow / T-726-T-728` | **PASSED** | Dated leave period, rolled-back preview and the planner UI. Preview 7 tests and dated-leave 9 tests written first (`NotImplementedError` / failing date behaviour), then green; full Django suite 300/300 OK in 297 s. Live proof with 3 probe appointments (AP-0007/0008 Mon 30 Nov, AP-0009 Tue 1 Dec): preview reported 2 days / 3 patients -> Dr. Babawo at the same times and labelled "Preview only — nothing sent"; DB check after preview showed no leave rows, flag false, appointments unmoved. Approve created one `DoctorLeave` 2026-11-30 -> 2026-12-01 and moved all three, queueing 6 notices. Calendar overlay verified in the browser: "Manage Leave" + "On Leave · Sudden Medical Emergency" on 30 Nov and 1 Dec, "Sick / Leave" + "On Duty" on 18 Nov and 2 Dec. Probe appointments, their `InteractionLog` rows and the temporary leave row deleted; all doctors `is_on_leave=False`, no leave rows left. |
 | 2026-11-19 | Brain Agent | `Leave flow / T-729-T-730` | **PASSED** | Distribution control: hard allow-list (`colleague_ids`) and per-day EXTRA-patient caps (`colleague_caps`) enforced in the same resolver pass preview and approve use, named unplaced reasons (`NO_COLLEAGUE_CHOSEN`, `NONE_QUALIFIED`, `ALL_AT_CAP`, `NO_FREE_SLOT`), one shared payload parser and `400 INVALID_DISTRIBUTION` on bad input, plus the three-mode chooser UI. 18 new tests written red-first (4 failing on the first run: caps ignored because doctor objects were passed where ids were expected), then green; disruption classes 32/32, full suite 318/318 OK. Live proof in the browser: 3 probe patients on Fri 20 Nov with Dr. Okafor cap 1 / Dr. Babawo cap 2 -> "3 affected / 3 can be placed / 0 need you", colleague load "Dr. Babawo · 3", split 2 on Fri + 1 on Mon 23 by the per-day cap; the preview request carried `colleague_ids` + `colleague_caps` and the approve request carried the same two values (approve was stubbed in the page so the real DB stayed untouched). Unqualified-only (Okafor, cap 0) rendered "No chosen colleague is qualified for Dental Consultation & Examination (Dr. Chinwe Okafor)."; qualified-only at cap 0 rendered "Dr. Babawo hit the cap you set for Wed, 18 Nov (0 of 0). No other chosen colleague could take this patient." Probes and their rows deleted, no leave rows, appointments restored, DB clean. |
+| 2026-11-19 | Brain Agent | `Leave flow / T-731-T-733` | **PASSED** | Stranded queue, undo of the last distribution and notify-once. 24 tests written red-first (`StrandedPatientsTests`, `DisruptionUndoTests`, `NotifyOnceTests`, `DisruptionStrandedEndpointTests`, `DisruptionUndoEndpointTests`): 21 held with the model/method still missing, then the last 2 failed on fixture wording (`03:00 PM` vs `3:00 PM`, and a stale in-memory appointment), then green; disruption + leave set **74/74 OK** in 32.9 s. Live proof on Fri 20 Nov with 3 probe patients (AP-0007 10:00, AP-0008 11:00, AP-0009 12:00, Dr. Bello): approved through the UI with only Dr. Babawo chosen, cap 1 → "3 affected / 2 can be placed / 1 need you", "Dr. Babawo · 2", approve label "place 2 patients, leave 1 for you". Strips appeared after approve ("1 patient still booked under a doctor on leave", "Last plan: Dr. Bello Ibrahim · 2 moved"); the panel showed AP-0009 at 12:00 PM with Django's exact text "Dr. Babawo hit the cap you set for Fri, 20 Nov (1 of 1). No other chosen colleague could take this patient." **Undo this plan** → 200 in one call: AP-0007/0008 back with Dr. Bello at their original times, `DoctorLeave` rows 0, `is_on_leave` False, batch `undone_at` set, all 4 queued notices `expired`, audit `restored_count: 2, leave_removed: True, notices_expired: 4`, stranded `count: 0` and both strips gone. Probes, their `InteractionLog` rows and the batch deleted; DB back to the 6 baseline appointments, no leave rows, no doctor on leave. |
 
 ---
 
