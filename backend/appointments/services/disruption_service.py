@@ -354,6 +354,46 @@ class DisruptionService:
             f"{signature}-{channel}"
         )
 
+    CLAIM_CHECK_MAX_REFS = 500
+
+    @classmethod
+    def claim_liveness(cls, claim_refs):
+        """
+        Per claim ref: is this notice still safe to deliver? (Gap 3)
+
+        Workflow 08 queues a notice, then delivers it. In between, an undo can
+        mark that notice `expired` because the plan no longer holds. `queued`
+        therefore means "not sent yet", not "never will be" -- so the workflow
+        must ask before it sends, and only a claim that is still `queued` may
+        go out.
+
+        An unknown ref answers `missing` and is NOT live. The workflow treats
+        anything other than a definite yes as a reason to hold, so a Django
+        bug or a lost row can never turn into a wrong message to a patient.
+        """
+        wanted = []
+        seen = set()
+        for ref in claim_refs:
+            text = str(ref or '').strip()
+            if text and text not in seen:
+                seen.add(text)
+                wanted.append(text)
+
+        rows = dict(
+            InteractionLog.objects.filter(
+                direction='outbound', external_ref__in=wanted,
+            ).values_list('external_ref', 'status')
+        )
+
+        claims = {}
+        for ref in wanted:
+            status = rows.get(ref)
+            claims[ref] = {
+                'live': status == 'queued',
+                'status': status or 'missing',
+            }
+        return claims
+
     @classmethod
     def _build_distribution(cls, doctor, colleague_ids=None, colleague_caps=None):
         """

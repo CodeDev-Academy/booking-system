@@ -108,7 +108,7 @@
         -120
       ],
       "parameters": {
-        "jsCode": "// Workflow 08 · Parse Disruption Items — the boundary between Django's words and\n// the provider adapter. Django's auto-resolver queues one item per channel\n// (claim_ref disrupt-<code>-<channel>) carrying its OWN words; this node flattens\n// the webhook body into one adapter input per item and sets the want_* flags from\n// the item's channel. Django's words pass through VERBATIM — nothing here\n// rewrites, truncates or re-templates patient copy.\n//\n// Fail-closed hygiene: an item missing a required field (message, claim_ref, a\n// known channel, a destination phone) is DROPPED here, never half-delivered. A\n// dropped item stays 'queued' in Django's log — visible to reception, retryable\n// by re-push — so nothing is silently lost.\nconst req = $input.first().json || {};\nconst body = req.body || req;\nconst items = Array.isArray(body.items) ? body.items : [];\n\nconst KNOWN = ['sms', 'whatsapp'];\nconst out = [];\nfor (const item of items) {\n  if (!item || typeof item !== 'object') continue;\n  const channel = item.channel;\n  if (!KNOWN.includes(channel)) continue;                          // unknown channel: nothing safe to send\n  if (!item.claim_ref || !String(item.claim_ref).trim()) continue; // no claim: cannot stay single-shot\n  if (!item.message || !String(item.message).trim()) continue;     // no words: never invent any\n  if (!item.patient_phone || !String(item.patient_phone).trim()) continue; // no destination\n  out.push({ json: {\n    request_id: item.request_id || item.id || '', // the appointment code — what log nodes + callbacks key on\n    patient_name: item.patient_name || '',\n    patient_phone: String(item.patient_phone),\n    service_name: item.service_name || '',\n    doctor_name: item.doctor_name || body.doctor_name || '',\n    clinic_name: body.clinic_name || '',\n    reason: body.reason || '',\n    start_datetime: item.start_datetime || '',\n    channel: channel,\n    claim_ref: String(item.claim_ref),\n    message: String(item.message),\n    chat_id: null,\n    want_sms: channel === 'sms',\n    want_whatsapp: channel === 'whatsapp',\n    want_voice: false,\n  } });\n}\nreturn out;\n"
+        "jsCode": "// Workflow 08 · Parse Disruption Items — the boundary between Django's words and\n// the provider adapter. Django's auto-resolver queues one item per channel\n// (claim_ref disrupt-<code>-<placement signature>-<channel>) carrying its OWN\n// words; this node flattens\n// the webhook body into one adapter input per item and sets the want_* flags from\n// the item's channel. Django's words pass through VERBATIM — nothing here\n// rewrites, truncates or re-templates patient copy.\n//\n// Fail-closed hygiene: an item missing a required field (message, claim_ref, a\n// known channel, a destination phone) is DROPPED here, never half-delivered. A\n// dropped item stays 'queued' in Django's log — visible to reception, retryable\n// by re-push — so nothing is silently lost.\nconst req = $input.first().json || {};\nconst body = req.body || req;\nconst items = Array.isArray(body.items) ? body.items : [];\n\nconst KNOWN = ['sms', 'whatsapp'];\nconst out = [];\nfor (const item of items) {\n  if (!item || typeof item !== 'object') continue;\n  const channel = item.channel;\n  if (!KNOWN.includes(channel)) continue;                          // unknown channel: nothing safe to send\n  if (!item.claim_ref || !String(item.claim_ref).trim()) continue; // no claim: cannot stay single-shot\n  if (!item.message || !String(item.message).trim()) continue;     // no words: never invent any\n  if (!item.patient_phone || !String(item.patient_phone).trim()) continue; // no destination\n  out.push({ json: {\n    request_id: item.request_id || item.id || '', // the appointment code — what log nodes + callbacks key on\n    patient_name: item.patient_name || '',\n    patient_phone: String(item.patient_phone),\n    service_name: item.service_name || '',\n    doctor_name: item.doctor_name || body.doctor_name || '',\n    clinic_name: body.clinic_name || '',\n    reason: body.reason || '',\n    start_datetime: item.start_datetime || '',\n    channel: channel,\n    claim_ref: String(item.claim_ref),\n    message: String(item.message),\n    chat_id: null,\n    want_sms: channel === 'sms',\n    want_whatsapp: channel === 'whatsapp',\n    want_voice: false,\n  } });\n}\nreturn out;\n"
       }
     },
     {
@@ -117,7 +117,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1100,
+        1340,
         -120
       ],
       "parameters": {
@@ -130,7 +130,7 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
       "position": [
-        1320,
+        1560,
         -120
       ],
       "parameters": {
@@ -220,7 +220,7 @@
       "typeVersion": 4.2,
       "onError": "continueErrorOutput",
       "position": [
-        1540,
+        1780,
         -200
       ],
       "parameters": {
@@ -254,7 +254,7 @@
       "typeVersion": 4.2,
       "onError": "continueErrorOutput",
       "position": [
-        1540,
+        1780,
         40
       ],
       "parameters": {
@@ -287,7 +287,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1780,
+        2020,
         -200
       ],
       "parameters": {
@@ -300,7 +300,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1780,
+        2020,
         40
       ],
       "parameters": {
@@ -313,11 +313,71 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1540,
+        1780,
         280
       ],
       "parameters": {
         "jsCode": "// Workflow D · Phase 2 — skip visibility.\n// The switch's skip output used to end in nowhere: a channel the receptionist\n// asked for that could not fire vanished into the execution log. This node\n// writes a `queued` InteractionLog row (\"held back, not attempted\") for every\n// actionable skip, so Django — the source of truth — can show reception what\n// was NOT sent and why.\n//\n// Row-worthy reasons (each one is actionable):\n//   outside_call_window, provider_not_configured,\n//   whatsapp_template_not_configured, missing_phone, no_slots,\n//   voice_payload_missing.\n// Not row-worthy, by decision:\n//   duplicate_dispatch     — the original send row already exists.\n//   no_active_channel      — the only real cause is a Telegram patient, and\n//                            Django itself already logged the Telegram card.\n//   patient_already_engaged — the patient has a hold or booking; reception can\n//                            already see it, and the guard suppressed a nudge.\n//\n// This node is fed by the switch's skip output AND, since Phase 3 / 3.8, by the\n// false output of `IF Voice Still Needed`: a voice payload that cannot be rebuilt\n// after the 30s probe is the same kind of fact as any other held-back leg.\n//\n// The external_ref is deterministic (skip-<channel>-<request_code>), so a\n// repeated skip updates the same row instead of piling up. A later real send\n// uses a different ref — the history stays honest.\n//\n// Best-effort by design: a Django outage or a 400 must never fail the dispatch.\n// The skip already happened; the row is a record, not a gate.\nconst REASON_TEXT = {\n  outside_call_window: 'Outside calling hours (08:00-19:00) - the call was not placed.',\n  provider_not_configured: 'Provider is not configured yet - credentials are missing.',\n  whatsapp_template_not_configured: 'WhatsApp template not approved yet - nothing can be sent outside the 24-hour reply window without it.',\n  missing_phone: 'No phone number on file for this patient.',\n  no_slots: 'No free slot was found for this request - nothing was sent. Re-check availability before re-dispatching.',\n  voice_payload_missing: 'The call could not be built after the 30-second check, so no call was placed. This means the dispatch ran twice or the adapter step did not produce the voice item - re-dispatch the request and check the execution log.',\n};\nconst PROVIDER_FOR_CHANNEL = { whatsapp: 'meta_whatsapp', sms: 'voicebip', voice: 'voicebip' };\n\nconst out = [];\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  const channel = j.provider_channel;\n  const reason = j.provider_request && j.provider_request.skip_reason;\n  const requestCode = j.request_id || '';\n\n  const rowWorthy = Boolean(REASON_TEXT[reason] && channel && requestCode);\n  let logged = { ok: false, skipped: 'not_row_worthy' };\n\n  if (rowWorthy) {\n    const payload = {\n      provider: PROVIDER_FOR_CHANNEL[channel] || 'voicebip',\n      channel: channel,\n      direction: 'outbound',\n      status: 'queued',\n      patient_name: j.patient_name || '',\n      // Blank by design for missing_phone; Django accepts it for queued rows\n      // linked to a request (Phase 2 relaxation).\n      patient_phone: j.patient_phone || '',\n      request_code: requestCode,\n      external_ref: 'skip-' + channel + '-' + requestCode,\n      summary: 'Held back: ' + REASON_TEXT[reason],\n      error_detail: reason,\n    };\n    try {\n      const res = await this.helpers.httpRequest({\n        method: 'POST',\n        url: $env.DJANGO_API_BASE_URL + '/interactions/',\n        headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': $env.DJANGO_WEBHOOK_SECRET || '' },\n        body: payload,\n        json: true,\n      });\n      logged = { ok: true, id: res.id, status: res.status };\n    } catch (e) {\n      logged = { ok: false, error: String(e.message || e).slice(0, 300) };\n    }\n    logged.payload = payload;\n  }\n\n  out.push({ json: { ...j, skip_log: logged } });\n}\nreturn out;\n"
+      }
+    },
+    {
+      "id": "86f2cb1b-147f-4911-ab60-13a53dbee066",
+      "name": "Check Claim Liveness",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        990,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "// Workflow 08 - Stage C.2 - ask Django before speaking.\n//\n// Django queues a notice (status 'queued') and then this workflow delivers it.\n// Between those two moments the plan can be undone: Django marks the notice\n// 'expired' because the times it names no longer hold. \"queued\" therefore\n// means \"not sent yet\", NOT \"never will be\". A patient must never receive\n// words that were withdrawn, so every item is checked against Django\n// immediately before any send node runs.\n//\n// Fail closed: only a definite `live: true` lets an item through. An\n// unreachable Django, a 401, a body without `claims`, a claim Django does not\n// know, or a missing configuration all hold the item. A held item stays in\n// Django's log exactly as it was (still 'queued', or already 'expired'), so\n// reception sees it and can re-push once the plan settles. Nothing is\n// rewritten here and no patient copy is produced.\n//\n// Output feeds \"IF Claim Live\": true -> Provider Config & Adapter (send path),\n// false -> Log Halted Claims (a dead end, by design).\nconst items = $input.all().map((i) => i.json).filter((j) => j && j.claim_ref);\n\nif (items.length === 0) return [];\n\nconst base = String($env.DJANGO_API_BASE_URL || '').replace(/\\/+$/, '');\nconst secret = String($env.DJANGO_WEBHOOK_SECRET || '');\n\nconst refs = [];\nfor (const item of items) {\n  const ref = String(item.claim_ref);\n  if (!refs.includes(ref)) refs.push(ref);\n}\n\nlet claims = null;\nif (base && secret) {\n  try {\n    const answer = await this.helpers.httpRequest({\n      method: 'POST',\n      url: base + '/webhooks/disruption-claims/check/',\n      headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': secret },\n      body: { claim_refs: refs },\n      json: true,\n    });\n    if (answer && answer.claims && typeof answer.claims === 'object') {\n      claims = answer.claims;\n    }\n  } catch (e) {\n    claims = null; // Django did not answer a question we cannot guess\n  }\n}\n\nconst out = [];\nfor (const item of items) {\n  const claim = claims ? claims[String(item.claim_ref)] : null;\n\n  if (claim && claim.live === true) {\n    out.push({ json: Object.assign({}, item, {\n      claim_live: true,\n      claim_status: claim.status ? String(claim.status) : 'queued',\n      held_reason: null,\n    }) });\n    continue;\n  }\n\n  const status = claim && claim.status ? String(claim.status) : 'unknown';\n  let reason = 'claim_unknown';\n  if (!claims) reason = 'claim_check_unavailable';\n  else if (status === 'expired') reason = 'claim_expired';\n  else if (status === 'sent' || status === 'delivered' || status === 'answered') {\n    reason = 'claim_already_sent';\n  }\n\n  console.warn('[disruption] holding ' + item.claim_ref + ': ' + reason\n    + ' (claim status ' + status + ')');\n  out.push({ json: Object.assign({}, item, {\n    claim_live: false,\n    claim_status: status,\n    held_reason: reason,\n  }) });\n}\nreturn out;\n"
+      }
+    },
+    {
+      "id": "e4d55beb-4d34-45c9-aa5a-cfc8960a2d85",
+      "name": "IF Claim Live",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1210,
+        -120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-gap3-claim-live",
+              "leftValue": "={{ $json.claim_live }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a52f2a18-d8e8-48b1-bbb9-b001ab8a9cf8",
+      "name": "Log Halted Claims",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2020,
+        260
+      ],
+      "parameters": {
+        "jsCode": "// Workflow 08 - Stage C.3 - the dead end for claims Django refused.\n//\n// One row per held claim: enough for a log reader to see what was stopped and\n// why, and nothing else. No send, and no write back to Django: the notice is\n// already visible there (still 'queued' if the check was unreachable, or\n// 'expired' if the plan was undone). Rewriting it from here would either\n// claim a send that never happened or turn an operational hold into a\n// permanent expiry.\nconst held = $input.all().map((i) => i.json).filter((j) => j && j.claim_ref);\n\nreturn held.map((item) => ({ json: {\n  request_id: item.request_id || '',\n  claim_ref: String(item.claim_ref),\n  channel: item.channel || '',\n  held_reason: item.held_reason || 'claim_unknown',\n  claim_status: item.claim_status || 'unknown',\n  sent: false,\n} }));\n"
       }
     }
   ],
@@ -377,7 +437,7 @@
       "main": [
         [
           {
-            "node": "Provider Config & Adapter",
+            "node": "Check Claim Liveness",
             "type": "main",
             "index": 0
           }
@@ -454,6 +514,41 @@
             "index": 0
           }
         ]
+      ]
+    },
+    "Check Claim Liveness": {
+      "main": [
+        [
+          {
+            "node": "IF Claim Live",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Claim Live": {
+      "main": [
+        [
+          {
+            "node": "Provider Config & Adapter",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Halted Claims",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Halted Claims": {
+      "main": [
+        [],
+        []
       ]
     }
   },

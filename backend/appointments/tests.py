@@ -9003,3 +9003,146 @@ class StrandedMoveOptionsTests(_DisruptionFixture):
         options = self._options_for(appt.appointment_code)
 
         self.assertEqual(options, [])
+
+
+# ======================================================================
+# Gap 3 - workflow 08 must ask before it sends. "queued" in Django means
+# "not sent yet", not "never will be": an undo can mark a claim expired
+# while the workflow is already running. Django answers per claim whether
+# the notice is still safe to deliver.
+# ======================================================================
+
+
+class DisruptionClaimCheckTests(_DisruptionFixture, APITestCase):
+    """The claim-liveness endpoint n8n calls before any send node."""
+
+    URL = '/api/v1/webhooks/disruption-claims/check/'
+
+    def _queued_refs(self):
+        monday = self._next_monday()
+        self._book(self.doctor, monday, 11, 0, name='Amina Claimed',
+                   phone='+2348055567800')
+        self._approve(monday, max_lookahead_days=0)
+        return list(
+            InteractionLog.objects.filter(
+                direction='outbound', external_ref__startswith='disrupt-'
+            ).values_list('external_ref', flat=True)
+        )
+
+    def _check(self, refs, secret='clinic_dev_secret_2026'):
+        kwargs = {'format': 'json'}
+        if secret is not None:
+            kwargs['HTTP_X_WEBHOOK_SECRET'] = secret
+        return self.client.post(self.URL, {'claim_refs': refs}, **kwargs)
+
+    def test_a_queued_notice_is_live(self):
+        refs = self._queued_refs()
+        self.assertEqual(len(refs), 2)  # one per channel
+
+        response = self._check(refs)
+
+        self.assertEqual(response.status_code, 200)
+        for ref in refs:
+            self.assertTrue(response.data['claims'][ref]['live'])
+            self.assertEqual(response.data['claims'][ref]['status'], 'queued')
+
+    def test_an_expired_notice_is_not_live(self):
+        refs = self._queued_refs()
+        InteractionLog.objects.filter(external_ref=refs[0]).update(status='expired')
+
+        response = self._check(refs)
+
+        claim = response.data['claims'][refs[0]]
+        self.assertFalse(claim['live'])
+        self.assertEqual(claim['status'], 'expired')
+
+    def test_a_sent_notice_is_not_live(self):
+        refs = self._queued_refs()
+        InteractionLog.objects.filter(external_ref=refs[0]).update(status='sent')
+
+        response = self._check(refs)
+
+        claim = response.data['claims'][refs[0]]
+        self.assertFalse(claim['live'])
+        self.assertEqual(claim['status'], 'sent')
+
+    def test_a_failed_notice_is_not_live(self):
+        refs = self._queued_refs()
+        InteractionLog.objects.filter(external_ref=refs[0]).update(status='failed')
+
+        response = self._check(refs)
+
+        claim = response.data['claims'][refs[0]]
+        self.assertFalse(claim['live'])
+        self.assertEqual(claim['status'], 'failed')
+
+    def test_an_unknown_ref_is_not_live(self):
+        response = self._check(['disrupt-AP-0000-deadbeef-sms'])
+
+        claim = response.data['claims']['disrupt-AP-0000-deadbeef-sms']
+        self.assertFalse(claim['live'])
+        self.assertEqual(claim['status'], 'missing')
+
+    def test_mixed_refs_are_answered_one_by_one(self):
+        refs = self._queued_refs()
+        InteractionLog.objects.filter(external_ref=refs[1]).update(status='expired')
+
+        response = self._check(refs + ['disrupt-AP-0000-deadbeef-sms'])
+
+        claims = response.data['claims']
+        self.assertTrue(claims[refs[0]]['live'])
+        self.assertFalse(claims[refs[1]]['live'])
+        self.assertFalse(claims['disrupt-AP-0000-deadbeef-sms']['live'])
+
+    def test_an_inbound_or_foreign_ref_never_counts_as_a_claim(self):
+        InteractionLog.objects.create(
+            provider='meta_whatsapp', channel='whatsapp', direction='inbound',
+            status='queued', patient_name='Amina Claimed',
+            patient_phone='+2348055567800', external_ref='wamid.NOTACLAIM',
+            summary='patient reply',
+        )
+
+        response = self._check(['wamid.NOTACLAIM'])
+
+        claim = response.data['claims']['wamid.NOTACLAIM']
+        self.assertFalse(claim['live'])
+        self.assertEqual(claim['status'], 'missing')
+
+    def test_missing_secret_is_rejected(self):
+        refs = self._queued_refs()
+
+        response = self._check(refs, secret=None)
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.data['error'], 'INVALID_WEBHOOK_SECRET')
+
+    def test_wrong_secret_is_rejected(self):
+        refs = self._queued_refs()
+
+        response = self._check(refs, secret='attacker-guess-123')
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.data['error'], 'INVALID_WEBHOOK_SECRET')
+
+    def test_missing_claim_refs_is_a_bad_request(self):
+        response = self.client.post(
+            self.URL, {'claim_refs': 'not-a-list'}, format='json',
+            HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['error'], 'CLAIM_REFS_REQUIRED')
+
+    def test_empty_list_returns_no_claims(self):
+        response = self._check([])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['claims'], {})
+
+    def test_an_oversized_batch_is_rejected(self):
+        refs = [f'disrupt-AP-{i:04d}-deadbeef-sms' for i in range(501)]
+
+        response = self._check(refs)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['error'], 'TOO_MANY_CLAIMS')

@@ -530,6 +530,54 @@ class DisruptionBatchUndoView(APIView):
         return Response(result, status=status.HTTP_200_OK)
 
 
+class DisruptionClaimCheckView(APIView):
+    """
+    POST /api/v1/webhooks/disruption-claims/check/
+
+    Gap 3 — workflow 08 asks Django, immediately before any send, whether the
+    notices it is about to deliver are still live. `queued` is not a promise:
+    an undo can withdraw a notice while the workflow runs, and a withdrawn
+    notice must never reach a patient.
+
+    Auth: `X-Webhook-Secret` only (machine-to-machine, same verifier as every
+    other webhook). Never staff JWT.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        if not verify_webhook_secret(request):
+            return Response(
+                {'error': 'INVALID_WEBHOOK_SECRET'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        refs = request.data.get('claim_refs')
+        if not isinstance(refs, list):
+            return Response(
+                {
+                    'error': 'CLAIM_REFS_REQUIRED',
+                    'detail': 'claim_refs must be a list of claim references.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(refs) > DisruptionService.CLAIM_CHECK_MAX_REFS:
+            return Response(
+                {
+                    'error': 'TOO_MANY_CLAIMS',
+                    'detail': (
+                        f'At most {DisruptionService.CLAIM_CHECK_MAX_REFS} claim '
+                        f'references can be checked at once.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {'claims': DisruptionService.claim_liveness(refs)},
+            status=status.HTTP_200_OK,
+        )
+
+
 class DoubleBookingConflictsView(APIView):
     """
     GET /api/v1/conflicts/double-bookings/

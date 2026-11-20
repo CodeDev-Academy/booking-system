@@ -31,6 +31,7 @@ from .views_appointment import (
     DisruptionStrandedView,
     DisruptionLastBatchView,
     DisruptionBatchUndoView,
+    DisruptionClaimCheckView,
     DoubleBookingConflictsView,
     RescheduleAppointmentView,
     AppointmentActionView,
@@ -184,6 +185,10 @@ urlpatterns = [
     path('webhooks/whatsapp/inbound/', InboundWebhookView.as_view(), name='webhook-whatsapp-inbound'),
     path('webhooks/expiry-sweep/', ExpirySweepWebhookView.as_view(), name='webhook-expiry-sweep'),
     path('webhooks/reminder-sweep/', ReminderSweepWebhookView.as_view(), name='webhook-reminder-sweep'),
+    # Gap 3: workflow 08 asks, immediately before any send, whether the notices
+    # it holds are still live (an undo may have withdrawn them).
+    path('webhooks/disruption-claims/check/', DisruptionClaimCheckView.as_view(),
+         name='webhook-disruption-claim-check'),
     # Workflow C / C.1: channel-neutral patient replies (SMS / WhatsApp) —
     # phone -> open request resolution and intent interpretation live in Django.
     path('webhooks/patient-reply/', PatientReplyWebhookView.as_view(), name='webhook-patient-reply'),

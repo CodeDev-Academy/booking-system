@@ -185,7 +185,7 @@ const wrap = (status, body) => status + ' - ' + JSON.stringify(body);
   check('S12 IF true -> accepted respond', goesTo('IF Disruption Authorized', 0, 'Respond Disruption Accepted'));
   check('S13 IF false -> unauthorized respond', goesTo('IF Disruption Authorized', 1, 'Respond Disruption Unauthorized'));
   check('S14 accepted -> parse', goesTo('Respond Disruption Accepted', 0, 'Parse Disruption Items'));
-  check('S15 parse -> adapter', goesTo('Parse Disruption Items', 0, 'Provider Config & Adapter'));
+  check('S15 parse -> claim check', goesTo('Parse Disruption Items', 0, 'Check Claim Liveness'));
   check('S16 adapter -> route', goesTo('Provider Config & Adapter', 0, 'Route Provider Request'));
   check('S17 route whatsapp -> send whatsapp', goesTo('Route Provider Request', 0, 'Send WhatsApp Interactive Message'));
   check('S18 route sms -> send sms', goesTo('Route Provider Request', 1, 'Send SMS (VoiceBip)'));
@@ -220,6 +220,19 @@ const wrap = (status, body) => status + ' - ' + JSON.stringify(body);
   check('S32 log nodes key off the adapter lookup',
     code('Log WhatsApp Interaction').indexOf("$('Provider Config & Adapter')") !== -1
     && code('Log SMS Interaction').indexOf("$('Provider Config & Adapter')") !== -1);
+
+  // Gap 3: nothing may be sent without asking Django whether the claim is still
+  // live. The check annotates every item; an IF routes the live ones to the
+  // adapter and the dead ones into a dead end (no send node downstream).
+  check('S33 claim-check node exists', Boolean(node('Check Claim Liveness')));
+  check('S34 check -> IF', goesTo('Check Claim Liveness', 0, 'IF Claim Live'));
+  check('S35 live -> adapter', goesTo('IF Claim Live', 0, 'Provider Config & Adapter'));
+  check('S36 held -> halt log', goesTo('IF Claim Live', 1, 'Log Halted Claims'));
+  const haltTargets = (((conns['Log Halted Claims'] || {}).main || [])[0] || []);
+  check('S37 the halt log is a dead end', haltTargets.length === 0, JSON.stringify(haltTargets));
+  check('S38 parse never feeds the adapter directly',
+    !goesTo('Parse Disruption Items', 0, 'Provider Config & Adapter'));
+  check('S39 the halt log writes nothing to Django', (code('Log Halted Claims') || '').indexOf('httpRequest') === -1);
 
   // ---- A. verify node: fail closed -------------------------------------------
   console.log('A. verify node (fail closed)');
@@ -406,6 +419,165 @@ const wrap = (status, body) => status + ' - ' + JSON.stringify(body);
   check('F1 skip writes one queued row', skipPosts.length === 1 && skipPosts[0].body.status === 'queued');
   check('F2 deterministic skip external_ref', skipPosts[0].body.external_ref === 'skip-sms-AP-1042');
   check('F3 skip reason visible', skipPosts[0].body.error_detail === 'provider_not_configured');
+
+  // ---- G. claim liveness gate (Gap 3) ----------------------------------------
+  // Django queues a notice, then the workflow delivers it. An undo can mark
+  // that notice expired in between, so "queued" is not a promise. The gate asks
+  // Django immediately before any send and holds anything that is not a
+  // definite yes -- including "Django could not be reached at all".
+  console.log('G. claim liveness gate (fail closed)');
+
+  const CHECK_ENV = {
+    DJANGO_API_BASE_URL: 'http://127.0.0.1:8000/api/v1',
+    DJANGO_WEBHOOK_SECRET: 'clinic_dev_secret_2026',
+  };
+  const CHECK_ITEMS = () => ([
+    {
+      request_id: 'AP-1042', channel: 'sms', claim_ref: 'disrupt-AP-1042-aaa-sms',
+      patient_name: 'Amina Yusuf', patient_phone: '+2348031112233', message: WORDS,
+    },
+    {
+      request_id: 'AP-1043', channel: 'whatsapp',
+      claim_ref: 'disrupt-AP-1043-bbb-whatsapp',
+      patient_name: 'Chidi Okonkwo', patient_phone: '+2348054445555',
+      message: 'Other words',
+    },
+  ]);
+
+  async function runClaimCheck(items, opts) {
+    const options = opts || {};
+    const calls = [];
+    const warns = [];
+    const sandbox = {
+      console: { log: () => {}, warn: (...a) => warns.push(a.join(' ')), error: (...a) => warns.push(a.join(' ')) },
+      $env: Object.prototype.hasOwnProperty.call(options, 'env') ? options.env : CHECK_ENV,
+      $input: { all: () => items.map((json) => ({ json })) },
+    };
+    const fn = vm.runInNewContext('(async function () {\n' + code('Check Claim Liveness') + '\n})', sandbox);
+    const ctx = {
+      helpers: {
+        httpRequest: async (req) => {
+          calls.push(req);
+          if (options.throws) throw new Error(options.throws);
+          return options.response;
+        },
+      },
+    };
+    const result = await fn.call(ctx);
+    const all = (result || []).map((i) => i.json);
+    const live = all.filter((i) => i.claim_live === true);
+    const held = all.filter((i) => i.claim_live !== true);
+    return { all, live, held, calls, warns };
+  }
+
+  const liveMap = (refs) => {
+    const map = {};
+    refs.forEach((ref) => { map[ref] = { live: true, status: 'queued' }; });
+    return map;
+  };
+
+  let g = await runClaimCheck(CHECK_ITEMS(), {
+    response: { claims: liveMap(['disrupt-AP-1042-aaa-sms', 'disrupt-AP-1043-bbb-whatsapp']) },
+  });
+  check('G1 both live -> both reach the adapter', g.live.length === 2 && g.held.length === 0,
+    JSON.stringify({ live: g.live.length, held: g.held.length }));
+  check('G2 words are never rewritten', g.live.every((i) => i.message === WORDS || i.message === 'Other words'));
+  check('G3 asks Django with the shared secret',
+    g.calls.length === 1
+    && g.calls[0].method === 'POST'
+    && g.calls[0].url === CHECK_ENV.DJANGO_API_BASE_URL + '/webhooks/disruption-claims/check/'
+    && g.calls[0].headers['X-Webhook-Secret'] === CHECK_ENV.DJANGO_WEBHOOK_SECRET,
+    JSON.stringify(g.calls));
+  check('G4 asks about every ref it holds',
+    JSON.stringify(g.calls[0].body.claim_refs) === JSON.stringify(['disrupt-AP-1042-aaa-sms', 'disrupt-AP-1043-bbb-whatsapp']),
+    JSON.stringify(g.calls[0].body));
+
+  g = await runClaimCheck(CHECK_ITEMS(), {
+    response: { claims: {
+      'disrupt-AP-1042-aaa-sms': { live: false, status: 'expired' },
+      'disrupt-AP-1043-bbb-whatsapp': { live: true, status: 'queued' },
+    } },
+  });
+  check('G5 an expired claim is held, the live one still sends',
+    g.live.length === 1 && g.live[0].claim_ref === 'disrupt-AP-1043-bbb-whatsapp'
+    && g.held.length === 1 && g.held[0].claim_ref === 'disrupt-AP-1042-aaa-sms');
+  check('G6 the held reason names expiry', g.held[0].held_reason === 'claim_expired', g.held[0].held_reason);
+  check('G7 the held item is warned about once, by ref',
+    g.warns.length === 1 && g.warns[0].indexOf('disrupt-AP-1042-aaa-sms') !== -1, JSON.stringify(g.warns));
+
+  g = await runClaimCheck(CHECK_ITEMS(), {
+    response: { claims: {
+      'disrupt-AP-1042-aaa-sms': { live: false, status: 'sent' },
+      'disrupt-AP-1043-bbb-whatsapp': { live: false, status: 'missing' },
+    } },
+  });
+  check('G8 a sent claim is never re-sent', g.live.length === 0 && g.held.length === 2);
+  check('G9 reasons distinguish already-sent from unknown',
+    g.held[0].held_reason === 'claim_already_sent' && g.held[1].held_reason === 'claim_unknown',
+    JSON.stringify(g.held.map((i) => i.held_reason)));
+
+  g = await runClaimCheck(CHECK_ITEMS(), { throws: 'connect ECONNREFUSED 127.0.0.1:8000' });
+  check('G10 unreachable Django -> EVERYTHING held (fail closed)',
+    g.live.length === 0 && g.held.length === 2);
+  check('G11 the reason says the check was unavailable',
+    g.held.every((i) => i.held_reason === 'claim_check_unavailable'),
+    JSON.stringify(g.held.map((i) => i.held_reason)));
+
+  g = await runClaimCheck(CHECK_ITEMS(), { response: { error: 'INVALID_WEBHOOK_SECRET' } });
+  check('G12 an answer without claims -> everything held',
+    g.live.length === 0 && g.held.length === 2
+    && g.held.every((i) => i.held_reason === 'claim_check_unavailable'));
+
+  g = await runClaimCheck(CHECK_ITEMS(), {
+    response: { claims: { 'disrupt-AP-1042-aaa-sms': { status: 'queued' } } },
+  });
+  check('G13 a missing "live: true" is not a yes',
+    g.live.length === 0 && g.held.length === 2, JSON.stringify(g.held.map((i) => i.held_reason)));
+
+  g = await runClaimCheck(CHECK_ITEMS(), { env: { DJANGO_API_BASE_URL: '', DJANGO_WEBHOOK_SECRET: '' } });
+  check('G14 no Django config -> nothing asked, nothing sent',
+    g.calls.length === 0 && g.live.length === 0 && g.held.length === 2);
+  check('G15 unconfigured reason is explicit',
+    g.held.every((i) => i.held_reason === 'claim_check_unavailable'));
+
+  g = await runClaimCheck(CHECK_ITEMS(), { env: { DJANGO_WEBHOOK_SECRET: 's' } });
+  check('G16 base URL alone is not enough', g.calls.length === 0 && g.live.length === 0);
+
+  g = await runClaimCheck([], { response: { claims: {} } });
+  check('G17 no items -> no call, no output', g.calls.length === 0 && g.live.length === 0 && g.held.length === 0);
+
+  g = await runClaimCheck([
+    Object.assign({}, CHECK_ITEMS()[0]),
+    Object.assign({}, CHECK_ITEMS()[0]),
+  ], { response: { claims: liveMap(['disrupt-AP-1042-aaa-sms']) } });
+  check('G18 duplicate refs are asked once', JSON.stringify(g.calls[0].body.claim_refs) === JSON.stringify(['disrupt-AP-1042-aaa-sms']),
+    JSON.stringify(g.calls[0].body.claim_refs));
+  check('G19 duplicate items both still send', g.live.length === 2);
+
+  g = await runClaimCheck(CHECK_ITEMS(), { response: { claims: {
+    'disrupt-AP-1042-aaa-sms': { live: 'yes', status: 'queued' },
+    'disrupt-AP-1043-bbb-whatsapp': { live: true, status: 'queued' },
+  } } });
+  check('G20 a non-boolean "live" is not a yes',
+    g.live.length === 1 && g.live[0].claim_ref === 'disrupt-AP-1043-bbb-whatsapp'
+    && g.held[0].held_reason === 'claim_unknown');
+
+  // The halt log is the observable end of the dead side: one row per held
+  // claim, Django untouched (a refused send must never rewrite the record).
+  const haltSandbox = {
+    console: { log: () => {}, warn: () => {}, error: () => {} },
+    $input: { all: () => [
+      { json: { request_id: 'AP-1042', claim_ref: 'disrupt-AP-1042-aaa-sms', held_reason: 'claim_expired', claim_status: 'expired', channel: 'sms' } },
+      { json: { request_id: 'AP-1043', claim_ref: 'disrupt-AP-1043-bbb-whatsapp', held_reason: 'claim_check_unavailable', claim_status: 'unknown', channel: 'whatsapp' } },
+    ] },
+  };
+  const haltOut = vm.runInNewContext('(function () {\n' + code('Log Halted Claims') + '\n})()', haltSandbox);
+  check('G21 one halt row per held claim', haltOut.length === 2, String(haltOut.length));
+  check('G22 halt row keeps the ref and the reason',
+    haltOut[0].json.claim_ref === 'disrupt-AP-1042-aaa-sms'
+    && haltOut[0].json.held_reason === 'claim_expired'
+    && haltOut[1].json.held_reason === 'claim_check_unavailable');
+  check('G23 halt rows are marked not sent', haltOut.every((i) => i.json.sent === false));
 
   console.log('');
   if (failures) {
