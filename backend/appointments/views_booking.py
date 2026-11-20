@@ -28,6 +28,8 @@ from .services.channel_availability import (
     resolve_channel_availability,
 )
 from .services.dispatch_service import fire_and_forget_webhook
+from .services.hold_service import HoldService
+from .services.slot_rules import validate_clinic_slot
 from .services.sse_bus import broadcast_event
 from .services.telegram_service import TelegramService
 from .services.webhook_security import has_staff_or_webhook_access, resolve_webhook_secret
@@ -374,6 +376,10 @@ class DispatchOffersView(APIView):
 
         offers_data = request.data.get('slots') or request.data.get('offers') or []
         created_offers = []
+        # Wave 2 / Step 2.4: picks that failed re-validation, with a named
+        # reason each. Always present on a 200 — empty means every pick
+        # survived (or the engine chose them, which is legal by construction).
+        skipped_slots = []
 
         now = timezone.now()
         expiry_minutes = clinic.offer_expiry_minutes or 60
@@ -383,6 +389,13 @@ class DispatchOffersView(APIView):
         SlotOffer.objects.filter(request=booking, is_selected=False).delete()
 
         if offers_data:
+            # Wave 2 / Step 2.4: reception's picks are re-validated before a
+            # single offer row exists. A patient must never be offered a slot
+            # that is already taken, inside lunch, or on a day the doctor does
+            # not work - the time to learn that is now, not from the patient's
+            # 409 after they reply. Invalid picks are skipped with a named
+            # reason; if NOTHING survives, dispatch fails loudly and the
+            # request is left exactly as it was.
             for s in offers_data:
                 doctor_id = s.get('doctor_id')
                 doctor = resolve_doctor_or_default(doctor_id)
@@ -411,9 +424,46 @@ class DispatchOffersView(APIView):
                 if timezone.is_naive(end_dt):
                     end_dt = timezone.make_aware(end_dt)
 
+                # Same lock the booking path takes, so the re-check cannot race
+                # a concurrent hold (the view is already inside one transaction).
+                locked_doctor = Doctor.objects.select_for_update().get(id=doctor.id)
+
+                # A hold that already timed out is dead - purge it first, or
+                # the re-check would treat a corpse as a live conflict.
+                HoldService.purge_expired_holds(locked_doctor)
+
+                reason = None
+                detail = ''
+                violated = validate_clinic_slot(
+                    locked_doctor, start_dt, end_dt,
+                    service=booking.service, clinic=clinic,
+                )
+                if violated:
+                    reason, detail = violated
+                else:
+                    conflict = HoldService.find_slot_conflict(
+                        locked_doctor, start_dt, end_dt, service=booking.service,
+                    )
+                    if conflict is not None:
+                        reason = 'SLOT_TAKEN'
+                        detail = (
+                            f"Already booked: {conflict.appointment_code} "
+                            f"({conflict.patient_name}) holds that time."
+                        )
+
+                if reason:
+                    skipped_slots.append({
+                        'doctor_id': str(locked_doctor.id),
+                        'doctor_name': locked_doctor.name,
+                        'start_datetime': start_dt.isoformat(),
+                        'reason': reason,
+                        'detail': detail,
+                    })
+                    continue
+
                 offer = SlotOffer.objects.create(
                     request=booking,
-                    doctor=doctor,
+                    doctor=locked_doctor,
                     start_datetime=start_dt,
                     end_datetime=end_dt,
                     is_alternative_date=s.get('is_alternative_date', False),
@@ -421,6 +471,18 @@ class DispatchOffersView(APIView):
                     is_selected=False,
                 )
                 created_offers.append(offer)
+
+            if offers_data and not created_offers:
+                # Nothing survived: no offers, no status change, no message.
+                # The request stays reviewable exactly as it was.
+                return Response({
+                    'error': 'ALL_SLOTS_INVALID',
+                    'detail': (
+                        'None of the picked slots can be offered. '
+                        'See skipped_slots for the reason per slot.'
+                    ),
+                    'skipped_slots': skipped_slots,
+                }, status=status.HTTP_409_CONFLICT)
         else:
             # Fallback to automated engine calculation if none passed explicitly
             engine = AvailabilityEngine()
@@ -599,6 +661,7 @@ class DispatchOffersView(APIView):
             "status": booking.status,
             "offer_expires_at": expires_at.isoformat(),
             "offers": SlotOfferSerializer(created_offers, many=True).data,
+            "skipped_slots": skipped_slots,
             "telegram_payload": telegram_payload,
             "delivery": delivery,
             "delivery_warning": delivery['warning'],

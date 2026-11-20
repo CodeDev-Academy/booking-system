@@ -9,13 +9,15 @@ from appointments.models import (
     BookingRequest,
     AuditLog,
 )
+from appointments.services.slot_rules import validate_clinic_slot
 
 
 class SlotConflictException(Exception):
     """Raised when a requested slot is already held, booked, or conflicts with another visit."""
-    def __init__(self, message, conflicting_appointment=None):
+    def __init__(self, message, conflicting_appointment=None, code='SLOT_CONFLICT'):
         super().__init__(message)
         self.conflicting_appointment = conflicting_appointment
+        self.code = code
 
 
 class HoldService:
@@ -87,7 +89,8 @@ class HoldService:
         performed_by='system',
         date_of_birth=None,
         gender='',
-        is_emergency=False
+        is_emergency=False,
+        is_walk_in=False
     ):
         """
         Atomically acquires a temporary 15-minute hold or instant confirmed booking.
@@ -106,6 +109,20 @@ class HoldService:
             timezone.localtime(start_datetime).date()
         ):
             raise SlotConflictException(f"Doctor {doctor.name} is currently unavailable or on leave.")
+
+        # Wave 2 / Step 2.1: the clinic's own contract - closed days, shift
+        # bounds, lunch, blocked dates, notice, daily cap - enforced on the
+        # time a caller PICKED, not just on slots the generator offers. Same
+        # standard as AvailabilityEngine, with the two real-world exemptions:
+        # a walk-in skips the notice window, an emergency may use the reserve.
+        violated = validate_clinic_slot(
+            doctor, start_datetime, end_datetime,
+            service=service, clinic=clinic,
+            is_walk_in=is_walk_in, is_emergency=is_emergency, now=now,
+        )
+        if violated:
+            code, detail = violated
+            raise SlotConflictException(detail, code=code)
 
         booking_request = None
         if booking_request_id:

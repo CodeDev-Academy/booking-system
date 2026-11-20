@@ -14,6 +14,7 @@ from rest_framework.permissions import AllowAny
 from .models import Appointment, Doctor, FollowUpTask, AuditLog, ClinicSetting, DisruptionBatch
 from .permissions import IsStaffAuthenticated
 from .services.hold_service import HoldService, SlotConflictException
+from .services.slot_rules import validate_clinic_slot
 from .services.slot_selection import select_slot_offer
 from .services.disruption_service import DisruptionService, DisruptionUndoError, DisruptionRefusal
 from .services.conflict_service import ConflictService
@@ -129,10 +130,11 @@ class SlotHoldView(APIView):
                     date_of_birth=validated.get('dob'),
                     gender=validated.get('gender', ''),
                     is_emergency=validated.get('is_emergency', False),
+                    is_walk_in=is_walk_in,
                 )
             except SlotConflictException as e:
                 return Response({
-                    "error": "SLOT_CONFLICT",
+                    "error": getattr(e, 'code', 'SLOT_CONFLICT'),
                     "detail": str(e),
                     "conflicting_appointment": getattr(e.conflicting_appointment, 'appointment_code', None)
                 }, status=status.HTTP_409_CONFLICT)
@@ -174,6 +176,19 @@ class AppointmentStatusUpdateView(APIView):
         cancellation_reason = serializer.validated_data.get('cancellation_reason', '')
         old_status = appointment.status
         now = timezone.now()
+
+        # Wave 2 / Step 2.3: only an edge the lifecycle actually has. The old
+        # endpoint accepted any listed status, so a completed visit could be
+        # dragged back to 'arrived' and a cancelled one resurrected, with the
+        # audit log recording the impossible history as if it happened.
+        if new_status not in appointment.allowed_status_targets():
+            return Response({
+                'error': 'INVALID_TRANSITION',
+                'detail': (
+                    f"A {old_status} appointment cannot move to '{new_status}'."
+                ),
+                'current_status': old_status,
+            }, status=status.HTTP_409_CONFLICT)
 
         appointment.status = new_status
         update_fields = ['status', 'updated_at']
@@ -682,6 +697,27 @@ class RescheduleAppointmentView(APIView):
                 )
 
             HoldService.purge_expired_holds(doctor)
+
+            # Wave 2 / Step 2.2: the same clinic contract as a fresh booking.
+            # The moving appointment never counts against its own cap, and a
+            # reschedule is planned work, so the walk-in notice exemption
+            # never applies here.
+            violated = validate_clinic_slot(
+                doctor, start, end,
+                service=appointment.service, clinic=ClinicSetting.get_settings(),
+                exclude_appointment_id=appointment.id,
+            )
+            if violated:
+                code, detail = violated
+                return Response(
+                    {
+                        'error': code,
+                        'detail': detail,
+                        'conflicting_appointment': None,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
             conflict = HoldService.find_slot_conflict(
                 doctor, start, end,
                 service=appointment.service,

@@ -556,6 +556,28 @@ class Appointment(models.Model):
         ('hold_expired', 'Hold Expired'),
     )
 
+    # Wave 2 / Step 2.3 — the lifecycle as a map, not a wish list. The staff
+    # status endpoint accepts exactly these edges; everything else answers
+    # 409 INVALID_TRANSITION and the row is left untouched. Internal writers
+    # (sweeper expiry, patient replies, Telegram callbacks, slot selection)
+    # set status directly and are not routed through this map — every edge
+    # they take is listed here so the map documents the whole system.
+    # completed / cancelled / no_show / hold_expired are terminal: a visit
+    # that is history can never be edited back into the present.
+    STATUS_TRANSITIONS = {
+        'held': {'confirmed', 'cancelled', 'hold_expired'},
+        'confirmed': {'arrived', 'in_consultation', 'completed', 'no_show', 'cancelled'},
+        'arrived': {'in_consultation', 'completed', 'no_show', 'cancelled'},
+        'in_consultation': {'completed', 'cancelled'},
+        'completed': set(),
+        'cancelled': set(),
+        'no_show': set(),
+        'hold_expired': set(),
+    }
+
+    def allowed_status_targets(self):
+        return self.STATUS_TRANSITIONS.get(self.status, set())
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     appointment_code = models.CharField(max_length=32, unique=True, db_index=True)
     patient_name = models.CharField(max_length=255)

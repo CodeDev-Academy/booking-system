@@ -36,6 +36,22 @@ from .services.conflict_service import ConflictService
 from .services.sweep_service import SweepService
 
 
+def next_legal_slot(hour, minute=0):
+    """
+    Wave 2 test helper: a deterministic future WEEKDAY at a fixed hour.
+
+    The booking engine now enforces the clinic calendar on every path, so a
+    fixture built from `now + timedelta(...)` can land at 03:00 on a Saturday
+    depending on when the suite runs. Every slot a test BOOKS (hold, offer,
+    dispatch pick, reschedule) must come from here instead. Assertions may
+    still use raw datetimes freely - only booked slots need to be legal.
+    """
+    day = timezone.localdate() + datetime.timedelta(days=1)
+    while day.isoweekday() > 5:
+        day += datetime.timedelta(days=1)
+    return timezone.make_aware(datetime.datetime.combine(day, datetime.time(hour, minute)))
+
+
 class DomainModelTests(TestCase):
     """
     Verifies that all 11 clinical domain models, constraint rules,
@@ -787,9 +803,9 @@ class Phase3BookingQueueTests(APITestCase):
         )
 
         now = timezone.now()
-        slot1_start = now + datetime.timedelta(days=1, hours=2)
+        slot1_start = next_legal_slot(10)
         slot1_end = slot1_start + datetime.timedelta(minutes=30)
-        slot2_start = now + datetime.timedelta(days=1, hours=4)
+        slot2_start = next_legal_slot(12)
         slot2_end = slot2_start + datetime.timedelta(minutes=30)
 
         res = self.client.post(f'/api/v1/booking-requests/{req.request_code}/dispatch-offers/', {
@@ -837,7 +853,7 @@ class Phase3BookingQueueTests(APITestCase):
             status='awaiting_review',
         )
 
-        slot_start = timezone.now() + datetime.timedelta(days=1, hours=2)
+        slot_start = next_legal_slot(10)
         res = self.client.post(f'/api/v1/booking-requests/{req.request_code}/dispatch-offers/', {
             'slots': [
                 {
@@ -961,8 +977,8 @@ class Phase3LiveVisitsTests(APITestCase):
             status='slots_offered',
         )
 
-        tomorrow = timezone.now() + datetime.timedelta(days=1)
-        slot_start = tomorrow.replace(hour=10, minute=0, second=0, microsecond=0)
+        tomorrow = next_legal_slot(10)
+        slot_start = tomorrow
         slot_end = slot_start + datetime.timedelta(minutes=45)
 
         offer = SlotOffer.objects.create(
@@ -997,8 +1013,8 @@ class Phase3LiveVisitsTests(APITestCase):
         Race condition protection: Attempting to hold a slot that overlaps an existing visit
         must return 409 Conflict.
         """
-        tomorrow = timezone.now() + datetime.timedelta(days=1)
-        start1 = tomorrow.replace(hour=11, minute=0, second=0, microsecond=0)
+        tomorrow = next_legal_slot(11)
+        start1 = tomorrow
         end1 = start1 + datetime.timedelta(minutes=45)
 
         # First appointment held
@@ -1260,15 +1276,32 @@ class RescheduleConflictTests(APITestCase):
         self.receptionist.save()
 
         now = timezone.now()
-        self.base = now  # frozen reference so assertions never race wall-clock microseconds
+        # Wave 2: reschedule now enforces the clinic calendar (closed days,
+        # shift, lunch, notice), so every fixture anchors to a deterministic
+        # future WEEKDAY at fixed hours. The old wall-clock offsets floated
+        # with the time of day the suite ran at - 10:00 in a comment could
+        # really be 03:00 on a Saturday.
+        day = timezone.localdate() + datetime.timedelta(days=1)
+        while day.isoweekday() > 5:
+            day += datetime.timedelta(days=1)
+
+        def at(hour, minute=0):
+            return timezone.make_aware(datetime.datetime.combine(day, datetime.time(hour, minute)))
+
+        self.t_occupied = at(10)        # occupied block 10:00-10:45 (buffer 15 -> 11:00)
+        self.t_movable = at(12)         # the appointment under test, 12:00-12:45
+        self.t_head_on = at(10, 15)     # overlaps the occupied block head-on
+        self.t_buffer_zone = at(10, 50)  # inside the occupied block's buffer
+        self.t_free = at(16)            # a clean, legal target slot
+
         # Occupied block on self.doctor: 10:00-10:45 (buffer 15 -> effective end 11:00)
         self.occupied = Appointment.objects.create(
             patient_name='Occupied Block',
             patient_phone='+2348000000001',
             doctor=self.doctor,
             service=self.service,
-            start_datetime=now + datetime.timedelta(days=1, hours=2),
-            end_datetime=now + datetime.timedelta(days=1, hours=2, minutes=45),
+            start_datetime=self.t_occupied,
+            end_datetime=self.t_occupied + datetime.timedelta(minutes=45),
             status='confirmed',
         )
         # The appointment under test on the same doctor: 12:00-12:45
@@ -1277,8 +1310,8 @@ class RescheduleConflictTests(APITestCase):
             patient_phone='+2348000000002',
             doctor=self.doctor,
             service=self.service,
-            start_datetime=now + datetime.timedelta(days=1, hours=4),
-            end_datetime=now + datetime.timedelta(days=1, hours=4, minutes=45),
+            start_datetime=self.t_movable,
+            end_datetime=self.t_movable + datetime.timedelta(minutes=45),
             status='confirmed',
         )
         self.client.force_authenticate(user=self.receptionist)
@@ -1292,8 +1325,8 @@ class RescheduleConflictTests(APITestCase):
     def test_reschedule_onto_occupied_slot_rejected_409(self):
         # 10:15-11:00 overlaps the occupied 10:00-10:45 block head-on.
         res = self.client.post(self._url(self.movable), {
-            'start_datetime': (self.base + datetime.timedelta(days=1, hours=2, minutes=15)).isoformat(),
-            'end_datetime': (self.base + datetime.timedelta(days=1, hours=3)).isoformat(),
+            'start_datetime': self.t_head_on.isoformat(),
+            'end_datetime': (self.t_head_on + datetime.timedelta(minutes=45)).isoformat(),
         }, format='json')
 
         self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
@@ -1302,11 +1335,7 @@ class RescheduleConflictTests(APITestCase):
 
         # The rejected move must leave the appointment exactly where it was.
         self.movable.refresh_from_db()
-        now = self.base
-        self.assertEqual(
-            self.movable.start_datetime,
-            now + datetime.timedelta(days=1, hours=4),
-        )
+        self.assertEqual(self.movable.start_datetime, self.t_movable)
         self.assertEqual(
             self.movable.end_datetime - self.movable.start_datetime,
             datetime.timedelta(minutes=45),
@@ -1316,8 +1345,8 @@ class RescheduleConflictTests(APITestCase):
     def test_reschedule_into_buffer_zone_rejected_409(self):
         # 10:50 start sits inside the occupied block's 15-minute sterilization buffer.
         res = self.client.post(self._url(self.movable), {
-            'start_datetime': (self.base + datetime.timedelta(days=1, hours=2, minutes=50)).isoformat(),
-            'end_datetime': (self.base + datetime.timedelta(days=1, hours=3, minutes=35)).isoformat(),
+            'start_datetime': self.t_buffer_zone.isoformat(),
+            'end_datetime': (self.t_buffer_zone + datetime.timedelta(minutes=45)).isoformat(),
         }, format='json')
 
         self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
@@ -1325,16 +1354,13 @@ class RescheduleConflictTests(APITestCase):
 
     def test_reschedule_to_free_slot_succeeds(self):
         res = self.client.post(self._url(self.movable), {
-            'start_datetime': (self.base + datetime.timedelta(days=1, hours=6)).isoformat(),
-            'end_datetime': (self.base + datetime.timedelta(days=1, hours=6, minutes=45)).isoformat(),
+            'start_datetime': self.t_free.isoformat(),
+            'end_datetime': (self.t_free + datetime.timedelta(minutes=45)).isoformat(),
         }, format='json')
 
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.movable.refresh_from_db()
-        self.assertEqual(
-            self.movable.start_datetime,
-            self.base + datetime.timedelta(days=1, hours=6),
-        )
+        self.assertEqual(self.movable.start_datetime, self.t_free)
 
     def test_reschedule_to_own_slot_allowed(self):
         # Moving an appointment to (effectively) its own time must not trip
@@ -1350,7 +1376,7 @@ class RescheduleConflictTests(APITestCase):
         # Moving only the start keeps the 45-minute visit length instead of
         # silently stretching or shrinking the appointment.
         res = self.client.post(self._url(self.movable), {
-            'start_datetime': (self.base + datetime.timedelta(days=1, hours=6)).isoformat(),
+            'start_datetime': self.t_free.isoformat(),
         }, format='json')
 
         self.assertEqual(res.status_code, status.HTTP_200_OK)
@@ -1375,14 +1401,13 @@ class RescheduleConflictTests(APITestCase):
 
     def test_reassign_to_busy_colleague_rejected_409(self):
         # The colleague already has a visit overlapping the movable time block.
-        now = self.base
         Appointment.objects.create(
             patient_name='Colleague Busy',
             patient_phone='+2348000000003',
             doctor=self.colleague,
             service=self.service,
-            start_datetime=now + datetime.timedelta(days=1, hours=4),
-            end_datetime=now + datetime.timedelta(days=1, hours=4, minutes=30),
+            start_datetime=self.t_movable,
+            end_datetime=self.t_movable + datetime.timedelta(minutes=30),
             status='confirmed',
         )
 
@@ -2155,11 +2180,21 @@ class Phase5TelegramTests(APITestCase):
             status='slots_offered',
         )
         now = timezone.now()
+        # Wave 2: the booking path now enforces the clinic calendar, so the
+        # offer must sit on a deterministic LEGAL slot - a weekday inside the
+        # doctor's shift - instead of a wall-clock offset that can land at
+        # 03:00 or on a Saturday depending on when the suite runs.
+        day = timezone.localdate() + datetime.timedelta(days=1)
+        while day.isoweekday() > 5:
+            day += datetime.timedelta(days=1)
+        offer_start = timezone.make_aware(
+            datetime.datetime.combine(day, datetime.time(10, 0))
+        )
         self.offer = SlotOffer.objects.create(
             request=self.booking,
             doctor=self.doctor,
-            start_datetime=now + datetime.timedelta(days=1, hours=2),
-            end_datetime=now + datetime.timedelta(days=1, hours=2, minutes=30),
+            start_datetime=offer_start,
+            end_datetime=offer_start + datetime.timedelta(minutes=30),
             expires_at=now + datetime.timedelta(minutes=60),
             is_selected=False,
         )
@@ -2458,7 +2493,12 @@ class Phase5TelegramTests(APITestCase):
         receptionist.save()
         self.client.force_authenticate(user=receptionist)
 
-        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        day = timezone.localdate() + datetime.timedelta(days=1)
+        while day.isoweekday() > 5:
+            day += datetime.timedelta(days=1)
+        slot_start = timezone.make_aware(
+            datetime.datetime.combine(day, datetime.time(11, 0))
+        )
         slot_end = slot_start + datetime.timedelta(minutes=30)
         dispatch_res = self.client.post(f'/api/v1/booking-requests/{created_req.id}/dispatch-offers/', {
             'slots': [{
@@ -5062,7 +5102,15 @@ class AsyncDispatchWebhookTests(APITestCase):
             buffer_minutes=5,
             price=10000,
         )
-        self.doctor = Doctor.objects.create(name='Dr. Dispatch Test')
+        # Wave 2: a doctor created without working_days defaults to [] and is
+        # then off duty EVERY day - the booking engine treats the empty list
+        # as "never works" (same as AvailabilityEngine). Fixtures must create
+        # a realistic doctor with a real calendar and shift.
+        self.doctor = Doctor.objects.create(
+            name='Dr. Dispatch Test',
+            working_days=[1, 2, 3, 4, 5, 6],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+        )
 
     def tearDown(self):
         cache.clear()
@@ -5082,7 +5130,7 @@ class AsyncDispatchWebhookTests(APITestCase):
         )
 
         now = timezone.now()
-        slot_start = now + datetime.timedelta(days=1, hours=3)
+        slot_start = next_legal_slot(10)
         slot_end = slot_start + datetime.timedelta(minutes=30)
 
         payload = {
@@ -5152,7 +5200,7 @@ class AsyncDispatchWebhookTests(APITestCase):
         )
 
         now = timezone.now()
-        slot_start = now + datetime.timedelta(days=1, hours=4)
+        slot_start = next_legal_slot(11)
         slot_end = slot_start + datetime.timedelta(minutes=30)
 
         payload = {
@@ -5256,9 +5304,10 @@ class DashboardBookingContractTests(APITestCase):
         )
 
     def _slot(self):
-        """A clean weekday slot inside the doctor's shift, well past today."""
-        days_ahead = (7 - timezone.localdate().isoweekday()) % 7 or 7
-        day = timezone.localdate() + datetime.timedelta(days=days_ahead)
+        """A clean WEEKDAY slot inside the doctor's shift, well past today."""
+        day = timezone.localdate() + datetime.timedelta(days=1)
+        while day.isoweekday() > 5:
+            day += datetime.timedelta(days=1)
         return timezone.make_aware(datetime.datetime.combine(day, datetime.time(10, 0)))
 
     def _post(self, payload, url='/api/v1/slots/hold/'):
@@ -5397,6 +5446,606 @@ class DashboardBookingContractTests(APITestCase):
         self.assertFalse(
             BookingRequest.objects.filter(patient_name='Wrong Service Intake').exists()
         )
+
+
+class AcquireSlotClinicRulesTests(APITestCase):
+    """
+    Wave 2 / Step 2.1 — the clinic's rules follow the booking, not just the
+    slot generator.
+
+    acquire_slot used to check only doctor-active / on-leave / overlap, so a
+    direct calendar booking or walk-in could land at 03:00, on a closed day,
+    inside lunch, in the past, on a blocked date or past the daily cap. The
+    engine that generates candidate slots enforces all of these; a
+    human-picked slot must be held to the same standard.
+
+    Each case books a slot that is legal on EVERY other axis, so exactly one
+    rule fires — no test passes because of an unrelated rejection.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        # Deterministic stage: Mon-Fri clinic, 08:00-18:00, lunch 13:00-14:00.
+        self.clinic.working_days = [1, 2, 3, 4, 5]
+        self.clinic.open_time = datetime.time(8, 0)
+        self.clinic.close_time = datetime.time(18, 0)
+        self.clinic.lunch_break_start = datetime.time(13, 0)
+        self.clinic.lunch_break_end = datetime.time(14, 0)
+        self.clinic.min_advance_hours = 2
+        self.clinic.save()
+
+        self.doctor = Doctor.objects.create(
+            name='Dr. Rules Hold', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+            max_daily_appointments=12,
+        )
+        self.service = Service.objects.create(
+            name='Dental Consultation', duration_minutes=30, buffer_minutes=5,
+        )
+
+    # -- helpers -----------------------------------------------------------
+
+    def _weekday(self, n=1):
+        """The n-th upcoming Mon-Fri date, regardless of when tests run."""
+        day = timezone.localdate()
+        found = 0
+        for _ in range(21):
+            day += datetime.timedelta(days=1)
+            if day.isoweekday() <= 5:
+                found += 1
+                if found == n:
+                    return day
+        raise AssertionError('no weekday found')
+
+    def _last_weekday(self):
+        day = timezone.localdate()
+        for _ in range(21):
+            if day.isoweekday() <= 5:
+                return day
+            day -= datetime.timedelta(days=1)
+        raise AssertionError('no weekday found')
+
+    def _dt(self, day, hour, minute=0):
+        return timezone.make_aware(datetime.datetime.combine(day, datetime.time(hour, minute)))
+
+    def _hold(self, doctor, start, end=None, **extra):
+        payload = {
+            'doctor_id': str(doctor.id),
+            'service_id': str(self.service.id),
+            'start_datetime': start.isoformat(),
+            'patient_name': 'Rules Ada',
+            'patient_phone': '+2348030001200',
+        }
+        if end:
+            payload['end_datetime'] = end.isoformat()
+        payload.update(extra)
+        return self.client.post(
+            '/api/v1/slots/hold/', payload, format='json',
+            HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026',
+        )
+
+    def _hold_next_weekday(self, doctor, hour, n=1, minute=0, **extra):
+        day = self._weekday(n)
+        return self._hold(doctor, self._dt(day, hour, minute), **extra)
+
+    # -- the control: ordinary legal bookings keep working ------------------
+
+    def test_a_legal_slot_still_books(self):
+        response = self._hold_next_weekday(self.doctor, 10)
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+    # -- one rule per case -------------------------------------------------
+
+    def test_a_past_slot_is_refused(self):
+        response = self._hold(self.doctor, self._dt(self._last_weekday(), 10))
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'SLOT_IN_PAST')
+
+    def test_a_closed_clinic_day_is_refused(self):
+        saturday = timezone.localdate() + datetime.timedelta(days=1)
+        while saturday.isoweekday() != 6:
+            saturday += datetime.timedelta(days=1)
+        response = self._hold(self.doctor, self._dt(saturday, 10))
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'CLINIC_CLOSED')
+
+    def test_a_doctor_day_off_is_refused(self):
+        off_doctor = Doctor.objects.create(
+            name='Dr. Off Friday', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4],  # never works Fridays
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+        )
+        friday = timezone.localdate() + datetime.timedelta(days=1)
+        while friday.isoweekday() != 5:
+            friday += datetime.timedelta(days=1)
+        response = self._hold(off_doctor, self._dt(friday, 10))
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'DOCTOR_OFF_DUTY')
+
+    def test_before_the_shift_is_refused(self):
+        response = self._hold_next_weekday(self.doctor, 8)  # clinic open, doctor starts 09:00
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'OUTSIDE_SHIFT')
+
+    def test_past_the_shift_end_is_refused(self):
+        # 16:40 + 30 min visit + 5 min buffer ends 17:15 - past 17:00.
+        response = self._hold_next_weekday(self.doctor, 16, minute=40)
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'OUTSIDE_SHIFT')
+
+    def test_inside_lunch_is_refused(self):
+        response = self._hold_next_weekday(self.doctor, 13, minute=30)
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'LUNCH_BREAK')
+
+    def test_a_blocked_date_is_refused(self):
+        day = self._weekday(1)
+        AvailabilityRule.objects.create(
+            doctor=None, rule_type='blocked_date',
+            start_datetime=self._dt(day, 0), end_datetime=self._dt(day, 23, 59),
+            reason='Public holiday',
+        )
+        response = self._hold_next_weekday(self.doctor, 10)
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'DATE_BLOCKED')
+
+    def test_an_emergency_reserve_is_refused_for_ordinary_bookings(self):
+        day = self._weekday(2)
+        AvailabilityRule.objects.create(
+            doctor=self.doctor, rule_type='emergency_reserve',
+            start_datetime=self._dt(day, 9), end_datetime=self._dt(day, 10),
+            reason='Walk-in reserve',
+        )
+        response = self._hold_next_weekday(self.doctor, 9, n=2)
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'EMERGENCY_RESERVE_ONLY')
+
+    def test_an_emergency_booking_may_use_the_reserve(self):
+        day = self._weekday(2)
+        AvailabilityRule.objects.create(
+            doctor=self.doctor, rule_type='emergency_reserve',
+            start_datetime=self._dt(day, 9), end_datetime=self._dt(day, 10),
+            reason='Walk-in reserve',
+        )
+        response = self._hold_next_weekday(
+            self.doctor, 9, n=2, is_emergency=True, is_instant_confirm=True,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+    def test_too_little_notice_is_refused(self):
+        # 192h of required notice makes any near-term slot too soon,
+        # whatever wall-clock time the suite runs at.
+        self.clinic.min_advance_hours = 192
+        self.clinic.save()
+        response = self._hold_next_weekday(self.doctor, 10)
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'TOO_SOON')
+
+    def test_a_walk_in_is_exempt_from_the_notice_rule(self):
+        # The patient is standing at the desk - the notice rule exists for
+        # remote bookings only.
+        self.clinic.min_advance_hours = 192
+        self.clinic.save()
+        response = self._hold_next_weekday(
+            self.doctor, 10, is_walk_in=True, is_instant_confirm=True,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data['status'], 'arrived')
+
+    def test_the_daily_cap_is_enforced(self):
+        capped = Doctor.objects.create(
+            name='Dr. Cap One', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+            max_daily_appointments=1,
+        )
+        day = self._weekday(1)
+        Appointment.objects.create(
+            appointment_code='AP-CAP1', patient_name='Earlier Patient',
+            patient_phone='+2348030001201', doctor=capped, service=self.service,
+            start_datetime=self._dt(day, 10), end_datetime=self._dt(day, 10, 30),
+            status='confirmed',
+        )
+        response = self._hold(capped, self._dt(day, 15))
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'DAILY_CAP_REACHED')
+
+    def test_holds_count_against_the_daily_cap(self):
+        capped = Doctor.objects.create(
+            name='Dr. Cap Two', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+            max_daily_appointments=1,
+        )
+        day = self._weekday(1)
+        Appointment.objects.create(
+            appointment_code='AP-CAP2', patient_name='Holding Patient',
+            patient_phone='+2348030001202', doctor=capped, service=self.service,
+            start_datetime=self._dt(day, 10), end_datetime=self._dt(day, 10, 30),
+            status='held', hold_expires_at=self._dt(day, 10) + datetime.timedelta(minutes=15),
+        )
+        response = self._hold(capped, self._dt(day, 15))
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'DAILY_CAP_REACHED')
+
+
+class RescheduleClinicRulesTests(APITestCase):
+    """
+    Wave 2 / Step 2.2 — a reschedule is held to the same standard as a fresh
+    booking. The view already re-checked leave and overlap; it used to accept
+    any time of day, so a visit could be moved into lunch, before the shift,
+    or into the past.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.working_days = [1, 2, 3, 4, 5]
+        self.clinic.open_time = datetime.time(8, 0)
+        self.clinic.close_time = datetime.time(18, 0)
+        self.clinic.lunch_break_start = datetime.time(13, 0)
+        self.clinic.lunch_break_end = datetime.time(14, 0)
+        self.clinic.min_advance_hours = 2
+        self.clinic.save()
+
+        self.doctor = Doctor.objects.create(
+            name='Dr. Reschedule Rules', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+        )
+        self.service = Service.objects.create(
+            name='Dental Consultation', duration_minutes=30, buffer_minutes=5,
+        )
+        self.staff = StaffUser.objects.create(
+            full_name='Reschedule Staff', email='reschedule.staff@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.staff.set_password('ReschedulePass123!')
+        self.staff.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'reschedule.staff@clinic.com',
+            'password': 'ReschedulePass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+        day = timezone.localdate() + datetime.timedelta(days=1)
+        while day.isoweekday() > 5:
+            day += datetime.timedelta(days=1)
+        self.day = day
+        start = timezone.make_aware(datetime.datetime.combine(day, datetime.time(10, 0)))
+        self.appointment = Appointment.objects.create(
+            appointment_code='AP-RES1', patient_name='Reschedule Ada',
+            patient_phone='+2348030001300', doctor=self.doctor, service=self.service,
+            start_datetime=start, end_datetime=start + datetime.timedelta(minutes=30),
+            status='confirmed',
+        )
+
+    def _reschedule(self, new_start):
+        return self.client.post(
+            f'/api/v1/appointments/{self.appointment.id}/reschedule/',
+            {'start_datetime': new_start.isoformat()}, format='json',
+        )
+
+    def test_a_legal_move_still_works(self):
+        new_start = timezone.make_aware(
+            datetime.datetime.combine(self.day, datetime.time(15, 0))
+        )
+        response = self._reschedule(new_start)
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.appointment.refresh_from_db()
+        self.assertEqual(
+            timezone.localtime(self.appointment.start_datetime).strftime('%H:%M'), '15:00'
+        )
+
+    def test_a_move_into_lunch_is_refused(self):
+        new_start = timezone.make_aware(
+            datetime.datetime.combine(self.day, datetime.time(13, 30))
+        )
+        response = self._reschedule(new_start)
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'LUNCH_BREAK')
+        self.appointment.refresh_from_db()
+        self.assertEqual(
+            timezone.localtime(self.appointment.start_datetime).strftime('%H:%M'), '10:00'
+        )
+
+    def test_a_move_into_the_past_is_refused(self):
+        past = timezone.now() - datetime.timedelta(days=1)
+        response = self._reschedule(past)
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'SLOT_IN_PAST')
+
+    def test_a_move_before_the_shift_is_refused(self):
+        new_start = timezone.make_aware(
+            datetime.datetime.combine(self.day, datetime.time(8, 0))
+        )
+        response = self._reschedule(new_start)
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'OUTSIDE_SHIFT')
+
+    def test_the_moving_appointment_does_not_count_against_its_own_cap(self):
+        self.doctor.max_daily_appointments = 1
+        self.doctor.save()
+        new_start = timezone.make_aware(
+            datetime.datetime.combine(self.day, datetime.time(15, 0))
+        )
+        response = self._reschedule(new_start)
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+    def test_a_move_to_a_fuller_day_is_refused_by_the_cap(self):
+        self.doctor.max_daily_appointments = 1
+        self.doctor.save()
+        other = Appointment.objects.create(
+            appointment_code='AP-RES2', patient_name='Cap Neighbour',
+            patient_phone='+2348030001301', doctor=self.doctor, service=self.service,
+            start_datetime=timezone.make_aware(
+                datetime.datetime.combine(self.day, datetime.time(11, 0))
+            ),
+            end_datetime=timezone.make_aware(
+                datetime.datetime.combine(self.day, datetime.time(11, 30))
+            ),
+            status='confirmed',
+        )
+        new_start = timezone.make_aware(
+            datetime.datetime.combine(self.day, datetime.time(15, 0))
+        )
+        response = self._reschedule(new_start)
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'DAILY_CAP_REACHED')
+        other.delete()
+
+
+class AppointmentStatusTransitionTests(APITestCase):
+    """
+    Wave 2 / Step 2.3 — an appointment is a state machine, not a free text
+    field. The status endpoint used to accept any value from the list, so
+    `completed -> arrived`, `cancelled -> confirmed` and `no_show -> confirmed`
+    all succeeded and were audited as if they had happened.
+
+    Forward-only lifecycle:
+        held -> confirmed | cancelled | hold_expired
+        confirmed -> arrived | in_consultation | completed | no_show | cancelled
+        arrived -> in_consultation | completed | no_show | cancelled
+        in_consultation -> completed | cancelled
+        completed / cancelled / no_show / hold_expired -> terminal
+
+    Internal writers (sweeper expiry, patient replies, Telegram callbacks,
+    slot selection) set status directly and are unaffected; this map governs
+    the staff endpoint only.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.doctor = Doctor.objects.create(
+            name='Dr. Transition', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+        )
+        self.service = Service.objects.create(
+            name='Dental Consultation', duration_minutes=30, buffer_minutes=5,
+        )
+        self.staff = StaffUser.objects.create(
+            full_name='Transition Staff', email='transition.staff@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.staff.set_password('TransitionPass123!')
+        self.staff.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'transition.staff@clinic.com',
+            'password': 'TransitionPass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+    def _appointment(self, current_status):
+        day = timezone.localdate() + datetime.timedelta(days=1)
+        while day.isoweekday() > 5:
+            day += datetime.timedelta(days=1)
+        start = timezone.make_aware(datetime.datetime.combine(day, datetime.time(10, 0)))
+        return Appointment.objects.create(
+            appointment_code='AP-TRN%s' % current_status[:4].upper(),
+            patient_name='Transition Ada',
+            patient_phone='+2348030001400',
+            doctor=self.doctor, service=self.service,
+            start_datetime=start, end_datetime=start + datetime.timedelta(minutes=30),
+            status=current_status,
+        )
+
+    def _set(self, appt, new_status, **extra):
+        payload = {'status': new_status}
+        payload.update(extra)
+        return self.client.post(
+            f'/api/v1/appointments/{appt.id}/status/', payload, format='json'
+        )
+
+    def test_the_normal_lifecycle_still_works(self):
+        appt = self._appointment('confirmed')
+
+        arrived = self._set(appt, 'arrived')
+        self.assertEqual(arrived.status_code, status.HTTP_200_OK, arrived.data)
+
+        consult = self._set(appt, 'in_consultation')
+        self.assertEqual(consult.status_code, status.HTTP_200_OK, consult.data)
+
+        done = self._set(appt, 'completed')
+        self.assertEqual(done.status_code, status.HTTP_200_OK, done.data)
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, 'completed')
+
+    def test_a_completed_visit_cannot_come_back_to_life(self):
+        appt = self._appointment('completed')
+        response = self._set(appt, 'arrived')
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'INVALID_TRANSITION')
+        self.assertEqual(response.data['current_status'], 'completed')
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, 'completed')
+
+    def test_a_cancelled_visit_cannot_be_resurrected(self):
+        appt = self._appointment('cancelled')
+        response = self._set(appt, 'confirmed')
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'INVALID_TRANSITION')
+
+    def test_a_no_show_cannot_be_confirmed_after_the_fact(self):
+        appt = self._appointment('no_show')
+        response = self._set(appt, 'confirmed')
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'INVALID_TRANSITION')
+
+    def test_a_held_appointment_cannot_be_marked_arrived_by_the_staff_endpoint(self):
+        appt = self._appointment('held')
+        response = self._set(appt, 'arrived')
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'INVALID_TRANSITION')
+
+    def test_confirmed_may_be_cancelled_with_a_reason(self):
+        appt = self._appointment('confirmed')
+        response = self._set(appt, 'cancelled', cancellation_reason='Patient called back.')
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, 'cancelled')
+
+    def test_confirmed_may_be_marked_no_show(self):
+        appt = self._appointment('confirmed')
+        response = self._set(appt, 'no_show')
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+    def test_the_ghost_rescheduled_status_is_refused(self):
+        # 'rescheduled' is not a real model status; it used to be accepted
+        # and silently stored on the row.
+        appt = self._appointment('confirmed')
+        response = self._set(appt, 'rescheduled')
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'INVALID_TRANSITION')
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, 'confirmed')
+
+
+class DispatchSlotRecheckTests(APITestCase):
+    """
+    Wave 2 / Step 2.4 — dispatch re-checks the slots reception picked.
+
+    The explicit-slot branch used to create offer rows straight from the
+    request payload with no validation at all, so a patient could be offered
+    a slot that was taken seconds earlier, inside lunch, or on the doctor's
+    day off — and discover it by replying into a 409.
+
+    Now: every picked slot is validated under the doctor's row lock (rules +
+    overlap); invalid picks are skipped with a named reason; if NOTHING
+    survives, dispatch fails loudly and the request is left untouched.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.working_days = [1, 2, 3, 4, 5]
+        self.clinic.open_time = datetime.time(8, 0)
+        self.clinic.close_time = datetime.time(18, 0)
+        self.clinic.lunch_break_start = datetime.time(13, 0)
+        self.clinic.lunch_break_end = datetime.time(14, 0)
+        self.clinic.min_advance_hours = 2
+        self.clinic.save()
+
+        self.doctor = Doctor.objects.create(
+            name='Dr. Dispatch Recheck', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+        )
+        self.service = Service.objects.create(
+            name='Dental Consultation', duration_minutes=30, buffer_minutes=5,
+        )
+        self.staff = StaffUser.objects.create(
+            full_name='Dispatch Staff', email='dispatch.staff@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.staff.set_password('DispatchPass123!')
+        self.staff.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'dispatch.staff@clinic.com',
+            'password': 'DispatchPass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+        self.booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0500',
+            patient_name='Dispatch Ada', patient_phone='+2348030001500',
+            service=self.service, status='awaiting_review',
+        )
+
+    def _day(self):
+        day = timezone.localdate() + datetime.timedelta(days=1)
+        while day.isoweekday() > 5:
+            day += datetime.timedelta(days=1)
+        return day
+
+    def _dt(self, day, hour, minute=0):
+        return timezone.make_aware(datetime.datetime.combine(day, datetime.time(hour, minute)))
+
+    def _dispatch(self, slots):
+        return self.client.post(
+            f'/api/v1/booking-requests/{self.booking.request_code}/dispatch-offers/',
+            {'slots': slots, 'dispatch_channels': ['sms']},
+            format='json',
+        )
+
+    def _slot(self, hour, minute=0):
+        return {
+            'doctor_id': str(self.doctor.id),
+            'start_datetime': self._dt(self._day(), hour, minute).isoformat(),
+        }
+
+    def test_a_clean_pick_still_dispatches(self):
+        response = self._dispatch([self._slot(10)])
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(SlotOffer.objects.filter(request=self.booking).count(), 1)
+        self.assertEqual(response.data.get('skipped_slots', []), [])
+
+    def test_a_taken_slot_is_not_offered(self):
+        day = self._day()
+        Appointment.objects.create(
+            appointment_code='AP-DSP1', patient_name='Earlier Patient',
+            patient_phone='+2348030001501', doctor=self.doctor, service=self.service,
+            start_datetime=self._dt(day, 10), end_datetime=self._dt(day, 10, 30),
+            status='confirmed',
+        )
+        response = self._dispatch([self._slot(10), self._slot(15)])
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        offers = SlotOffer.objects.filter(request=self.booking)
+        self.assertEqual(offers.count(), 1)
+        self.assertEqual(timezone.localtime(offers.first().start_datetime).strftime('%H:%M'), '15:00')
+        skipped = response.data.get('skipped_slots', [])
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0]['reason'], 'SLOT_TAKEN')
+
+    def test_an_illegal_time_is_not_offered(self):
+        response = self._dispatch([self._slot(13, 30), self._slot(11)])
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        offers = SlotOffer.objects.filter(request=self.booking)
+        self.assertEqual(offers.count(), 1)
+        self.assertEqual(timezone.localtime(offers.first().start_datetime).strftime('%H:%M'), '11:00')
+        skipped = response.data.get('skipped_slots', [])
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0]['reason'], 'LUNCH_BREAK')
+
+    def test_dispatch_fails_loudly_when_no_pick_survives(self):
+        day = self._day()
+        Appointment.objects.create(
+            appointment_code='AP-DSP2', patient_name='Earlier Patient',
+            patient_phone='+2348030001502', doctor=self.doctor, service=self.service,
+            start_datetime=self._dt(day, 10), end_datetime=self._dt(day, 10, 30),
+            status='confirmed',
+        )
+        response = self._dispatch([self._slot(10), self._slot(13, 30)])
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'ALL_SLOTS_INVALID')
+        self.assertEqual(len(response.data['skipped_slots']), 2)
+        self.assertEqual(SlotOffer.objects.filter(request=self.booking).count(), 0)
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.status, 'awaiting_review')
 
 
 class SeedClinicHygieneTests(TestCase):
@@ -5615,7 +6264,11 @@ class DispatchChannelSelectionTests(APITestCase):
             buffer_minutes=5,
             price=10000,
         )
-        self.doctor = Doctor.objects.create(name='Dr. Channel Test')
+        self.doctor = Doctor.objects.create(
+            name='Dr. Channel Test',
+            working_days=[1, 2, 3, 4, 5, 6],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+        )
         self.booking = BookingRequest.objects.create(
             request_code='REQ-2026-0077',
             patient_name='Grace Channel',
@@ -5628,7 +6281,7 @@ class DispatchChannelSelectionTests(APITestCase):
         cache.clear()
 
     def _slot_payload(self):
-        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        slot_start = next_legal_slot(10)
         return {'slots': [{
             'doctor_id': str(self.doctor.id),
             'start_datetime': slot_start.isoformat(),
@@ -5685,7 +6338,7 @@ class DispatchChannelSelectionTests(APITestCase):
         self.assertEqual(res.data['error'], 'INVALID_DISPATCH_CHANNELS')
 
     def test_active_hold_blocks_dispatch_with_clear_message(self):
-        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        slot_start = next_legal_slot(10)
         Appointment.objects.create(
             appointment_code='AP-2001',
             patient_name=self.booking.patient_name,
@@ -5709,7 +6362,7 @@ class DispatchChannelSelectionTests(APITestCase):
         self.assertEqual(self.booking.status, 'awaiting_review')
 
     def test_confirmed_booking_blocks_dispatch(self):
-        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        slot_start = next_legal_slot(10)
         Appointment.objects.create(
             appointment_code='AP-2002',
             patient_name=self.booking.patient_name,
@@ -5727,7 +6380,7 @@ class DispatchChannelSelectionTests(APITestCase):
 
     def test_expired_hold_does_NOT_block_dispatch(self):
         """A hold that already timed out is dead — reception can dispatch fresh options."""
-        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        slot_start = next_legal_slot(10)
         Appointment.objects.create(
             appointment_code='AP-2003',
             patient_name=self.booking.patient_name,
@@ -5768,7 +6421,7 @@ class DispatchChannelSelectionTests(APITestCase):
     def test_dispatch_blocked_means_no_n8n_fire(self):
         """The 409 guard fires BEFORE any outbound call — no wasted messages, ever."""
         from unittest.mock import patch
-        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        slot_start = next_legal_slot(10)
         Appointment.objects.create(
             appointment_code='AP-2004',
             patient_name=self.booking.patient_name,
@@ -6928,7 +7581,11 @@ class DispatchContractEnrichmentTests(APITestCase):
         self.service = Service.objects.create(
             name='Dental Consultation', duration_minutes=30, buffer_minutes=5, price=10000,
         )
-        self.doctor = Doctor.objects.create(name='Dr. Contract Test')
+        self.doctor = Doctor.objects.create(
+            name='Dr. Contract Test',
+            working_days=[1, 2, 3, 4, 5, 6],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+        )
         self.booking = BookingRequest.objects.create(
             request_code='REQ-2026-0300',
             patient_name='Grace Contract',
@@ -6941,7 +7598,7 @@ class DispatchContractEnrichmentTests(APITestCase):
         cache.clear()
 
     def _slot_payload(self):
-        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        slot_start = next_legal_slot(10)
         return {'slots': [{
             'doctor_id': str(self.doctor.id),
             'start_datetime': slot_start.isoformat(),
@@ -7282,7 +7939,11 @@ class DispatchDeliveryAdvisoryTests(APITestCase):
         self.service = Service.objects.create(
             name='Dental Consultation', duration_minutes=30, buffer_minutes=5, price=10000,
         )
-        self.doctor = Doctor.objects.create(name='Dr. Advisory Test')
+        self.doctor = Doctor.objects.create(
+            name='Dr. Advisory Test',
+            working_days=[1, 2, 3, 4, 5, 6],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+        )
         self.booking = BookingRequest.objects.create(
             request_code='REQ-2026-0500',
             patient_name='Grace Advisory',
@@ -7307,7 +7968,7 @@ class DispatchDeliveryAdvisoryTests(APITestCase):
         return patch.dict(os.environ, values)
 
     def _dispatch(self, extra=None):
-        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        slot_start = next_legal_slot(10)
         payload = {'slots': [{
             'doctor_id': str(self.doctor.id),
             'start_datetime': slot_start.isoformat(),
@@ -7424,7 +8085,11 @@ class DispatchEnforcementTests(APITestCase):
         self.service = Service.objects.create(
             name='Dental Consultation', duration_minutes=30, buffer_minutes=5, price=10000,
         )
-        self.doctor = Doctor.objects.create(name='Dr. Enforcement Test')
+        self.doctor = Doctor.objects.create(
+            name='Dr. Enforcement Test',
+            working_days=[1, 2, 3, 4, 5, 6],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+        )
         self.booking = BookingRequest.objects.create(
             request_code='REQ-2026-0600',
             patient_name='Grace Enforcement',
@@ -7449,7 +8114,7 @@ class DispatchEnforcementTests(APITestCase):
         return patch.dict(os.environ, values)
 
     def _slot_payload(self):
-        slot_start = timezone.now() + datetime.timedelta(days=1, hours=3)
+        slot_start = next_legal_slot(10)
         return {'slots': [{
             'doctor_id': str(self.doctor.id),
             'start_datetime': slot_start.isoformat(),
@@ -8539,7 +9204,7 @@ class StrandedPatientsTests(_DisruptionFixture):
         monday = self._next_monday()
         placed = self._book(self.doctor, monday, 10, 0, name='Placed Away',
                             phone='+2348055567001')
-        cancelled = self._book(self.doctor, monday, 13, 0, name='Called Off',
+        cancelled = self._book(self.doctor, monday, 15, 0, name='Called Off',
                                phone='+2348055567002')
         self._approve(monday)
         placed.refresh_from_db()
