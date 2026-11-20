@@ -146,13 +146,6 @@ export const PrivacyLockModal = () => {
             </span>
           )}
 
-          <span className="demo-pin-hint">
-            Quick-PIN for {currentStaff?.name?.split(' ')[0] || 'Staff'}:{' '}
-            <strong style={{ color: 'var(--amber)', letterSpacing: '0.05em' }}>
-              {currentStaff?.pin || '1234'}
-            </strong>
-          </span>
-
           <button
             type="button"
             className="switch-staff-btn"

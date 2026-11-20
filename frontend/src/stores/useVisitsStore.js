@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { DOCTORS, SERVICES, startOfDayOffset, at, formatNaira } from '../services/mockData';
+// Wave 3 / Step 3.7-B: mockData stays ONLY as the pitch simulator's private
+// dataset (simulateIncomingVisit draws from it). Clinic rows come from the API.
+import { DOCTORS, SERVICES } from '../services/mockData';
+import { clinicNow } from '../services/clinicTimeService';
 import { getDoctor, getService } from '../services/slotEngine';
 import { soundService } from '../services/soundService';
 import { appointmentSyncBus } from '../services/appointmentSyncBus';
@@ -9,204 +12,17 @@ import { useAppModeStore } from './appModeStore';
 
 const MIN = 60000;
 
-// Seed realistic initial in-clinic patient visits for today
-const buildInitialVisits = () => {
-  const now = Date.now();
-  return [
-    // 1. In Waiting Room (Arrived at reception)
-    {
-      id: 'VIS-200',
-      appointmentId: 'AP-1019',
-      patientName: 'Ngozi Okonjo',
-      patientPhone: '+234 803 555 9911',
-      patientType: 'returning',
-      doctorId: 'doc-bello',
-      serviceId: 'svc-dental',
-      roomName: 'Dental Suite 1',
-      scheduledTime: now - 10 * MIN,
-      arrivedAt: now - 5 * MIN, // 5 mins in lobby
-      consultationStartedAt: null,
-      completedAt: null,
-      status: 'waiting',
-      paymentStatus: 'paid',
-      followUp: null,
-      welfareSent: false,
-    },
-    {
-      id: 'VIS-201',
-      appointmentId: 'AP-1041',
-      patientName: 'Kolawole Adeyemi',
-      patientPhone: '+234 803 555 0192',
-      patientType: 'new',
-      doctorId: 'doc-okafor',
-      serviceId: 'svc-checkup',
-      roomName: 'Suite B (General Care)',
-      scheduledTime: now - 15 * MIN,
-      arrivedAt: now - 8 * MIN, // 8 mins in lobby
-      consultationStartedAt: null,
-      completedAt: null,
-      status: 'waiting',
-      paymentStatus: 'paid',
-      followUp: null,
-      welfareSent: false,
-    },
-    {
-      id: 'VIS-202',
-      appointmentId: 'AP-1042',
-      patientName: 'Chiamaka Obi',
-      patientPhone: '+234 809 777 1234',
-      patientType: 'new',
-      doctorId: 'doc-bello',
-      serviceId: 'svc-extract',
-      roomName: 'Dental Suite 1',
-      scheduledTime: now - 25 * MIN,
-      arrivedAt: now - 23 * MIN, // 23 mins in lobby (amber alert)
-      consultationStartedAt: null,
-      completedAt: null,
-      status: 'waiting',
-      paymentStatus: 'pending',
-      followUp: null,
-      welfareSent: false,
-    },
-
-    // 2. In Active Consultation
-    {
-      id: 'VIS-203',
-      appointmentId: 'AP-1039',
-      patientName: 'Fatima Bello',
-      patientPhone: '+234 802 333 4455',
-      patientType: 'returning',
-      doctorId: 'doc-bello',
-      serviceId: 'svc-dental',
-      roomName: 'Dental Suite 1',
-      scheduledTime: now - 35 * MIN,
-      arrivedAt: now - 30 * MIN,
-      consultationStartedAt: now - 18 * MIN, // 18m of 30m consultation elapsed
-      completedAt: null,
-      status: 'in_consultation',
-      paymentStatus: 'paid',
-      followUp: null,
-      welfareSent: false,
-    },
-    {
-      id: 'VIS-204',
-      appointmentId: 'AP-1040',
-      patientName: 'Kenneth Danjuma',
-      patientPhone: '+234 812 444 9900',
-      patientType: 'returning',
-      doctorId: 'doc-okafor',
-      serviceId: 'svc-checkup',
-      roomName: 'Suite B (General Care)',
-      scheduledTime: now - 20 * MIN,
-      arrivedAt: now - 15 * MIN,
-      consultationStartedAt: now - 9 * MIN, // 9m of 20m consultation elapsed
-      completedAt: null,
-      status: 'in_consultation',
-      paymentStatus: 'paid',
-      followUp: null,
-      welfareSent: false,
-    },
-
-    // 3. Completed Today
-    {
-      id: 'VIS-205',
-      appointmentId: 'AP-1038',
-      patientName: 'Tunde Musa',
-      patientPhone: '+234 801 111 2233',
-      patientType: 'returning',
-      doctorId: 'doc-bello',
-      serviceId: 'svc-dental',
-      roomName: 'Dental Suite 1',
-      scheduledTime: now - 90 * MIN,
-      arrivedAt: now - 85 * MIN,
-      consultationStartedAt: now - 75 * MIN,
-      completedAt: now - 45 * MIN,
-      status: 'completed',
-      paymentStatus: 'paid',
-      followUp: {
-        preset: '6-Mos Hygiene Check',
-        targetDate: '15 Apr 2027',
-        notes: 'Advised routine biannual scaling and polishing.',
-      },
-      welfareSent: false,
-    },
-    {
-      id: 'VIS-206',
-      appointmentId: 'AP-1037',
-      patientName: 'Amina Yusuf',
-      patientPhone: '+234 801 234 5678',
-      patientType: 'returning',
-      doctorId: 'doc-bello',
-      serviceId: 'svc-extract',
-      roomName: 'Dental Suite 1',
-      scheduledTime: now - 120 * MIN,
-      arrivedAt: now - 115 * MIN,
-      consultationStartedAt: now - 105 * MIN,
-      completedAt: now - 60 * MIN,
-      status: 'completed',
-      paymentStatus: 'paid',
-      followUp: {
-        preset: '1-Wk Post-Op',
-        targetDate: '22 Oct 2026',
-        notes: 'Check socket healing after lower molar extraction.',
-      },
-      welfareSent: false,
-    },
-  ];
-};
-
-// Seed today's expected pre-booked appointments (awaiting physical check-in at front desk)
-const buildInitialExpected = () => {
-  const now = Date.now();
-  return [
-    {
-      id: 'EXP-101',
-      appointmentId: 'AP-1043',
-      patientName: 'Oluwaseun Bakare',
-      patientPhone: '+234 802 888 1902',
-      patientType: 'returning',
-      doctorId: 'doc-okafor',
-      serviceId: 'svc-checkup',
-      roomName: 'Suite B (General Care)',
-      scheduledTime: now + 20 * MIN,
-      scheduledTimeStr: '11:00 AM',
-      notes: 'Routine health check & BP review.',
-    },
-    {
-      id: 'EXP-102',
-      appointmentId: 'AP-1044',
-      patientName: 'Babajide Sanwo',
-      patientPhone: '+234 814 333 7788',
-      patientType: 'returning',
-      doctorId: 'doc-okafor',
-      serviceId: 'svc-checkup',
-      roomName: 'Suite B (General Care)',
-      scheduledTime: now + 50 * MIN,
-      scheduledTimeStr: '11:30 AM',
-      notes: 'Cardio follow-up & prescription renewal.',
-    },
-    {
-      id: 'EXP-103',
-      appointmentId: 'AP-1045',
-      patientName: 'Aisha Mohammed',
-      patientPhone: '+234 805 111 6543',
-      patientType: 'returning',
-      doctorId: 'doc-bello',
-      serviceId: 'svc-dental',
-      roomName: 'Dental Suite 1',
-      scheduledTime: now + 90 * MIN,
-      scheduledTimeStr: '02:00 PM',
-      notes: 'Biannual scaling & polishing.',
-    },
-  ];
-};
 
 export const useVisitsStore = create(
   persist(
     (set, get) => ({
-  visits: buildInitialVisits(),
-  expectedToday: buildInitialExpected(),
-  selectedDoctorFilter: 'all', // 'all' | 'doc-bello' | 'doc-okafor'
+  // Wave 3 / Step 3.7-B: the API is the only source of clinic rows. The
+  // board starts EMPTY and is filled by syncFromBackend (today's real
+  // appointments). The pitch SIMULATOR keeps its own private dataset and
+  // injects through simulateIncomingVisit.
+  visits: [],
+  expectedToday: [],
+  selectedDoctorFilter: 'all',
 
   // Modals
   followUpModal: {
@@ -225,6 +41,88 @@ export const useVisitsStore = create(
 
   setDoctorFilter: (filter) => set({ selectedDoctorFilter: filter }),
 
+  // Wave 3 / Step 3.3 — the Live Visits board reads TODAY'S REAL APPOINTMENTS.
+  // The board used to be buildInitialVisits()/buildInitialExpected() demo
+  // rows forever: apiService.fetchTodayAppointments existed and was never
+  // called. Mapping, lane by lane:
+  //   arrived          -> waiting (lobby timer from arrival_at)
+  //   in_consultation  -> in_consultation
+  //   completed        -> completed
+  //   confirmed/held   -> expectedToday (booked, not yet at the desk)
+  // An EMPTY answer empties the board — it is an answer. A FAILED fetch
+  // keeps whatever is on screen (the network being down is not an empty
+  // clinic). Display fields (doctor/service names, price) travel on the row
+  // so the UI never needs the mock roster.
+  syncFromBackend: async () => {
+    if (useAppModeStore.getState().isDemoMode) return;
+    try {
+      const data = await apiService.fetchTodayAppointments();
+      const list = Array.isArray(data) ? data : data?.results || [];
+
+      const visits = [];
+      const expectedToday = [];
+      list.forEach((appt) => {
+        const id = appt.appointment_code || appt.id;
+        const base = {
+          id,
+          appointmentId: id,
+          patientName: appt.patient_name || 'Patient',
+          patientPhone: appt.patient_phone || '',
+          doctorId: appt.doctor_id || appt.doctor || null,
+          doctorName: appt.doctor_name || null,
+          serviceId: appt.service_id || appt.service || null,
+          serviceName: appt.service_name || null,
+          servicePrice: appt.service_price ?? null,
+          serviceDurationMin: appt.service_duration || null,
+          patientType: appt.patient_type || 'new',
+          scheduledTime: appt.start_datetime ? Date.parse(appt.start_datetime) : null,
+          roomName: appt.room_name || '',
+          paymentStatus: 'pending',
+          followUp: null,
+          welfareSent: false,
+          notes: appt.notes || appt.cancellation_reason || '',
+        };
+        const arrivalMs = appt.arrival_at ? Date.parse(appt.arrival_at) : null;
+
+        if (appt.status === 'arrived') {
+          visits.push({
+            ...base,
+            status: 'waiting',
+            arrivedAt: arrivalMs ?? base.scheduledTime ?? clinicNow(),
+            consultationStartedAt: null,
+            completedAt: null,
+          });
+        } else if (appt.status === 'in_consultation') {
+          // The backend records when the visit was completed but not when
+          // the consult started; the timer falls back to arrival, then to
+          // the scheduled time, and stays honest (00:00) otherwise.
+          visits.push({
+            ...base,
+            status: 'in_consultation',
+            arrivedAt: arrivalMs ?? base.scheduledTime ?? null,
+            consultationStartedAt: arrivalMs ?? base.scheduledTime ?? null,
+            completedAt: null,
+          });
+        } else if (appt.status === 'completed') {
+          visits.push({
+            ...base,
+            status: 'completed',
+            arrivedAt: arrivalMs ?? base.scheduledTime ?? null,
+            consultationStartedAt: null,
+            completedAt: appt.completed_at ? Date.parse(appt.completed_at) : null,
+          });
+        } else if (appt.status === 'confirmed' || appt.status === 'held') {
+          expectedToday.push({ ...base });
+        }
+        // cancelled / no_show / hold_expired never appear on today's board.
+      });
+
+      set({ visits, expectedToday });
+    } catch (err) {
+      console.warn('Visits syncFromBackend fallback:', err);
+    }
+  },
+
   // 1-Click Reception Attendance: Admit scheduled appointment into Waiting Room
   markPatientPresent: (expectedId) => {
     const exp = get().expectedToday.find((e) => e.id === expectedId);
@@ -240,7 +138,7 @@ export const useVisitsStore = create(
       serviceId: exp.serviceId,
       roomName: exp.roomName,
       scheduledTime: exp.scheduledTime,
-      arrivedAt: Date.now(),
+      arrivedAt: clinicNow(),
       consultationStartedAt: null,
       completedAt: null,
       status: 'waiting',
@@ -275,8 +173,10 @@ export const useVisitsStore = create(
   // Admit from calendar or external appointment object
   admitAppointment: (appt) => {
     const aptId = appt.appointmentId || appt.id;
-    const doc = getDoctor(appt.doctorId) || DOCTORS[0];
-    const service = getService(appt.serviceId) || SERVICES[0];
+    // Wave 3 / Step 3.7-B: no mock fallbacks — a real (UUID) doctor id finds
+    // nothing in the mock registry and must not silently become a demo one.
+    const doc = getDoctor(appt.doctorId) || null;
+    const service = getService(appt.serviceId) || null;
 
     // Check if already in active visits
     const existing = get().visits.find((v) => v.appointmentId === aptId || v.id === aptId);
@@ -300,11 +200,13 @@ export const useVisitsStore = create(
       patientName: appt.patientName || 'Patient',
       patientPhone: appt.patientPhone || appt.phone || '+234 800 000 0000',
       patientType: appt.patientType || 'new',
-      doctorId: doc.id,
-      serviceId: service.id,
-      roomName: doc.id === 'doc-bello' ? 'Dental Suite 1' : 'Suite B (General Care)',
-      scheduledTime: appt.start || Date.now(),
-      arrivedAt: Date.now(),
+      doctorId: appt.doctorId || doc?.id || null,
+      doctorName: appt.doctorName || doc?.name || null,
+      serviceId: appt.serviceId || service?.id || null,
+      serviceName: appt.serviceName || service?.name || null,
+      roomName: appt.roomName || '',
+      scheduledTime: appt.start || clinicNow(),
+      arrivedAt: clinicNow(),
       consultationStartedAt: null,
       completedAt: null,
       status: 'waiting',
@@ -332,26 +234,29 @@ export const useVisitsStore = create(
 
   // Walk-In Check-In from front desk
   checkInVisit: (patientName, phone, doctorId, serviceId, patientType = 'new', notes = '', extra = {}) => {
-    const doc = getDoctor(doctorId) || DOCTORS[0];
-    const service = getService(serviceId) || SERVICES[0];
+    // Wave 3 / Step 3.7-B: no mock fallbacks for a real (UUID) doctor/service.
+    const doc = getDoctor(doctorId) || null;
+    const service = getService(serviceId) || null;
     const newVisit = {
       id: `VIS-${Math.floor(200 + Math.random() * 800)}`,
       appointmentId: `AP-${Math.floor(1000 + Math.random() * 9000)}`,
       patientName: patientName || 'Walk-In Patient',
-      patientPhone: phone || '+234 800 000 0000',
-      patientType: patientType || (patientName === 'Ngozi Okonjo' ? 'returning' : 'new'),
+      patientPhone: phone || '',
+      patientType: patientType || 'new',
       dateOfBirth: extra.dateOfBirth || null,
       gender: extra.gender || '',
       isEmergency: Boolean(extra.isEmergency),
-      doctorId: doc.id,
-      serviceId: service.id,
-      roomName: doc.id === 'doc-bello' ? 'Dental Suite 1' : 'Suite B (General Care)',
-      scheduledTime: Date.now(),
-      arrivedAt: Date.now(),
+      doctorId: doctorId || doc?.id || null,
+      doctorName: doc?.name || null,
+      serviceId: serviceId || service?.id || null,
+      serviceName: service?.name || null,
+      roomName: extra.roomName || '',
+      scheduledTime: clinicNow(),
+      arrivedAt: clinicNow(),
       consultationStartedAt: null,
       completedAt: null,
       status: 'waiting',
-      paymentStatus: 'paid',
+      paymentStatus: 'pending',
       notes: notes || (extra.isEmergency ? '⚠️ URGENT / EMERGENCY Walk-In Admission' : 'Front-desk walk-in registration.'),
       followUp: null,
       welfareSent: false,
@@ -411,7 +316,7 @@ export const useVisitsStore = create(
           ? {
               ...v,
               status: 'in_consultation',
-              consultationStartedAt: Date.now(),
+              consultationStartedAt: clinicNow(),
             }
           : v
       ),
@@ -467,7 +372,7 @@ export const useVisitsStore = create(
           ? {
               ...v,
               status: 'completed',
-              completedAt: Date.now(),
+              completedAt: clinicNow(),
               followUp: followUpData,
             }
           : v
@@ -493,7 +398,7 @@ export const useVisitsStore = create(
         if (followUpData) {
           const followUpDate =
             followUpData.date ||
-            new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0];
+            new Date(clinicNow() + 14 * 86400000).toISOString().split('T')[0];
           apiService
             .createFollowUp(visit.appointmentId, {
               follow_up_date: followUpDate,
@@ -556,7 +461,7 @@ export const useVisitsStore = create(
           ? {
               ...v,
               status: 'waiting',
-              arrivedAt: Date.now(),
+              arrivedAt: clinicNow(),
               welfareSent: false,
             }
           : v
@@ -672,12 +577,14 @@ export const useVisitsStore = create(
   },
 
   resetToDemoDefaults: () => {
+    // Wave 3 / Step 3.7-B: a reset is an honest CLEAR — syncFromBackend will
+    // refill the board with today's REAL appointments.
     set({
-      visits: buildInitialVisits(),
-      expectedToday: buildInitialExpected(),
+      visits: [],
+      expectedToday: [],
       toast: {
         tone: 'info',
-        text: 'Live visits and lobby roster reset to clean demo seeds.',
+        text: 'Board cleared. Today\'s real appointments will re-appear on the next sync.',
       },
     });
   },
@@ -686,6 +593,14 @@ export const useVisitsStore = create(
     }),
     {
       name: 'cbs_visits_storage',
+      version: 2,
+      // Wave 3 / Step 3.7-B: v1 persisted the seeded demo visits. One-time
+      // migration wipes them — the API is the only source now.
+      migrate: (persisted) => ({
+        ...persisted,
+        visits: [],
+        expectedToday: [],
+      }),
       partialize: (state) => ({
         visits: state.visits,
         expectedToday: state.expectedToday,
@@ -704,7 +619,7 @@ appointmentSyncBus.subscribe('appointmentBooked', (appt) => {
     apptDate.getFullYear() === now.getFullYear();
 
   // If appointment is for today or within next 12 hours, project into expectedToday
-  if (isToday || (appt.start >= Date.now() && appt.start <= Date.now() + 12 * 3600000)) {
+  if (isToday || (appt.start >= clinicNow() && appt.start <= clinicNow() + 12 * 3600000)) {
     useVisitsStore.getState().addExpectedAppointment(appt);
   }
 });

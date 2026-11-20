@@ -69,6 +69,7 @@ from .views_analytics import (
 
 from django.db import connection
 from django.conf import settings
+from django.utils import timezone
 
 def health_check(request):
     db_ok = True
@@ -83,6 +84,12 @@ def health_check(request):
         "status": "healthy" if db_ok else "degraded",
         "service": "Clinic Booking API",
         "version": "1.0.0",
+        # Wave 3 / Step 3.1 — the clinic's clock is the site's only clock. The
+        # frontend syncs "now" from here so a wrong device clock or a foreign
+        # timezone can never shift the schedule, and renders every date and
+        # hour in the clinic's own timezone.
+        "server_time": timezone.now().isoformat(),
+        "timezone": settings.TIME_ZONE,
         "neon": {
             "database": {
                 "engine": settings.DATABASES['default']['ENGINE'],

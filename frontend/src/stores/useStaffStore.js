@@ -4,91 +4,9 @@ import { useAuthStore } from './useAuthStore';
 import { soundService } from '../services/soundService';
 import { appointmentSyncBus } from '../services/appointmentSyncBus';
 import { apiService } from '../services/apiService';
+import { clinicNow } from '../services/clinicTimeService';
 import { useAppModeStore } from './appModeStore';
 
-const INITIAL_STAFF = [
-  {
-    id: 'staff-01',
-    name: 'Sarah Aliyu',
-    email: 'sarah.aliyu@cedarcare.ng',
-    role: 'receptionist',
-    roleLabel: 'Senior Receptionist',
-    shift: '08:00 – 16:00 WAT',
-    specialty: 'Patient Triage & Reception Desk',
-    pin: '1234',
-    password: 'password123',
-    status: 'on_duty', // 'on_duty' | 'on_break' | 'on_leave'
-    clockInTime: '07:54 AM',
-    punctuality: 'Punctual (+6m early)',
-    patientsHandled: 14,
-    isActive: true,
-    avatar: 'SA',
-  },
-  {
-    id: 'staff-02',
-    name: 'Maryam Danladi',
-    email: 'maryam.d@cedarcare.ng',
-    role: 'receptionist',
-    roleLabel: 'Front-Desk Coordinator',
-    shift: '12:00 – 19:00 WAT',
-    specialty: 'Booking Verification & Follow-Up',
-    pin: '5678',
-    password: 'maryam2026',
-    status: 'on_duty',
-    clockInTime: '11:58 AM',
-    punctuality: 'Punctual (+2m early)',
-    patientsHandled: 9,
-    isActive: true,
-    avatar: 'MD',
-  },
-  {
-    id: 'doc-bello',
-    name: 'Dr. Aminu Bello',
-    email: 'dr.bello@cedarcare.ng',
-    role: 'doctor',
-    roleLabel: 'Consultant Dental Surgeon',
-    shift: '09:00 – 17:00 WAT',
-    specialty: 'Dental Surgery & Implantology',
-    status: 'on_duty',
-    clockInTime: '08:48 AM',
-    punctuality: 'Punctual (+12m early)',
-    patientsHandled: 5,
-    isActive: true,
-    avatar: 'AB',
-  },
-  {
-    id: 'doc-okafor',
-    name: 'Dr. Chinelo Okafor',
-    email: 'dr.okafor@cedarcare.ng',
-    role: 'doctor',
-    roleLabel: 'General Medical Practitioner',
-    shift: '08:00 – 16:00 WAT',
-    specialty: 'Family Medicine & Health Screenings',
-    status: 'on_duty',
-    clockInTime: '08:04 AM',
-    punctuality: 'Punctual (4m grace)',
-    patientsHandled: 4,
-    isActive: true,
-    avatar: 'CO',
-  },
-  {
-    id: 'doc-babawo',
-    name: 'Dr. Babawo',
-    email: 'dr.babawo@cedarcare.ng',
-    role: 'doctor',
-    roleLabel: 'Consultant Physician & Surgeon',
-    shift: '08:00 – 17:00 WAT',
-    specialty: 'Consultant Physician & Surgeon',
-    status: 'on_duty',
-    clockInTime: '07:50 AM',
-    punctuality: 'Punctual (+10m early)',
-    patientsHandled: 7,
-    isActive: true,
-    avatar: 'BW',
-  },
-];
-
-// Helper to download a string as a CSV file in browser
 const downloadCSV = (filename, csvContent) => {
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
@@ -104,7 +22,9 @@ const downloadCSV = (filename, csvContent) => {
 export const useStaffStore = create(
   persist(
     (set, get) => ({
-      staffList: INITIAL_STAFF,
+      // Wave 3 / Step 3.7-B: the roster comes from the API. The store starts
+      // EMPTY — and live rows never hold a password or PIN (Step 3.6).
+      staffList: [],
       selectedTab: 'all', // 'all' | 'doctor' | 'receptionist'
       searchQuery: '',
 
@@ -131,27 +51,83 @@ export const useStaffStore = create(
       openEditStaffModal: (staff) => set({ editStaffModal: { isOpen: true, staff } }),
       closeEditStaffModal: () => set({ editStaffModal: { isOpen: false, staff: null } }),
 
-      updateStaffMember: (updatedStaff) => {
-        set((state) => ({
-          staffList: state.staffList.map((s) => (s.id === updatedStaff.id ? { ...s, ...updatedStaff } : s)),
-          editStaffModal: { isOpen: false, staff: null },
-          toast: {
-            tone: 'success',
-            text: `Profile and settings for ${updatedStaff.name} saved successfully.`,
-          },
-        }));
+      // Wave 3 / Step 3.6: an edit awaits the backend and commits what IT
+      // accepted. The display-role label ("Lead Receptionist") is mapped to
+      // a real backend role before the wire; a doctor's duty select drives
+      // the real duty-status endpoint; and the committed row NEVER carries a
+      // password or PIN. A refusal answers with the server's sentence and
+      // leaves the roster exactly as it was.
+      updateStaffMember: async (updatedStaff) => {
+        const isDemo = useAppModeStore.getState().isDemoMode;
 
-        if (!useAppModeStore.getState().isDemoMode) {
-          apiService.updateStaff(updatedStaff.id, updatedStaff).catch((err) => {
-            console.warn('Backend updateStaff failed:', err);
-          });
+        // Map the workstation ROLE LABEL the admin picked to the backend's
+        // own role values. Unknown labels keep the current role.
+        const labelToRole = (label, fallbackRole) => {
+          const l = String(label || '').toLowerCase();
+          if (l.includes('admin') || l.includes('manager') || l.includes('director')) return 'clinic_admin';
+          if (l.includes('doctor') || l.includes('physician') || l.includes('surgeon')) return 'doctor';
+          if (l.includes('reception')) return 'receptionist';
+          return fallbackRole;
+        };
+
+        const wirePayload = {
+          name: updatedStaff.name,
+          email: updatedStaff.email,
+          specialty: updatedStaff.specialty,
+          shift: updatedStaff.shift,
+          role: updatedStaff.role === 'doctor'
+            ? 'doctor'
+            : labelToRole(updatedStaff.roleLabel || updatedStaff.role, updatedStaff.role),
+          is_active: updatedStaff.isActive !== undefined ? updatedStaff.isActive : updatedStaff.is_active,
+        };
+
+        const commitRow = () => {
+          // The committed row is what the admin SAVED, minus any secrets —
+          // live rows never hold a password or PIN in browser state.
+          const safeRow = { ...updatedStaff };
+          delete safeRow.password;
+          delete safeRow.pin;
+          set((state) => ({
+            staffList: state.staffList.map((s) => (s.id === updatedStaff.id ? { ...s, ...safeRow } : s)),
+            editStaffModal: { isOpen: false, staff: null },
+            toast: {
+              tone: 'success',
+              text: `Profile and settings for ${updatedStaff.name} saved successfully.`,
+            },
+          }));
+          if (safeRow.role === 'doctor') {
+            appointmentSyncBus.publishDoctorUpdated(safeRow);
+          }
+          soundService.playChime();
+        };
+
+        if (!isDemo) {
+          try {
+            await apiService.updateStaff(updatedStaff.id, wirePayload);
+            // A doctor's duty select drives the real duty-status endpoint.
+            if (wirePayload.role === 'doctor' && updatedStaff.status) {
+              const dutyMode = updatedStaff.status === 'on_duty' ? 'on_duty' : 'off_duty';
+              await apiService
+                .updateDoctorDutyStatus(updatedStaff.id, { status: dutyMode })
+                .catch(() => {});
+            }
+            commitRow();
+          } catch (err) {
+            set({
+              toast: {
+                tone: 'error',
+                text:
+                  err.details?.detail ||
+                  err.message ||
+                  'The profile was not saved — nothing changed.',
+              },
+            });
+          }
+          return;
         }
 
-        if (updatedStaff.role === 'doctor') {
-          appointmentSyncBus.publishDoctorUpdated(updatedStaff);
-        }
-
-        soundService.playChime();
+        // Demo row: the optimistic instant commit IS the product here.
+        commitRow();
       },
 
   setDutyStatus: (staffId, newStatus) => {
@@ -194,41 +170,76 @@ export const useStaffStore = create(
     });
   },
 
-  confirmResetPin: (staffId, newPin) => {
-    set((state) => ({
-      staffList: state.staffList.map((s) => (s.id === staffId ? { ...s, pin: newPin } : s)),
-      resetPinModal: { isOpen: false, staffId: null, staffName: '' },
-      toast: {
-        tone: 'success',
-        text: `Quick-PIN for ${get().staffList.find((s) => s.id === staffId)?.name || 'staff'} successfully updated.`,
-      },
-    }));
-
-    if (!useAppModeStore.getState().isDemoMode) {
-      apiService.resetStaffPin(staffId, newPin).catch((err) => {
-        console.warn('Backend resetPin failed:', err);
-      });
+  // Wave 3 / Step 3.6: same contract as the password reset — await the
+  // backend, never store the new PIN on the row, surface a refusal.
+  confirmResetPin: async (staffId, newPin) => {
+    if (useAppModeStore.getState().isDemoMode) {
+      // Demo rows keep the PIN locally — the pitch lock screen unlocks with
+      // it. Live rows never hold one (see the live branch below).
+      set((state) => ({
+        staffList: state.staffList.map((s) => (s.id === staffId ? { ...s, pin: newPin } : s)),
+        resetPinModal: { isOpen: false, staffId: null, staffName: '' },
+        toast: {
+          tone: 'success',
+          text: `Quick-PIN for ${get().staffList.find((s) => s.id === staffId)?.name || 'staff'} updated (demo).`,
+        },
+      }));
+      soundService.playChime();
+      return;
     }
 
-    soundService.playChime();
+    try {
+      await apiService.resetStaffPin(staffId, newPin);
+      set({
+        resetPinModal: { isOpen: false, staffId: null, staffName: '' },
+        toast: {
+          tone: 'success',
+          text: `Quick-PIN for ${get().staffList.find((s) => s.id === staffId)?.name || 'staff'} successfully updated.`,
+        },
+      });
+      soundService.playChime();
+    } catch (err) {
+      set({
+        toast: {
+          tone: 'error',
+          text: err.details?.detail || err.message || 'The PIN was not changed.',
+        },
+      });
+    }
   },
 
-  confirmResetPassword: (staffId, newPassword) => {
-    set((state) => ({
-      staffList: state.staffList.map((s) => (s.id === staffId ? { ...s, password: newPassword } : s)),
-      toast: {
-        tone: 'success',
-        text: `Password for ${get().staffList.find((s) => s.id === staffId)?.name || 'staff'} successfully updated.`,
-      },
-    }));
-
-    if (!useAppModeStore.getState().isDemoMode) {
-      apiService.resetStaffPassword(staffId, newPassword).catch((err) => {
-        console.warn('Backend resetPassword failed:', err);
+  // Wave 3 / Step 3.6: a password reset awaits the backend and NEVER stores
+  // the new secret on the row — the browser holds credentials only in the
+  // moment of typing them. A refusal answers with the server's sentence.
+  confirmResetPassword: async (staffId, newPassword) => {
+    if (useAppModeStore.getState().isDemoMode) {
+      set({
+        toast: {
+          tone: 'success',
+          text: `Password for ${get().staffList.find((s) => s.id === staffId)?.name || 'staff'} updated (demo).`,
+        },
       });
+      soundService.playChime();
+      return;
     }
 
-    soundService.playChime();
+    try {
+      await apiService.resetStaffPassword(staffId, newPassword);
+      set({
+        toast: {
+          tone: 'success',
+          text: `Password for ${get().staffList.find((s) => s.id === staffId)?.name || 'staff'} successfully updated.`,
+        },
+      });
+      soundService.playChime();
+    } catch (err) {
+      set({
+        toast: {
+          tone: 'error',
+          text: err.details?.detail || err.message || 'The password was not changed.',
+        },
+      });
+    }
   },
 
   // 1-Click Deactivation with Immediate 401 Session Revocation
@@ -276,7 +287,12 @@ export const useStaffStore = create(
   openAddStaffModal: () => set({ addStaffModalOpen: true }),
   closeAddStaffModal: () => set({ addStaffModalOpen: false }),
 
-  addStaffMember: (newStaffData) => {
+  // Wave 3 / Step 3.5 + 3.6: staff creation asks the backend FIRST in live
+  // mode and commits the row IT created (real id) — a failed POST used to
+  // leave a fake row on screen with a success toast. Live rows never hold a
+  // PIN or password (the toast must not print one either); those exist only
+  // on demo rows, which are the pitch tool.
+  addStaffMember: async (newStaffData) => {
     const initials = newStaffData.name
       .split(' ')
       .map((n) => n[0])
@@ -285,70 +301,81 @@ export const useStaffStore = create(
       .slice(0, 2);
 
     const isDoc = newStaffData.role === 'doctor';
+    const isDemo = useAppModeStore.getState().isDemoMode;
 
-    const newStaff = {
-      id: `staff-${Date.now()}`,
-      name: newStaffData.name,
-      email: newStaffData.email,
-      role: newStaffData.role,
-      roleLabel: isDoc ? 'Clinical Doctor' : 'Front-Desk Receptionist',
-      shift: newStaffData.shift || '08:00 – 16:00 WAT',
-      specialty: newStaffData.specialty || (isDoc ? 'General Practice' : 'Reception Triage'),
-      status: 'on_duty',
-      clockInTime: 'Just now',
-      punctuality: 'On Time',
-      patientsHandled: 0,
-      isActive: true,
-      avatar: initials || 'ST',
+    const commitStaff = (staffId) => {
+      const newStaff = {
+        id: staffId,
+        name: newStaffData.name,
+        email: newStaffData.email,
+        role: newStaffData.role,
+        roleLabel: isDoc ? 'Clinical Doctor' : 'Front-Desk Receptionist',
+        shift: newStaffData.shift || '08:00 – 16:00 WAT',
+        specialty: newStaffData.specialty || (isDoc ? 'General Practice' : 'Reception Triage'),
+        status: 'on_duty',
+        clockInTime: 'Just now',
+        punctuality: 'On Time',
+        patientsHandled: 0,
+        isActive: true,
+        avatar: initials || 'ST',
+      };
+
+      // Credentials on the row exist ONLY in demo mode — live rows never
+      // hold a PIN or password in browser state.
+      if (isDemo && !isDoc) {
+        newStaff.pin = newStaffData.pin || '1234';
+        newStaff.password = newStaffData.password || 'password123';
+      }
+
+      set((state) => ({
+        staffList: [...state.staffList, newStaff],
+        addStaffModalOpen: false,
+        toast: {
+          tone: 'success',
+          text: isDoc
+            ? `Doctor ${newStaff.name} enrolled and reflected across all clinical schedules.`
+            : `Receptionist ${newStaff.name} enrolled.`,
+        },
+      }));
+
+      if (isDoc) {
+        const docCalendarData = {
+          id: newStaff.id,
+          name: newStaff.name,
+          specialty: newStaff.specialty,
+          shiftStartMin: 8 * 60,
+          shiftEndMin: 17 * 60,
+          serviceIds: ['svc-checkup', 'svc-dental', 'svc-extract'],
+          isOnDuty: true,
+          isEmergencyLeave: false,
+          emergencyReason: null,
+        };
+        appointmentSyncBus.publishDoctorEnrolled(docCalendarData);
+      }
+
+      soundService.playChime();
     };
 
-    if (!isDoc) {
-      newStaff.pin = newStaffData.pin || '1234';
-      newStaff.password = newStaffData.password || 'password123';
-    }
-
-    set((state) => ({
-      staffList: [...state.staffList, newStaff],
-      addStaffModalOpen: false,
-      toast: {
-        tone: 'success',
-        text: isDoc
-          ? `Doctor ${newStaff.name} enrolled and reflected across all clinical schedules.`
-          : `Receptionist ${newStaff.name} enrolled with Quick-PIN ${newStaff.pin}.`,
-      },
-    }));
-
-    if (!useAppModeStore.getState().isDemoMode) {
-      apiService
-        .createStaff(newStaffData)
-        .then((res) => {
-          if (res && res.id) {
-            set((state) => ({
-              staffList: state.staffList.map((s) => (s.id === newStaff.id ? { ...s, id: res.id } : s)),
-            }));
-          }
-        })
-        .catch((err) => {
-          console.warn('Backend createStaff failed:', err);
+    if (!isDemo) {
+      try {
+        const res = await apiService.createStaff(newStaffData);
+        commitStaff(res?.id || res?.staff_id || `staff-${clinicNow()}`);
+      } catch (err) {
+        set({
+          toast: {
+            tone: 'error',
+            text:
+              err.details?.detail ||
+              err.message ||
+              'The staff account was not created — nothing was saved.',
+          },
         });
+      }
+      return;
     }
 
-    if (isDoc) {
-      const docCalendarData = {
-        id: newStaff.id,
-        name: newStaff.name,
-        specialty: newStaff.specialty,
-        shiftStartMin: 8 * 60,
-        shiftEndMin: 17 * 60,
-        serviceIds: ['svc-checkup', 'svc-dental', 'svc-extract'],
-        isOnDuty: true,
-        isEmergencyLeave: false,
-        emergencyReason: null,
-      };
-      appointmentSyncBus.publishDoctorEnrolled(docCalendarData);
-    }
-
-    soundService.playChime();
+    // Demo row: the optimistic instant commit IS the product here.
+    commitStaff(`staff-${clinicNow()}`);
   },
 
   // 1-Click CSV Exporters
@@ -473,6 +500,14 @@ export const useStaffStore = create(
     }),
     {
       name: 'cedarcare_staff_store',
+      version: 2,
+      // Wave 3 / Step 3.7-B: v1 persisted the seeded demo roster — including
+      // its demo passwords and PINs. One-time migration wipes it; the API is
+      // the only source now.
+      migrate: (persisted) => ({
+        ...persisted,
+        staffList: [],
+      }),
       partialize: (state) => ({ staffList: state.staffList }),
     }
   )

@@ -109,8 +109,11 @@ export const EmergencyDisruptionModal = ({
     }
   }, [availableColleagues, selectedColleague]);
 
-  const currentDoc = getDoctor(doctorId);
-  const colleague = getDoctor(selectedColleague);
+  // Wave 3 / Step 3.4: look the doctor up in the REAL roster (the doctors
+  // prop) first - live ids are UUIDs the mock registry cannot resolve. The
+  // mock getDoctor is a fallback for demo rows only.
+  const currentDoc = doctors.find((d) => d.id === doctorId) || getDoctor(doctorId);
+  const colleague = doctors.find((d) => d.id === selectedColleague) || getDoctor(selectedColleague);
 
   // Group the preview report by the day each patient lands on, and count how
   // many patients each colleague would absorb. The panel is the receptionist's
@@ -560,7 +563,11 @@ export const EmergencyDisruptionModal = ({
           ) : (
             <div className="affected-list">
               {returningPatients.map((apt) => {
-                const service = getService(apt.serviceId);
+                // Prefer the row's own service name (real UUID ids resolve
+                // nothing in the mock registry).
+                const service = apt.serviceName
+                  ? { name: apt.serviceName }
+                  : getService(apt.serviceId);
                 return (
                   <div key={apt.id} className="affected-item affected-item-returning">
                     <div className="affected-item-info">
@@ -628,7 +635,9 @@ export const EmergencyDisruptionModal = ({
           ) : (
             <div className="affected-list">
               {newPatients.map((apt) => {
-                const service = getService(apt.serviceId);
+                const service = apt.serviceName
+                  ? { name: apt.serviceName }
+                  : getService(apt.serviceId);
                 return (
                   <div key={apt.id} className="affected-item affected-item-new">
                     <div className="affected-item-info">

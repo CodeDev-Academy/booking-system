@@ -1,13 +1,14 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+// Wave 3 / Step 3.7-B: the mock builders are gone from the clinic store.
+// What remains imported are the CLINIC RULES the real API also enforces and
+// the pitch simulator's date range.
 import {
-  buildMockRequests,
-  buildMockAppointments,
-  buildBusyBlocks,
   CLINIC_RULES,
   BASE_OFFSET,
   DEFAULT_RANGE_DAYS,
 } from '../services/mockData';
+import { clinicNow } from '../services/clinicTimeService';
 import { generateCandidateSlots, getService, makeSlot } from '../services/slotEngine';
 import { useAuthStore } from './useAuthStore';
 import { soundService } from '../services/soundService';
@@ -29,9 +30,14 @@ const getCurrentStaffName = () => {
 export const useQueueStore = create(
   persist(
     (set, get) => ({
-  requests: buildMockRequests(),
-  appointments: buildMockAppointments(),
-  busyBlocks: buildBusyBlocks(),
+  // Wave 3 / Step 3.7-B: the API is the only source of clinic rows. The
+  // in-browser demo seeds are deleted; the pitch look comes from
+  // `seed_clinic` on the database, so the queue reflects the real pipeline.
+  // (The pitch SIMULATOR keeps its own private dataset and injects its
+  // requests live through appointmentSyncBus.)
+  requests: [],
+  appointments: [],
+  busyBlocks: [],
   activeTab: 'new',
   selectedId: null,
   slotsByRequest: {},
@@ -106,7 +112,7 @@ export const useQueueStore = create(
             if (Array.isArray(remoteSlots) && remoteSlots.length > 0) {
               const service = getService(request.serviceId);
               const mapped = remoteSlots.map((s, idx) => ({
-                id: s.id || `slot-live-${idx + 1}-${Date.now()}`,
+                id: s.id || `slot-live-${idx + 1}-${clinicNow()}`,
                 doctorId: s.doctor_id || request.preferredDoctorId || 'doc-bello',
                 doctorName: s.doctor_name,
                 start: new Date(s.start_datetime).getTime(),
@@ -131,7 +137,15 @@ export const useQueueStore = create(
     try {
       const data = await apiService.fetchBookingRequests();
       const list = Array.isArray(data) ? data : data?.results || [];
-      if (list.length === 0) return;
+
+      // Wave 3 / Step 3.2: an EMPTY answer is still an answer. The backend is
+      // the source of truth — when it says no requests exist, the queue shows
+      // no requests instead of keeping seeded rows on screen. (A FAILED fetch
+      // is different: the catch below keeps whatever is on screen.)
+      if (list.length === 0) {
+        set({ requests: [] });
+        return;
+      }
 
       const mappedRemote = list.map((item) => {
         const statusVal = item.status === 're_requested' ? 'awaiting_review' : item.status;
@@ -161,8 +175,8 @@ export const useQueueStore = create(
           status: statusVal,
           reRequested: item.status === 're_requested' || Boolean(item.re_requested),
           reviewingBy: null,
-          createdAt: item.created_at ? new Date(item.created_at).getTime() : Date.now(),
-          expiredAt: item.offer_expires_at ? new Date(item.offer_expires_at).getTime() : Date.now(),
+          createdAt: item.created_at ? new Date(item.created_at).getTime() : clinicNow(),
+          expiredAt: item.offer_expires_at ? new Date(item.offer_expires_at).getTime() : clinicNow(),
           offerExpiresAt: item.offer_expires_at ? new Date(item.offer_expires_at).getTime() : null,
           isEmergency: Boolean(item.is_emergency),
           gender: item.gender || '',
@@ -293,7 +307,7 @@ export const useQueueStore = create(
               status: 'slots_offered',
               reviewingBy: null,
               reRequested: false,
-              offerExpiresAt: Date.now() + CLINIC_RULES.offerExpiryMin * MIN,
+              offerExpiresAt: clinicNow() + CLINIC_RULES.offerExpiryMin * MIN,
             }
           : r
       ),
@@ -366,69 +380,106 @@ export const useQueueStore = create(
     soundService.playChime();
   },
 
-  // [Approve 1 Confirmed Slot] — directly books into confirmed schedule
-  confirmSingleSlot: ({ requestId, slotId }) => {
-    const { requests, appointments, slotsByRequest } = get();
+  // [Approve 1 Confirmed Slot] — directly books into confirmed schedule.
+  // Wave 3 / Step 3.5: in live mode the backend is asked FIRST and the row
+  // committed is the one IT created — real appointment code, real times. A
+  // refusal answers with the server's own sentence (Wave 2 made the 409s
+  // readable) and leaves the request exactly as it was. The optimistic
+  // instant-commit survives only for demo rows, which are the pitch tool.
+  confirmSingleSlot: async ({ requestId, slotId }) => {
+    const { requests, slotsByRequest } = get();
     const req = requests.find((r) => r.id === requestId);
     if (!req) return;
     const allSlots = slotsByRequest[requestId] || [];
     const chosenSlot = allSlots.find((s) => s.id === slotId) || allSlots[0];
     if (!chosenSlot) return;
 
-    const apptId = `AP-${Math.floor(1000 + Math.random() * 9000)}`;
-    const newAppt = {
-      id: apptId,
-      patientName: req.patientName,
-      patientType: req.patientType || 'new',
-      phone: req.phone,
-      serviceId: req.serviceId,
-      doctorId: chosenSlot.doctorId,
-      start: chosenSlot.start,
-      status: 'confirmed',
+    const commitBooking = (newAppt, toastText) => {
+      set((state) => ({
+        appointments: [...state.appointments, newAppt],
+        requests: state.requests.map((r) =>
+          r.id === requestId ? { ...r, status: 'converted', reviewingBy: null } : r
+        ),
+        selectedId: null,
+        activeTab: 'today',
+        toast: { tone: 'success', text: toastText },
+      }));
+      // Broadcast cross-store synchronization to Calendar & Live Visits
+      appointmentSyncBus.publishAppointmentBooked(newAppt);
+      soundService.playChime();
     };
 
-    set((state) => ({
-      appointments: [...state.appointments, newAppt],
-      requests: state.requests.map((r) =>
-        r.id === requestId ? { ...r, status: 'converted', reviewingBy: null } : r
-      ),
-      selectedId: null,
-      activeTab: 'today',
-      toast: {
-        tone: 'success',
-        text: `✓ Booking ${apptId} confirmed & scheduled for ${req.patientName}!`,
-      },
-    }));
+    const isLocalMock = !req?.backendUuid && (
+      String(requestId).startsWith('req-004') ||
+      String(req?.code || '').startsWith('REQ-2026-004')
+    );
+    const isLiveRow = !useAppModeStore.getState().isDemoMode && !isLocalMock;
 
-    // Broadcast cross-store synchronization to Calendar & Live Visits
-    appointmentSyncBus.publishAppointmentBooked(newAppt);
-
-    if (!useAppModeStore.getState().isDemoMode) {
-      const isLocalMock = !req?.backendUuid && (
-        String(requestId).startsWith('req-004') ||
-        String(req?.code || '').startsWith('REQ-2026-004')
-      );
-      if (!isLocalMock) {
-        const startIso = new Date(chosenSlot.start).toISOString();
-        const endIso = new Date(chosenSlot.start + 30 * MIN).toISOString();
-        apiService
-          .holdSlot({
-            doctorId: chosenSlot.doctorId,
-            serviceId: req.serviceId,
-            patientName: req.patientName,
-            patientPhone: req.phone,
-            startDatetime: startIso,
-            endDatetime: endIso,
-            isInstantConfirm: true,
-            requestId: req.backendUuid || req.code || requestId,
-          })
-          .catch((err) => {
-            console.warn('Backend slot hold failed:', err);
-          });
+    if (isLiveRow) {
+      const startIso = new Date(chosenSlot.start).toISOString();
+      const endIso = new Date(chosenSlot.start + 30 * MIN).toISOString();
+      try {
+        const res = await apiService.holdSlot({
+          doctorId: chosenSlot.doctorId,
+          serviceId: req.serviceId,
+          patientName: req.patientName,
+          patientPhone: req.phone,
+          startDatetime: startIso,
+          endDatetime: endIso,
+          isInstantConfirm: true,
+          requestId: req.backendUuid || req.code || requestId,
+        });
+        const appt = res?.appointment || res || {};
+        const realCode = appt.appointment_code || res?.appointment_code;
+        const realStart = appt.start_datetime ? Date.parse(appt.start_datetime) : chosenSlot.start;
+        const realEnd = appt.end_datetime
+          ? Date.parse(appt.end_datetime)
+          : chosenSlot.start + 30 * MIN;
+        commitBooking(
+          {
+            id: realCode,
+            patientName: appt.patient_name || req.patientName,
+            patientType: req.patientType || 'new',
+            phone: appt.patient_phone || req.phone,
+            serviceId: String(appt.service_id || req.serviceId),
+            doctorId: String(appt.doctor_id || chosenSlot.doctorId),
+            start: realStart,
+            end: realEnd,
+            status: appt.status || 'confirmed',
+          },
+          `✓ Booking ${realCode} confirmed & scheduled for ${req.patientName}!`
+        );
+      } catch (err) {
+        // Nothing was booked: no row, no conversion, no broadcast — just the
+        // server's own explanation of why.
+        set({
+          toast: {
+            tone: 'error',
+            text:
+              err.details?.detail ||
+              err.message ||
+              'The booking was refused — nothing was saved.',
+          },
+        });
       }
+      return;
     }
 
-    soundService.playChime();
+    // Demo/mock row: the optimistic instant commit IS the product here.
+    const apptId = `AP-${Math.floor(1000 + Math.random() * 9000)}`;
+    commitBooking(
+      {
+        id: apptId,
+        patientName: req.patientName,
+        patientType: req.patientType || 'new',
+        phone: req.phone,
+        serviceId: req.serviceId,
+        doctorId: chosenSlot.doctorId,
+        start: chosenSlot.start,
+        status: 'confirmed',
+      },
+      `✓ Booking ${apptId} confirmed & scheduled for ${req.patientName}!`
+    );
   },
 
   injectRequest: (newRequest) =>
@@ -459,7 +510,7 @@ export const useQueueStore = create(
 
     set((state) => ({
       requests: state.requests.map((r) =>
-        r.id === requestId ? { ...r, status: 'converted', convertedAt: Date.now() } : r
+        r.id === requestId ? { ...r, status: 'converted', convertedAt: clinicNow() } : r
       ),
       appointments: [...state.appointments, newAppt],
       toast: {
@@ -484,7 +535,7 @@ export const useQueueStore = create(
       patientName: appt.patientName,
       phone: appt.phone || appt.patientPhone,
       patientType: appt.patientType || 'new',
-      start: appt.scheduledTime || appt.start || Date.now(),
+      start: appt.scheduledTime || appt.start || clinicNow(),
       status: 'confirmed',
     };
 
@@ -507,7 +558,7 @@ export const useQueueStore = create(
     set((state) => ({
       requests: state.requests.map((r) =>
         r.id === requestId
-          ? { ...r, status: 'offer_expired', expiredAt: Date.now() }
+          ? { ...r, status: 'offer_expired', expiredAt: clinicNow() }
           : r
       ),
       toast: {
@@ -521,7 +572,7 @@ export const useQueueStore = create(
     set((state) => ({
       requests: state.requests.map((r) =>
         r.id === requestId
-          ? { ...r, status: 'awaiting_review', reRequested: true, createdAt: Date.now() }
+          ? { ...r, status: 'awaiting_review', reRequested: true, createdAt: clinicNow() }
           : r
       ),
       activeTab: 'rerequested',
@@ -533,16 +584,17 @@ export const useQueueStore = create(
   },
 
   resetToDemoDefaults: () => {
+    // Wave 3 / Step 3.7-B: a reset is an honest CLEAR, not a re-seed — the
+    // old action manufactured demo patients out of thin air.
     set({
-      requests: buildMockRequests(),
-      appointments: buildMockAppointments(),
-      busyBlocks: buildBusyBlocks(),
+      requests: [],
+      appointments: [],
+      busyBlocks: [],
       activeTab: 'new',
       selectedId: null,
-      slotsByRequest: {},
       toast: {
         tone: 'info',
-        text: 'Queue reset to clean demo seeds.',
+        text: 'Queue cleared. Live requests will re-appear as the API answers.',
       },
     });
   },
@@ -551,6 +603,14 @@ export const useQueueStore = create(
     }),
     {
       name: 'cbs_queue_storage',
+      version: 2,
+      // Wave 3 / Step 3.7-B: v1 persisted the in-browser demo seeds. This
+      // one-time migration wipes them — the API is the only source now.
+      migrate: (persisted) => ({
+        ...persisted,
+        requests: [],
+        appointments: [],
+      }),
       partialize: (state) => ({
         requests: state.requests,
         appointments: state.appointments,
@@ -570,7 +630,7 @@ appointmentSyncBus.subscribe('walkInAdmitted', (visit) => {
     patientName: visit.patientName,
     phone: visit.patientPhone,
     patientType: visit.patientType || 'new',
-    start: visit.scheduledTime || visit.arrivedAt || Date.now(),
+    start: visit.scheduledTime || visit.arrivedAt || clinicNow(),
   });
 });
 

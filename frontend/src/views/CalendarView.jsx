@@ -11,6 +11,7 @@ import { PastPatientsHistory } from '../components/calendar/PastPatientsHistory'
 import { AppointmentDetailsModal } from '../components/calendar/AppointmentDetailsModal';
 import { QuickWalkInModal } from '../components/calendar/QuickWalkInModal';
 import { parseTimeSlotToTimestamp } from '../services/timeUtils';
+import { clinicDayStartOfParts, clinicParts, clinicNow } from '../services/clinicTimeService';
 import '../styles/components/views.css';
 import '../styles/components/calendar.css';
 import '../styles/components/grid-booking-calendar.css';
@@ -159,26 +160,38 @@ export const CalendarView = () => {
             if (dateOrDayNum instanceof Date) {
               startTs = parseTimeSlotToTimestamp(dateOrDayNum, timeSlot);
             } else if (typeof dateOrDayNum === 'number') {
-              const now = new Date();
-              const baseDate = new Date(now.getFullYear(), now.getMonth(), dateOrDayNum);
+              // Wave 3 / Step 3.1: the anchor is the CLINIC's current date,
+              // not the visitor's calendar.
+              const today = clinicParts(clinicNow());
+              const baseDate = new Date(clinicDayStartOfParts(today.year, today.monthIdx, dateOrDayNum));
               startTs = parseTimeSlotToTimestamp(baseDate, timeSlot);
             } else {
-              startTs = parseTimeSlotToTimestamp(new Date(), timeSlot);
+              const today = clinicParts(clinicNow());
+              const baseDate = new Date(clinicDayStartOfParts(today.year, today.monthIdx, today.day));
+              startTs = parseTimeSlotToTimestamp(baseDate, timeSlot);
             }
             actions.openWalkInModal(doctorId, startTs);
           }}
           onSelectAppointment={(apt) => {
+            // Wave 3 / Step 3.4: the modal receives the appointment's OWN
+            // data. It used to invent start (Date.now()), end (+30m), guess
+            // the service from the label text, read a phone key the grid
+            // never filled, and default the doctor to 'doc-bello'.
             setSelectedAppointment({
               id: apt.id,
+              appointmentId: apt.appointmentId || apt.id,
               patientName: apt.patientName,
               phone: apt.phone,
-              patientPhone: apt.phone,
+              patientPhone: apt.patientPhone || apt.phone,
               patientType: apt.type,
-              serviceId: apt.service?.includes('Extraction') ? 'svc-extract' : 'svc-dental',
-              doctorId: apt.doctorId || 'doc-bello',
+              serviceId: apt.serviceId,
+              serviceName: apt.serviceName || apt.service || null,
+              doctorId: apt.doctorId,
+              doctorName: apt.doctorName || null,
               status: apt.status || 'confirmed',
-              start: Date.now(),
-              end: Date.now() + 30 * 60000,
+              start: apt.start ?? null,
+              end: apt.end ?? null,
+              bufferMin: apt.bufferMin || 10,
             });
           }}
           onReleaseHold={(id) => {

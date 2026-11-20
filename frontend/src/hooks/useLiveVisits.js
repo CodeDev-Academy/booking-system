@@ -1,23 +1,37 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useVisitsStore } from '../stores/useVisitsStore';
 import { DOCTORS, SERVICES, formatNaira } from '../services/mockData';
-import { getDoctor, getService, getAllDoctors } from '../services/slotEngine';
+import { getDoctor, getService } from '../services/slotEngine';
 import { formatTime } from '../services/timeUtils';
 import { matchesPhone } from '../services/phoneUtils';
+import { clinicNow } from '../services/clinicTimeService';
 
 // Throttle global board ticker to 10s to eliminate CPU/memory re-render churn
 const TICK_MS = 10000;
 const TOAST_TIMEOUT_MS = 4000;
+// Wave 3 / Step 3.3: the board refreshes from the API on mount and once a
+// minute, mirroring the queue's pattern.
+const SYNC_INTERVAL_MS = 60 * 1000;
 
 export const useLiveVisits = () => {
   const store = useVisitsStore();
-  const [now, setNow] = useState(() => Date.now());
+  const [now, setNow] = useState(() => clinicNow());
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPatientVisit, setSelectedPatientVisit] = useState(null);
 
-  // Second-by-second ticker for active duration timers
+  // Wave 3 / Step 3.3: real data on mount, then kept fresh.
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), TICK_MS);
+    const run = () => { store.syncFromBackend(); };
+    run();
+    const t = setInterval(run, SYNC_INTERVAL_MS);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Second-by-second ticker for active duration timers — on the CLINIC clock
+  // (server-synced), so a slow laptop clock cannot skew urgency timers.
+  useEffect(() => {
+    const timer = setInterval(() => setNow(clinicNow()), TICK_MS);
     return () => clearInterval(timer);
   }, []);
 
@@ -65,7 +79,19 @@ export const useLiveVisits = () => {
   }, [visits, selectedDoctorFilter, searchQuery]);
 
   // Real-time visit counts per doctor filter
-  const allDoctors = useMemo(() => getAllDoctors(), [visits]);
+  // Wave 3 / Step 3.7-B: the tabs come from the REAL rows on the board —
+  // the API's doctors — not the mock registry.
+  const allDoctors = useMemo(() => {
+    const byId = new Map();
+    [...visits, ...(store.expectedToday || [])].forEach((v) => {
+      if (!v.doctorId || byId.has(v.doctorId)) return;
+      byId.set(v.doctorId, {
+        id: v.doctorId,
+        name: v.doctorName || getDoctor(v.doctorId)?.name || 'Doctor',
+      });
+    });
+    return Array.from(byId.values());
+  }, [visits, store.expectedToday]);
 
   const doctorCounts = useMemo(() => {
     const counts = { all: visits.length };
@@ -78,9 +104,15 @@ export const useLiveVisits = () => {
   // Process visits with real-time timers and progress bars
   const processedVisits = useMemo(() => {
     return filteredVisits.map((v) => {
-      const doctor = getDoctor(v.doctorId);
-      const service = getService(v.serviceId);
-      const servicePrice = formatNaira(service?.priceNgn || 15000);
+      // Wave 3 / Step 3.3: the row carries the backend's own doctor/service
+      // identity — the mock roster is only a fallback for demo rows.
+      const doctor = v.doctorName
+        ? { ...getDoctor(v.doctorId), name: v.doctorName }
+        : getDoctor(v.doctorId);
+      const service = v.serviceName
+        ? { ...(getService(v.serviceId) || {}), name: v.serviceName, durationMin: v.serviceDurationMin || getService(v.serviceId)?.durationMin || 30, priceNgn: v.servicePrice ?? getService(v.serviceId)?.priceNgn }
+        : getService(v.serviceId);
+      const servicePrice = formatNaira(v.servicePrice ?? service?.priceNgn ?? 15000);
 
       // Lobby waiting time
       let waitElapsedSec = 0;
@@ -204,8 +236,14 @@ export const useLiveVisits = () => {
     }
     return list.map((e) => ({
       ...e,
-      doctor: getDoctor(e.doctorId),
-      service: getService(e.serviceId),
+      // Wave 3 / Step 3.3: prefer the row's own backend identity; the mock
+      // roster is a fallback only (real doctor ids are UUIDs).
+      doctor: e.doctorName
+        ? { ...(getDoctor(e.doctorId) || {}), name: e.doctorName }
+        : getDoctor(e.doctorId),
+      service: e.serviceName
+        ? { ...(getService(e.serviceId) || {}), name: e.serviceName, priceNgn: e.servicePrice ?? getService(e.serviceId)?.priceNgn }
+        : getService(e.serviceId),
     }));
   }, [store.expectedToday, selectedDoctorFilter, searchQuery]);
 

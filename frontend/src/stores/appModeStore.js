@@ -13,7 +13,10 @@ const getInitialDemoMode = () => {
 };
 
 const getInitialHideSim = () => {
-  if (typeof window !== 'undefined') return false;
+  // Wave 3 (review Medium): the old guard returned false whenever a window
+  // existed, so the SAVED preference never applied. Read the preference
+  // first; only a windowless (SSR/test) context falls back to false.
+  if (typeof window === 'undefined') return false;
   return localStorage.getItem('cedarcare_hide_simulator') === 'true';
 };
 
@@ -59,15 +62,10 @@ export const useAppModeStore = create((set) => ({
   setSidebarCollapsed: (collapsed) => set({ isSidebarCollapsed: collapsed }),
 
   // Active Receptionist Session
-  currentStaff: {
-    id: 'staff-01',
-    name: 'Sarah Aliyu',
-    role: 'Receptionist',
-    shift: 'Morning Shift',
-    code: 'REC-01',
-    avatar: 'SA',
-    isLocked: false,
-  },
+  // Wave 3 / Step 3.7-B: no fake default staff member. The real session's
+  // identity lives in useAuthStore (set at login) — this field is only a
+  // consumer-side mirror for demo tooling, so it starts EMPTY.
+  currentStaff: null,
   setCurrentStaff: (staff) => set({ currentStaff: staff }),
 
   // Audio Chime notification toggle
@@ -75,20 +73,23 @@ export const useAppModeStore = create((set) => ({
   toggleAudio: () => set((state) => ({ audioEnabled: !state.audioEnabled })),
 
   // Live Queue & Shift KPI Counters
+  // Wave 3 / Step 3.7-B: no hardcoded badge numbers. useTriageQueue sets the
+  // real counts when the queue mounts; until then the badges honestly read 0.
   queueCounts: {
-    newRequests: 4,
-    reRequested: 2,
-    needsAttention: 1,
-    expiredOffers: 1,
-    todaySchedule: 8,
+    newRequests: 0,
+    reRequested: 0,
+    needsAttention: 0,
+    expiredOffers: 0,
+    todaySchedule: 0,
   },
   setQueueCounts: (counts) => set({ queueCounts: counts }),
 
-  // Clinic Metadata
+  // Clinic Metadata — display fallback only. The real name/address comes
+  // from the settings store's API sync and is read where it is shown.
   clinicInfo: {
-    name: 'Cedarcare Specialist Clinic',
-    branch: 'Wuse 2, Abuja',
-    phone: '+234 901 234 5678',
-    hours: '08:00 – 18:00',
+    name: 'Clinic',
+    branch: '',
+    phone: '',
+    hours: '08:00 - 18:00',
   },
 }));

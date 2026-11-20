@@ -5,19 +5,24 @@
 
 const MIN = 60000;
 
-export const startOfDayOffset = (offset) => {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() + offset);
-  return d.getTime();
-};
+// Wave 3 / Step 3.1: the day engine is anchored to the CLINIC's midnight
+// (Africa/Lagos, server-synced), not the visitor's. Every consumer of
+// startOfDayOffset - the calendar's day navigation, the week view, the
+// demo seeds - inherits the correct anchor from this one line.
+import { clinicDayStartOffset, clinicParts, clinicNow } from './clinicTimeService';
+
+export const startOfDayOffset = (offset) => clinicDayStartOffset(offset);
 
 export const at = (offset, h, m = 0) => startOfDayOffset(offset) + (h * 60 + m) * MIN;
 
-/** First weekday offset from today (0 if today is Mon–Fri). */
+/** The clinic's "now" — device clock corrected by the server's. */
+export const clinicClockNow = clinicNow;
+
+/** First weekday offset from clinic today (0 if today is Mon–Fri). */
 const nextWeekdayOffset = () => {
   let offset = 0;
-  while ([0, 6].includes(new Date(startOfDayOffset(offset)).getDay())) offset += 1;
+  // weekdayIdx: Sun=0 ... Sat=6 — read in CLINIC time, never the device's.
+  while ([0, 6].includes(clinicParts(startOfDayOffset(offset)).weekdayIdx)) offset += 1;
   return offset;
 };
 

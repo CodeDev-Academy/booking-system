@@ -16,6 +16,7 @@ import {
   Users,
 } from 'lucide-react';
 import { getService } from '../../services/slotEngine';
+import { clinicDayStartOffset } from '../../services/clinicTimeService';
 import { useCalendarStore } from '../../stores/useCalendarStore';
 
 const SCHEDULE_START_MIN = 8 * 60; // 08:00 WAT (480 min)
@@ -57,19 +58,13 @@ export const CalendarDayView = ({
 
   // Compute workload numbers and capacity for each doctor across all 4 horizons
   const doctorWorkloads = useMemo(() => {
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-    const startOfTodayTs = startOfToday.getTime();
+    // Wave 3 / Step 3.7-B: the clinic's midnight, not the visitor's. Horizon
+    // ranges must slice the same days the booking engine slices.
+    const startOfTodayTs = clinicDayStartOffset(0);
     const endOfTodayTs = startOfTodayTs + 24 * 60 * 60 * 1000;
     const endOf5dTs = startOfTodayTs + 5 * 24 * 60 * 60 * 1000;
     const endOf7dTs = startOfTodayTs + 7 * 24 * 60 * 60 * 1000;
     const endOf14dTs = startOfTodayTs + 14 * 24 * 60 * 60 * 1000;
-
-    const baseSeeds = {
-      'doc-bello': { today: 4, fiveDays: 14, week: 18, twoWeeks: 32 },
-      'doc-okafor': { today: 3, fiveDays: 11, week: 14, twoWeeks: 26 },
-      'doc-babawo': { today: 2, fiveDays: 8, week: 11, twoWeeks: 20 },
-    };
 
     const maxCapacities = {
       today: 10,
@@ -98,13 +93,14 @@ export const CalendarDayView = ({
         (b) => b.start >= startOfTodayTs && b.start < endOf14dTs
       ).length;
 
-      const seed = baseSeeds[doctor.id] || { today: 2, fiveDays: 6, week: 10, twoWeeks: 18 };
-
+      // Wave 3 / Step 3.7-B: the meter counts REAL blocks only. The old
+      // Math.max(seed...) floors made every doctor look booked even on an
+      // empty calendar.
       const counts = {
-        today: Math.max(seed.today, dynamicToday),
-        '5d': Math.max(seed.fiveDays, dynamic5d),
-        '7d': Math.max(seed.week, dynamic7d),
-        '14d': Math.max(seed.twoWeeks, dynamic14d),
+        today: dynamicToday,
+        '5d': dynamic5d,
+        '7d': dynamic7d,
+        '14d': dynamic14d,
       };
 
       const freePcts = {

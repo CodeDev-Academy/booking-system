@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useAppModeStore } from '../../stores/appModeStore';
 import { useAuthStore } from '../../stores/useAuthStore';
+import { useSettingsStore } from '../../stores/useSettingsStore';
 import '../../styles/components/leftRail.css';
 
 /**
@@ -31,12 +32,25 @@ export const LeftRail = ({ strandedCount = 0 }) => {
     toggleSidebar,
     closeMobileDrawer,
     hidePitchSimulator,
-    currentStaff,
     audioEnabled,
     toggleAudio,
     queueCounts,
     clinicInfo,
   } = useAppModeStore();
+
+  // Wave 3 / Step 3.7-B: the brand shows the REAL clinic name and address
+  // from the settings store's API sync — not a hardcoded demo identity.
+  const clinicProfile = useSettingsStore((s) => s.clinicProfile);
+  const brandName = clinicProfile?.clinicName || clinicInfo.name;
+  const brandBranch = clinicProfile?.address || clinicInfo.branch;
+
+  // Wave 3 / Step 3.7-B: the identity card shows the REAL signed-in session
+  // (useAuthStore, set at login). The fake 'Sarah Aliyu' default is gone, so
+  // this must survive a null session instead of crashing on .name.
+  const sessionName = authStaff?.name || authStaff?.full_name || 'Not signed in';
+  const sessionRole = authStaff?.role || 'front desk';
+  const sessionAvatar = authStaff?.avatar || sessionName.slice(0, 2).toUpperCase();
+  const sessionShift = authStaff?.shift || 'Session active';
 
   const handleNavClick = () => {
     closeMobileDrawer();
@@ -49,13 +63,13 @@ export const LeftRail = ({ strandedCount = 0 }) => {
     >
       {/* Brand & Clinic Title */}
       <div className="rail-header">
-        <NavLink to="/queue" className="brand-wrapper" title={clinicInfo.name} onClick={handleNavClick}>
+        <NavLink to="/queue" className="brand-wrapper" title={brandName} onClick={handleNavClick}>
           <div className="brand-logo-spark">
             <Sparkles size={18} strokeWidth={2.5} />
           </div>
           <div className="brand-text">
-            <span className="brand-title">Cedarcare</span>
-            <span className="brand-subtitle">{clinicInfo.branch}</span>
+            <span className="brand-title">{brandName}</span>
+            <span className="brand-subtitle">{brandBranch}</span>
           </div>
         </NavLink>
 
@@ -71,11 +85,11 @@ export const LeftRail = ({ strandedCount = 0 }) => {
       </div>
 
       {/* Staff Identity Card */}
-      <div className="rail-staff-badge" title={`${currentStaff.name} · ${currentStaff.role}`}>
-        <div className="staff-avatar-circle">{currentStaff.avatar}</div>
+      <div className="rail-staff-badge" title={`${sessionName} · ${sessionRole}`}>
+        <div className="staff-avatar-circle">{sessionAvatar}</div>
         <div className="staff-info-col">
-          <span className="staff-name">{currentStaff.name}</span>
-          <span className="staff-shift">{currentStaff.shift}</span>
+          <span className="staff-name">{sessionName}</span>
+          <span className="staff-shift">{sessionShift}</span>
         </div>
       </div>
 

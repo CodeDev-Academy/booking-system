@@ -410,6 +410,24 @@ class AdminStaffDetailView(views.APIView):
                 staff.specialty = request.data['specialty']
             if 'shift' in request.data:
                 staff.shift = request.data['shift']
+            # Wave 3 / Step 3.6: a role edit PERSISTS. The old handler
+            # silently ignored `role`, so every role change in the staff
+            # edit modal was UI-only — the toast said saved, the roster
+            # snapped back on the next refresh. Only real roles are
+            # accepted; anything else is a named 400.
+            if 'role' in request.data:
+                role = str(request.data['role']).lower().strip()
+                valid_roles = [choice[0] for choice in StaffUser.ROLE_CHOICES]
+                if role not in valid_roles:
+                    return response.Response(
+                        {
+                            'error': 'INVALID_ROLE',
+                            'detail': f"'{request.data['role']}' is not a staff role. "
+                                      f"Valid roles: {', '.join(valid_roles)}.",
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                staff.role = role
             if 'is_active' in request.data:
                 staff.is_active = bool(request.data['is_active'])
             elif 'status' in request.data:

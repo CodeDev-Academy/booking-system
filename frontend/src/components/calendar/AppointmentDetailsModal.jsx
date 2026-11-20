@@ -36,8 +36,19 @@ export const AppointmentDetailsModal = ({
   const [rescheduleError, setRescheduleError] = useState('');
   if (!isOpen || !appointment) return null;
 
-  const doctor = getDoctor(appointment.doctorId);
-  const service = getService(appointment.serviceId);
+  // Wave 3 / Step 3.4: prefer the appointment's OWN identities. The mock
+  // registry lookups are a fallback for demo rows only — a real (UUID)
+  // doctor id or service id finds nothing there.
+  const doctor = appointment.doctorName
+    ? { ...(getDoctor(appointment.doctorId) || {}), name: appointment.doctorName }
+    : getDoctor(appointment.doctorId);
+  const service = appointment.serviceName
+    ? {
+        ...(getService(appointment.serviceId) || {}),
+        name: appointment.serviceName,
+        durationMin: getService(appointment.serviceId)?.durationMin || appointment.serviceDurationMin || 30,
+      }
+    : getService(appointment.serviceId);
   const isReturning = appointment.patientType === 'returning';
   const registry = lookupPatient(appointment.patientPhone || appointment.phone, appointment.patientName || appointment.name);
 

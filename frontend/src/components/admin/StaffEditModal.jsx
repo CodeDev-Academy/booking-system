@@ -7,8 +7,6 @@ import {
   Clock,
   KeyRound,
   Lock,
-  Eye,
-  EyeOff,
   Power,
   PowerOff,
   CheckCircle2,
@@ -52,15 +50,13 @@ export const StaffEditModal = ({
   const [specialty, setSpecialty] = useState('');
   const [shift, setShift] = useState('');
   const [status, setStatus] = useState('on_duty');
-  const [password, setPassword] = useState('');
+  // Wave 3 / Step 3.6: only the RESET inputs exist. The browser never holds
+  // a current password or PIN to reveal — those live hashed in Django.
   const [newPassword, setNewPassword] = useState('');
-  const [pin, setPin] = useState('');
   const [newPin, setNewPin] = useState('');
   const [newRoleInput, setNewRoleInput] = useState('');
   const [newSpecialtyInput, setNewSpecialtyInput] = useState('');
 
-  const [showPassword, setShowPassword] = useState(false);
-  const [showPin, setShowPin] = useState(false);
   const [isEditingPassword, setIsEditingPassword] = useState(false);
   const [isEditingPin, setIsEditingPin] = useState(false);
   const [feedback, setFeedback] = useState({ tone: '', text: '' });
@@ -73,16 +69,12 @@ export const StaffEditModal = ({
       setSpecialty(staff.specialty || '');
       setShift(staff.shift || '');
       setStatus(staff.status || 'on_duty');
-      setPassword(staff.password || '');
-      setPin(staff.pin || '1234');
       setNewPassword('');
       setNewPin('');
       setNewRoleInput('');
       setNewSpecialtyInput('');
       setIsEditingPassword(false);
       setIsEditingPin(false);
-      setShowPassword(false);
-      setShowPin(false);
       setFeedback({ tone: '', text: '' });
     }
   }, [staff]);
@@ -98,11 +90,10 @@ export const StaffEditModal = ({
       return;
     }
     const updatedPwd = newPassword.trim();
-    setPassword(updatedPwd);
-    useStaffStore.getState().confirmResetPassword(staff.id, updatedPwd);
     setIsEditingPassword(false);
     setNewPassword('');
-    setFeedback({ tone: 'success', text: `Login password for ${staff.name} updated successfully!` });
+    useStaffStore.getState().confirmResetPassword(staff.id, updatedPwd);
+    setFeedback({ tone: 'success', text: `Login password for ${staff.name} updated successfully.` });
     soundService.playChime();
   };
 
@@ -113,11 +104,10 @@ export const StaffEditModal = ({
       return;
     }
     const updatedPin = newPin.trim();
-    setPin(updatedPin);
-    useStaffStore.getState().confirmResetPin(staff.id, updatedPin);
     setIsEditingPin(false);
     setNewPin('');
-    setFeedback({ tone: 'success', text: `4-Digit Quick-PIN for ${staff.name} updated to ${updatedPin}!` });
+    useStaffStore.getState().confirmResetPin(staff.id, updatedPin);
+    setFeedback({ tone: 'success', text: `4-Digit Quick-PIN for ${staff.name} updated.` });
     soundService.playChime();
   };
 
@@ -137,8 +127,6 @@ export const StaffEditModal = ({
       specialty: specialty.trim(),
       shift: shift.trim(),
       status,
-      password,
-      pin,
     };
 
     onUpdateStaff(updatedData);
@@ -173,7 +161,7 @@ export const StaffEditModal = ({
         </div>
 
         <p className="modal-subtitle" style={{ fontSize: '12px', color: 'var(--text-3)', marginBottom: '14px' }}>
-          Edit department, shift hours, duty availability, login password, and workstation screen PIN.
+          Edit department, shift hours, duty availability, and reset login passwords or workstation PINs.
         </p>
 
         {/* Dynamic Feedback Banner */}
@@ -585,39 +573,12 @@ export const StaffEditModal = ({
 
                 {!isEditingPassword ? (
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span
-                      style={{
-                        fontFamily: 'monospace',
-                        fontSize: '12px',
-                        letterSpacing: showPassword && password ? '0.5px' : '2px',
-                        color: showPassword && password ? 'var(--text)' : 'var(--text-3)',
-                        fontWeight: 600,
-                      }}
-                    >
-                      {showPassword && password
-                        ? password
-                        : password
-                        ? '••••••••••••'
-                        : '•••••••••••• (Encrypted in Django)'}
+                    {/* Wave 3 / Step 3.6: the current password is never in
+                        the browser — it is hashed in Django and cannot be
+                        shown. Only a RESET exists. */}
+                    <span style={{ fontFamily: 'monospace', fontSize: '12px', letterSpacing: '2px', color: 'var(--text-3)', fontWeight: 600 }}>
+                      •••••••••••• (Hashed in Django — never displayed)
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!password) {
-                          setFeedback({
-                            tone: 'info',
-                            text: 'Password is securely hashed in Django database. Click "Reset Password" to set a new password.',
-                          });
-                          return;
-                        }
-                        setShowPassword(!showPassword);
-                      }}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)' }}
-                      title={showPassword ? 'Hide password' : 'View password'}
-                      aria-label="Toggle password visibility"
-                    >
-                      {showPassword ? <EyeOff size={14} /> : <Eye size={14} color="var(--amber)" />}
-                    </button>
                   </div>
                 ) : (
                   <div style={{ display: 'flex', gap: '6px', marginTop: '4px' }}>
@@ -681,26 +642,11 @@ export const StaffEditModal = ({
 
                 {!isEditingPin ? (
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span
-                      style={{
-                        fontFamily: 'monospace',
-                        fontSize: '13px',
-                        letterSpacing: showPin ? '2px' : '3px',
-                        color: showPin ? 'var(--amber-text)' : 'var(--text-3)',
-                        fontWeight: 700,
-                      }}
-                    >
-                      {showPin ? pin : '••••'}
+                    {/* Wave 3 / Step 3.6: same contract as the password — the
+                        current PIN is never in the browser. */}
+                    <span style={{ fontFamily: 'monospace', fontSize: '13px', letterSpacing: '3px', color: 'var(--text-3)', fontWeight: 700 }}>
+                      ••••
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => setShowPin(!showPin)}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)' }}
-                      title={showPin ? 'Hide PIN' : 'View PIN'}
-                      aria-label="Toggle PIN visibility"
-                    >
-                      {showPin ? <EyeOff size={14} /> : <Eye size={14} color="var(--amber)" />}
-                    </button>
                   </div>
                 ) : (
                   <div style={{ display: 'flex', gap: '6px', marginTop: '4px' }}>

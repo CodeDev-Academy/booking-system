@@ -5,7 +5,19 @@
  * All endpoints adhere to /api/v1/ prefix and handle snake_case / camelCase translation.
  */
 
-const DEFAULT_PROD_API_URL = 'https://booking-system-3-iojp.onrender.com/api/v1';
+// Wave 3 / Step 3.1: the health endpoint's clock feeds the site's one clock.
+import { configureClinicClock } from './clinicTimeService';
+
+// Wave 3 / Step 3.8: an agency template must FAIL LOUDLY, not guess. The old
+// fallback silently sent real patient bookings to whichever origin served the
+// page (and kept a dead constant pointing at someone else's demo server).
+// A production build therefore requires VITE_API_URL / VITE_API_BASE_URL and
+// refuses to start without it; local and LAN development keeps the
+// convenient localhost default.
+const configuredBase =
+  import.meta.env.VITE_API_URL ||
+  import.meta.env.VITE_API_BASE_URL ||
+  '';
 
 const isLocalOrLan =
   typeof window !== 'undefined' &&
@@ -18,12 +30,19 @@ const isLocalOrLan =
     window.location.hostname.endsWith('.local')
   );
 
+if (import.meta.env.PROD && !configuredBase && !isLocalOrLan) {
+  throw new Error(
+    'VITE_API_URL is not configured. Refusing to guess where patient data ' +
+    'should be sent. Set VITE_API_URL (e.g. https://api.your-clinic.com/api/v1) ' +
+    'at build time, or run the app on localhost for development.'
+  );
+}
+
 const API_BASE_URL =
-  import.meta.env.VITE_API_URL ||
-  import.meta.env.VITE_API_BASE_URL ||
+  configuredBase ||
   (isLocalOrLan
     ? `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:8000/api/v1`
-    : (typeof window !== 'undefined' ? `${window.location.origin}/api/v1` : DEFAULT_PROD_API_URL));
+    : `${typeof window !== 'undefined' ? window.location.origin : ''}/api/v1`);
 
 /**
  * Standard fetch wrapper with JSON headers, error unwrapping, credentials,
@@ -163,6 +182,25 @@ export const apiService = {
       return { ok: true, data };
     } catch (err) {
       return { ok: false, error: err.message, isNetworkError: err.isNetworkError };
+    }
+  },
+
+  // Wave 3 / Step 3.1 — the clinic's clock is the site's only clock. The
+  // health endpoint publishes the server's own time and the clinic timezone;
+  // syncing here means a wrong device clock or a foreign timezone can never
+  // shift the schedule. Call on boot, then periodically (main.jsx owns the
+  // schedule). Offline is not an error: the device clock remains the
+  // fallback for display only, and the next successful sync corrects it.
+  async syncClinicClock() {
+    try {
+      const data = await request('/health/');
+      if (data && data.server_time) {
+        configureClinicClock({ serverTime: data.server_time, timezone: data.timezone });
+        return true;
+      }
+      return false;
+    } catch (err) {
+      return false;
     }
   },
 
@@ -491,6 +529,9 @@ export const apiService = {
   },
 
   async createStaff(staffData) {
+    // Wave 3 / Step 3.6: only what the backend actually reads. The old
+    // payload sent shift_start/shift_end the endpoint never consumed —
+    // a silent lie about what a "shift" edit does.
     const payload = {
       full_name: staffData.name || staffData.full_name,
       email: staffData.email,
@@ -498,8 +539,7 @@ export const apiService = {
       password: staffData.password,
       pin: staffData.pin,
       specialty: staffData.specialty,
-      shift_start: staffData.shiftStart || '08:00',
-      shift_end: staffData.shiftEnd || '16:00',
+      shift: staffData.shift,
     };
     return request('/staff/', {
       method: 'POST',

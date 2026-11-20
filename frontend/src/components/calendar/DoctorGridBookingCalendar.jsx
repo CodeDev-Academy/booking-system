@@ -26,6 +26,15 @@ import {
   Settings as SettingsIcon,
   AlertTriangle,
 } from 'lucide-react';
+import {
+  clinicParts,
+  clinicDayKey,
+  clinicDayStartOfParts,
+  clinicDayStartOffset,
+  clinicTimeLabel,
+  daysInClinicMonth,
+  clinicMondayFirstWeekdayIdx,
+} from '../../services/clinicTimeService';
 import { useCalendarStore } from '../../stores/useCalendarStore';
 import { useStaffStore } from '../../stores/useStaffStore';
 import { useAuthStore } from '../../stores/useAuthStore';
@@ -35,7 +44,10 @@ import { DoubleBookingAlert, DoubleBookingCountChip } from './DoubleBookingAlert
 import { useDoubleBookingAlert } from '../../hooks/useDoubleBookingAlert';
 import '../../styles/components/grid-booking-calendar.css';
 
-const getInitialToday = () => new Date();
+// Wave 3 / Step 3.1: "today" is the CLINIC's today (server-synced Africa/Lagos),
+// not the visitor's calendar date. The returned value is an instant anchored at
+// clinic midnight; every read of it goes through clinicParts().
+const getInitialToday = () => new Date(clinicDayStartOffset(0));
 
 const MONTH_NAMES = [
   'January',
@@ -276,18 +288,22 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
   const [selectedTimeSlot, setSelectedTimeSlot] = useState('11:30 AM');
   const [showUserMenu, setShowUserMenu] = useState(false);
 
-  // Dynamic Date Engine (Defaults to demo seed anchor or real device today)
+  // Dynamic Date Engine — anchored to the clinic clock, never the device.
   const [selectedDate, setSelectedDate] = useState(() => getInitialToday());
   const [currentMonthDate, setCurrentMonthDate] = useState(() => {
-    const today = getInitialToday();
-    return new Date(today.getFullYear(), today.getMonth(), 1);
+    const today = clinicParts(getInitialToday().getTime());
+    return new Date(clinicDayStartOfParts(today.year, today.monthIdx, 1));
   });
 
-  // Date Properties
-  const selectedYear = selectedDate.getFullYear();
-  const selectedMonthIdx = selectedDate.getMonth();
-  const selectedDayNumber = selectedDate.getDate();
-  const selectedDayName = DAY_NAMES_FULL[selectedDate.getDay()];
+  // Date Properties — read in CLINIC time. The old device-local reads
+  // (getFullYear/getMonth/getDate/getDay) shifted on any computer outside
+  // West Africa time, marking the wrong day as "today".
+  const selectedParts = clinicParts(selectedDate.getTime());
+  const selectedYear = selectedParts.year;
+  const selectedMonthIdx = selectedParts.monthIdx;
+  const selectedDayNumber = selectedParts.day;
+  const selectedDayName = selectedParts.weekdayName;
+  const selectedDayKey = selectedParts.dayKey;
   const selectedMonthName = MONTH_NAMES[selectedMonthIdx];
 
   // The day the timetable is showing decides who is off. A dated leave period
@@ -296,11 +312,9 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
   // older boolean (whole-day leave flag) still applies.
   const doctorsOnSelectedDay = useMemo(() => {
     if (!leavePeriods || Object.keys(leavePeriods).length === 0) return doctors;
-    const dayKey = new Date(
-      selectedDate.getFullYear(),
-      selectedDate.getMonth(),
-      selectedDate.getDate()
-    ).getTime();
+    // The day the timetable is showing, as a CLINIC-midnight instant — the
+    // leave periods from the backend are anchored to the same clock.
+    const dayKey = clinicDayStartOfParts(selectedParts.year, selectedParts.monthIdx, selectedParts.day);
 
     return doctors.map((doc) => {
       const periods = leavePeriods[doc.id];
@@ -313,7 +327,7 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
         emergencyReason: covering?.reason || null,
       };
     });
-  }, [doctors, leavePeriods, selectedDate]);
+  }, [doctors, leavePeriods, selectedParts.year, selectedParts.monthIdx, selectedParts.day]);
 
   // Colleague options for the disruption modal: on duty on the viewed day and
   // not the doctor going on leave.
@@ -324,50 +338,52 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
     );
   }, [doctorsOnSelectedDay, disruptionModal.doctorId]);
 
-  // Month Calendar Grid Calculation
-  const calendarYear = currentMonthDate.getFullYear();
-  const calendarMonthIdx = currentMonthDate.getMonth();
+  // Month Calendar Grid Calculation — read in clinic time, built from pure
+  // date math that no timezone can shift.
+  const monthAnchor = clinicParts(currentMonthDate.getTime());
+  const calendarYear = monthAnchor.year;
+  const calendarMonthIdx = monthAnchor.monthIdx;
   const calendarMonthLabel = `${MONTH_NAMES[calendarMonthIdx]} ${calendarYear}`;
 
-  const daysInMonth = new Date(calendarYear, calendarMonthIdx + 1, 0).getDate();
+  const daysInMonth = daysInClinicMonth(calendarYear, calendarMonthIdx);
   // Monday start: 0 = Mon, 6 = Sun
-  const firstDayOfWeekIdx = (new Date(calendarYear, calendarMonthIdx, 1).getDay() + 6) % 7;
+  const firstDayOfWeekIdx = clinicMondayFirstWeekdayIdx(calendarYear, calendarMonthIdx);
 
   // Month Navigation Handlers (Infinite past and future navigation)
   const handlePrevMonth = () => {
-    setCurrentMonthDate((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+    const prev = calendarMonthIdx === 0 ? { year: calendarYear - 1, monthIdx: 11 } : { year: calendarYear, monthIdx: calendarMonthIdx - 1 };
+    setCurrentMonthDate(new Date(clinicDayStartOfParts(prev.year, prev.monthIdx, 1)));
   };
 
   const handleNextMonth = () => {
-    setCurrentMonthDate((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+    const next = calendarMonthIdx === 11 ? { year: calendarYear + 1, monthIdx: 0 } : { year: calendarYear, monthIdx: calendarMonthIdx + 1 };
+    setCurrentMonthDate(new Date(clinicDayStartOfParts(next.year, next.monthIdx, 1)));
   };
 
-  // Day Navigation Handlers (Step day-by-day or jump to today)
-  const handlePrevDay = () => {
-    setSelectedDate((prev) => {
-      const next = new Date(prev.getTime() - 86400000);
-      setCurrentMonthDate(new Date(next.getFullYear(), next.getMonth(), 1));
-      return next;
-    });
+  // Day Navigation Handlers (Step day-by-day or jump to today) — stepped on
+  // clinic date components, never by adding milliseconds to an instant.
+  const stepSelectedDay = (deltaDays) => {
+    const nextMs = clinicDayStartOfParts(
+      selectedParts.year, selectedParts.monthIdx, selectedParts.day + deltaDays
+    );
+    const nextParts = clinicParts(nextMs);
+    setSelectedDate(new Date(nextMs));
+    setCurrentMonthDate(new Date(clinicDayStartOfParts(nextParts.year, nextParts.monthIdx, 1)));
   };
 
-  const handleNextDay = () => {
-    setSelectedDate((prev) => {
-      const next = new Date(prev.getTime() + 86400000);
-      setCurrentMonthDate(new Date(next.getFullYear(), next.getMonth(), 1));
-      return next;
-    });
-  };
+  const handlePrevDay = () => stepSelectedDay(-1);
+
+  const handleNextDay = () => stepSelectedDay(1);
 
   const handleGoToToday = () => {
-    const today = getInitialToday();
-    setSelectedDate(today);
-    setCurrentMonthDate(new Date(today.getFullYear(), today.getMonth(), 1));
+    setSelectedDate(getInitialToday());
+    const today = clinicParts(clinicDayStartOffset(0));
+    setCurrentMonthDate(new Date(clinicDayStartOfParts(today.year, today.monthIdx, 1)));
   };
 
   const handleSelectCalendarDay = (dayNum) => {
-    const nextDate = new Date(calendarYear, calendarMonthIdx, dayNum);
-    setSelectedDate(nextDate);
+    const nextMs = clinicDayStartOfParts(calendarYear, calendarMonthIdx, dayNum);
+    setSelectedDate(new Date(nextMs));
   };
 
   // Filtered doctors
@@ -409,7 +425,10 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
   }, [doctorsOnSelectedDay, selectedDoctorId, filteredDoctors]);
 
   const activeDocMeta = useMemo(() => {
-    return DOCTOR_META[currentDoctor?.id] || DOCTOR_META['doc-bello'];
+    // Wave 3 / Step 3.4: an unknown doctor (any real UUID) gets an EMPTY
+    // meta, not Bello's fake week - the week panel then shows only the
+    // dynamic, real blocks. The demo registry only covers mock ids.
+    return DOCTOR_META[currentDoctor?.id] || {};
   }, [currentDoctor]);
 
   // "View in calendar" from the red alert: jump to the overlapping day and
@@ -420,8 +439,9 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
     if (!conflict) return;
     const start = new Date(conflict.overlap_start || conflict.appointment_a?.start);
     if (!Number.isNaN(start.getTime())) {
-      setSelectedDate(start);
-      setCurrentMonthDate(new Date(start.getFullYear(), start.getMonth(), 1));
+      const startParts = clinicParts(start.getTime());
+      setSelectedDate(new Date(clinicDayStartOfParts(startParts.year, startParts.monthIdx, startParts.day)));
+      setCurrentMonthDate(new Date(clinicDayStartOfParts(startParts.year, startParts.monthIdx, 1)));
     }
     setTimetableHorizon('day');
 
@@ -442,14 +462,10 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
   // Subscribe to live calendar blocks for real-time walk-in reflection
   const storeBlocks = useCalendarStore((state) => state.blocks) || [];
 
-  // Helper to format block time e.g. "09:30 AM"
-  const formatSlotTime = (ts) => {
-    return new Date(ts).toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-    });
-  };
+  // Helper to format block time e.g. "09:30 AM" — in CLINIC time. The old
+  // device-locale formatting renamed 09:00 to 04:00 the moment the site was
+  // opened from another timezone.
+  const formatSlotTime = (ts) => clinicTimeLabel(ts);
 
   // Day appointments for active doctor (Merges static seed + dynamic Walk-In bookings)
   const activeDayAppointments = useMemo(() => {
@@ -457,30 +473,37 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
     const weekAppts = activeDocMeta.weekAppointments || {};
     const staticDayAppts = weekAppts[selectedDayName] || [];
 
-    // Filter dynamic blocks for active doctor on currently viewed day
+    // Filter dynamic blocks for active doctor on currently viewed day — the
+    // day match is a CLINIC day key, not the device's calendar date.
     const dynamicAppts = storeBlocks
       .filter((b) => {
         if (b.doctorId !== currentDoctor?.id) return false;
         if (b.type !== 'appointment' && b.type !== 'hold') return false;
-        const bDate = new Date(b.start);
-        return (
-          bDate.getFullYear() === selectedYear &&
-          bDate.getMonth() === selectedMonthIdx &&
-          bDate.getDate() === selectedDayNumber
-        );
+        return clinicDayKey(b.start) === selectedDayKey;
       })
       .map((b) => {
         const startStr = formatSlotTime(b.start);
         const endStr = formatSlotTime(b.end);
         return {
           id: b.appointmentId || b.id,
+          appointmentId: b.appointmentId || b.id,
           time: `${startStr} – ${endStr}`,
           patientName: b.patientName,
-          type: b.patientType || 'new',
+          // Wave 3 / Step 3.4: the row carries the block's OWN data so the
+          // details modal never has to invent times, guess the service from
+          // label text, or default the doctor.
+          patientPhone: b.patientPhone,
           phone: b.patientPhone,
-          service: b.serviceId?.includes('extract') ? 'Tooth Extraction' : 'Dental Consultation',
+          type: b.patientType || 'new',
+          serviceId: b.serviceId,
+          serviceName: b.serviceName,
+          service: b.serviceName || (b.serviceId?.includes('extract') ? 'Tooth Extraction' : 'Dental Consultation'),
+          doctorId: b.doctorId,
+          doctorName: b.doctorName,
           status: b.status || 'confirmed',
           bufferMin: b.bufferMin || 10,
+          start: b.start,
+          end: b.end,
           isDynamic: true,
         };
       });
@@ -502,9 +525,7 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
   }, [
     activeDocMeta,
     selectedDayName,
-    selectedYear,
-    selectedMonthIdx,
-    selectedDayNumber,
+    selectedDayKey,
     storeBlocks,
     currentDoctor,
   ]);
@@ -768,7 +789,9 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
           <div className="column-section-title">Choose Doctor</div>
 
           {filteredDoctors.map((doc) => {
-            const meta = DOCTOR_META[doc.id] || DOCTOR_META['doc-bello'];
+            // Wave 3 / Step 3.4: unknown (real UUID) doctors get an empty demo
+            // meta, not Bello's - the card then counts only real blocks.
+            const meta = DOCTOR_META[doc.id] || {};
             const isSelected = doc.id === currentDoctor?.id;
             const staticCount = Object.values(meta.weekAppointments || {}).reduce(
               (acc, arr) => acc + arr.length,
@@ -874,13 +897,11 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
                 type="button"
                 className="dossier-action-btn"
                 onClick={() => {
-                  // Local midnight of the day the receptionist is viewing, so
+                  // CLINIC midnight of the day the receptionist is viewing, so
                   // the affected list mirrors exactly this timetable.
-                  const dayStartTs = new Date(
-                    selectedDate.getFullYear(),
-                    selectedDate.getMonth(),
-                    selectedDate.getDate()
-                  ).getTime();
+                  const dayStartTs = clinicDayStartOfParts(
+                    selectedParts.year, selectedParts.monthIdx, selectedParts.day
+                  );
                   openDisruptionModal(selectedDoctorId, dayStartTs);
                 }}
                 style={{
@@ -1225,7 +1246,7 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
                       type="button"
                       className="week-day-action-btn"
                       onClick={() => {
-                        setSelectedDate(new Date(2026, 9, computedDayNumber));
+                        setSelectedDate(new Date(clinicDayStartOfParts(2026, 9, computedDayNumber)));
                         setTimetableHorizon('day');
                       }}
                     >

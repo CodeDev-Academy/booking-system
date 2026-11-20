@@ -1,15 +1,14 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import {
-  DOCTORS,
-  SERVICES,
   CLINIC_RULES,
   BASE_OFFSET,
   startOfDayOffset,
+  // `at` is used ONLY by simulateIncomingHold — the pitch simulator's SSE
+  // demo cell, which draws from the simulator's own dataset.
   at,
-  buildBusyBlocks,
-  buildMockAppointments,
 } from '../services/mockData';
+import { clinicNow, clinicParts } from '../services/clinicTimeService';
 import { validateSlot, getService, getDoctor, makeSlot } from '../services/slotEngine';
 import { soundService } from '../services/soundService';
 import { appointmentSyncBus } from '../services/appointmentSyncBus';
@@ -62,53 +61,6 @@ const leaveWindowPayload = (startDay, endDay) => ({
   leave_end: new Date(endDay + 24 * 60 * MIN - 1).toISOString(),
 });
 
-// Helper to construct initial calendar blocks
-const initCalendarBlocks = () => {
-  const busy = buildBusyBlocks();
-  const appointments = buildMockAppointments();
-
-  // Convert appointments into blocks
-  const apptBlocks = appointments.map((apt) => {
-    const service = getService(apt.serviceId);
-    const duration = service ? service.durationMin : 30;
-    const buffer = service ? service.bufferMin : 10;
-    return {
-      id: apt.id,
-      appointmentId: apt.id,
-      doctorId: apt.doctorId,
-      serviceId: apt.serviceId,
-      patientName: apt.patientName,
-      patientPhone: apt.phone || '+2348012345678',
-      patientType: apt.patientType || 'new',
-      type: apt.status === 'held' ? 'hold' : 'appointment',
-      status: apt.status,
-      label: apt.status === 'held' ? `Hold: ${apt.patientName}` : `Booked: ${apt.patientName}`,
-      start: apt.start,
-      end: apt.start + duration * MIN,
-      durationMin: duration,
-      bufferMin: buffer,
-      holdExpiresAt: apt.status === 'held' ? Date.now() + 12 * MIN : null,
-      channel: 'telegram',
-    };
-  });
-
-  // Also include the buffers for appointments
-  const bufferBlocks = [];
-  apptBlocks.forEach((apt) => {
-    bufferBlocks.push({
-      id: `${apt.id}-buffer`,
-      appointmentId: apt.id,
-      doctorId: apt.doctorId,
-      type: 'buffer',
-      label: `${apt.bufferMin}m Sterilization Buffer`,
-      start: apt.end,
-      end: apt.end + apt.bufferMin * MIN,
-      durationMin: apt.bufferMin,
-    });
-  });
-
-  return [...busy.filter((b) => b.type !== 'appointment' && b.type !== 'buffer'), ...apptBlocks, ...bufferBlocks];
-};
 
 export const useCalendarStore = create(
   persist(
@@ -119,23 +71,22 @@ export const useCalendarStore = create(
   selectedServiceId: 'all', // 'all' | 'svc-dental' | 'svc-extract' | 'svc-checkup'
   liveSyncConnected: true,
 
-  // Doctors on duty
-  doctors: DOCTORS.map((d) => ({
-    ...d,
-    isOnDuty: true,
-    isEmergencyLeave: false,
-    emergencyReason: null,
-  })),
+  // Wave 3 / Step 3.7-B: the roster and the schedule come from the API.
+  // The store starts EMPTY; syncFromBackend replaces both with the real
+  // doctors and blocks (see the mapping there). The pitch simulator keeps
+  // its own private dataset.
+  doctors: [],
 
   // All blocks on schedule (appointments, holds, buffers, breaks, reserves)
-  blocks: initCalendarBlocks(),
+  blocks: [],
 
-  // Walk-In Quick Booking Modal
+  // Walk-In Quick Booking Modal — no mock pre-selection; the UI populates
+  // the first REAL doctor/service once the roster answers.
   walkInModal: {
     isOpen: false,
-    doctorId: DOCTORS[0].id,
+    doctorId: null,
     startTs: null,
-    serviceId: SERVICES[0].id,
+    serviceId: null,
     patientName: '',
     phone: '',
     notes: '',
@@ -203,14 +154,18 @@ export const useCalendarStore = create(
 
   // Open Walk-in Modal for a clicked slot or the header button
   openWalkInModal: (doctorId, startTs) => {
-    const firstDoc = doctorId || DOCTORS[0].id;
-    const defaultStart = startTs || at(get().currentDateOffset, 11, 0);
+    // Wave 3 / Step 3.7-B: the default doctor is the FIRST REAL one from the
+    // synced roster — never a mock slug. The service picker selects from the
+    // real services list itself.
+    const roster = get().doctors;
+    const firstDoc = doctorId || roster[0]?.id || null;
+    const defaultStart = startTs || startOfDayOffset(get().currentDateOffset) + 11 * 60 * MIN;
     set({
       walkInModal: {
         isOpen: true,
         doctorId: firstDoc,
         startTs: defaultStart,
-        serviceId: SERVICES[0].id,
+        serviceId: null,
         patientName: '',
         phone: '',
         notes: '',
@@ -229,7 +184,12 @@ export const useCalendarStore = create(
     })),
 
   // Confirm Walk-In Booking (Risk R-12 & R-13 buffer verification)
-  confirmWalkIn: ({ patientName, phone, doctorId, serviceId, startTs, notes }) => {
+  // Wave 3 / Step 3.5: the backend is asked FIRST in live mode and the block
+  // committed is the one IT created (real appointment code, real times). A
+  // refusal answers with the server's own sentence — Wave 2 made the 409s
+  // readable — and the slot stays free. The optimistic instant-commit
+  // survives only for demo rows.
+  confirmWalkIn: async ({ patientName, phone, doctorId, serviceId, startTs, notes }) => {
     const service = getService(serviceId);
     if (!service) return { success: false, message: 'Invalid service selected' };
 
@@ -254,67 +214,89 @@ export const useCalendarStore = create(
       };
     }
 
-    const apptId = `AP-${Math.floor(1000 + Math.random() * 9000)}`;
+    const commitBlocks = (apptId, start, end) => {
+      const newApptBlock = {
+        id: apptId,
+        appointmentId: apptId,
+        doctorId,
+        serviceId,
+        patientName: patientName.trim() || 'Walk-In Patient',
+        patientPhone: phone || '',
+        type: 'appointment',
+        status: 'arrived',
+        label: `Booked: ${patientName.trim() || 'Walk-In Patient'}`,
+        start,
+        end,
+        durationMin: Math.round((end - start) / MIN),
+        bufferMin: service.bufferMin,
+        notes: notes || 'Counter Walk-In',
+        channel: 'walk_in',
+      };
+
+      const newBufferBlock = {
+        id: `${apptId}-buffer`,
+        appointmentId: apptId,
+        doctorId,
+        type: 'buffer',
+        label: `${service.bufferMin}m Sterilization Buffer`,
+        start: end,
+        end: end + service.bufferMin * MIN,
+        durationMin: service.bufferMin,
+      };
+
+      set((state) => ({
+        blocks: [...state.blocks, newApptBlock, newBufferBlock],
+        walkInModal: { ...state.walkInModal, isOpen: false },
+        toast: {
+          tone: 'success',
+          text: `Confirmed Walk-In: ${newApptBlock.patientName} (${apptId}) scheduled with ${getDoctor(doctorId)?.name || 'Doctor'}.`,
+        },
+      }));
+
+      // Broadcast booking across stores (Live Visits, Queue, Calendar)
+      appointmentSyncBus.publishAppointmentBooked(newApptBlock);
+      soundService.playChime();
+    };
+
     const endTs = startTs + service.durationMin * MIN;
 
-    const newApptBlock = {
-      id: apptId,
-      appointmentId: apptId,
-      doctorId,
-      serviceId,
-      patientName: patientName.trim() || 'Walk-In Patient',
-      patientPhone: phone || '+2348000000000',
-      type: 'appointment',
-      status: 'confirmed',
-      label: `Booked: ${patientName.trim() || 'Walk-In Patient'}`,
-      start: startTs,
-      end: endTs,
-      durationMin: service.durationMin,
-      bufferMin: service.bufferMin,
-      notes: notes || 'Counter Walk-In',
-      channel: 'walk_in',
-    };
-
-    const newBufferBlock = {
-      id: `${apptId}-buffer`,
-      appointmentId: apptId,
-      doctorId,
-      type: 'buffer',
-      label: `${service.bufferMin}m Sterilization Buffer`,
-      start: endTs,
-      end: endTs + service.bufferMin * MIN,
-      durationMin: service.bufferMin,
-    };
-
-    set((state) => ({
-      blocks: [...state.blocks, newApptBlock, newBufferBlock],
-      walkInModal: { ...state.walkInModal, isOpen: false },
-      toast: {
-        tone: 'success',
-        text: `Confirmed Walk-In: ${newApptBlock.patientName} (${apptId}) scheduled with ${getDoctor(doctorId)?.name || 'Doctor'}.`,
-      },
-    }));
-
-    // Broadcast booking across stores (Live Visits, Queue, Calendar)
-    appointmentSyncBus.publishAppointmentBooked(newApptBlock);
-
     if (!useAppModeStore.getState().isDemoMode) {
-      apiService
-        .registerWalkIn({
+      try {
+        const res = await apiService.registerWalkIn({
           doctorId,
           serviceId,
-          patientName: newApptBlock.patientName,
-          phone: newApptBlock.patientPhone,
+          patientName: patientName.trim() || 'Walk-In Patient',
+          phone: phone || '',
           startTs,
           endTs,
-          notes: newApptBlock.notes,
-        })
-        .catch((err) => {
-          console.warn('Backend walk-in registration from calendar failed:', err);
+          notes: notes || 'Counter Walk-In',
         });
+        const appt = res?.appointment || res || {};
+        const realCode = appt.appointment_code || res?.appointment_code;
+        const realStart = appt.start_datetime ? Date.parse(appt.start_datetime) : startTs;
+        const realEnd = appt.end_datetime ? Date.parse(appt.end_datetime) : endTs;
+        commitBlocks(realCode, realStart, realEnd);
+      } catch (err) {
+        // Nothing was booked: no block, no broadcast — the server's own
+        // explanation of why, on a red toast.
+        soundService.playAlert();
+        set({
+          toast: {
+            tone: 'error',
+            text:
+              err.details?.detail ||
+              err.message ||
+              'The walk-in was refused — nothing was saved.',
+          },
+        });
+        return { success: false, message: err.details?.detail || err.message };
+      }
+      return { success: true };
     }
 
-    soundService.playChime();
+    // Demo row: the optimistic instant commit IS the product here.
+    const apptId = `AP-${Math.floor(1000 + Math.random() * 9000)}`;
+    commitBlocks(apptId, startTs, endTs);
     return { success: true };
   },
 
@@ -330,10 +312,12 @@ export const useCalendarStore = create(
     patientType = 'new',
     notes = '',
   }) => {
-    const service = getService(serviceId) || SERVICES[0];
+    // Wave 3 / Step 3.7-B: no mock fallback — a real (UUID) service id finds
+    // nothing in the mock registry and must not silently become one.
+    const service = getService(serviceId) || null;
     const apptId = appointmentId || `AP-${Math.floor(1000 + Math.random() * 9000)}`;
-    const duration = service.durationMin || 30;
-    const buffer = service.bufferMin !== undefined ? service.bufferMin : 10;
+    const duration = service?.durationMin || 30;
+    const buffer = service?.bufferMin !== undefined ? service.bufferMin : 10;
     const endTs = startTs + duration * MIN;
 
     const newApptBlock = {
@@ -405,7 +389,7 @@ export const useCalendarStore = create(
     // Same statuses the backend resolver will move: a patient who already
     // arrived, was seen, or whose hold expired is not part of the plan, so it
     // must not appear here either.
-    const now = Date.now();
+    const now = clinicNow();
     const affected = blocks.filter(
       (b) =>
         b.doctorId === doctorId &&
@@ -615,7 +599,7 @@ export const useCalendarStore = create(
     const mode = modal.distributionMode || 'auto';
     const chosenIds = modal.chosenColleagueIds || [];
     const caps = modal.colleagueCaps || {};
-    const now = Date.now();
+    const now = clinicNow();
 
     let colleagues = get().doctors.filter(
       (d) => d.id !== docId && d.isOnDuty && !d.isEmergencyLeave
@@ -874,25 +858,48 @@ export const useCalendarStore = create(
   syncFromBackend: async () => {
     if (useAppModeStore.getState().isDemoMode) return;
     try {
-      const startIso = new Date().toISOString().split('T')[0];
-      const endIso = new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0];
+      // Clinic dates, not UTC dates: at Lagos 00:30 the UTC calendar is
+      // still on yesterday, which would shift the fetched range a day.
+      const startIso = clinicParts(clinicNow()).dayKey;
+      const endParts = clinicParts(clinicNow() + 14 * 86400000);
+      const endIso = endParts.dayKey;
       const data = await apiService.fetchCalendarSchedule(startIso, '', endIso);
       const docSchedules = data?.doctors || [];
-      if (!Array.isArray(docSchedules) || docSchedules.length === 0) return;
+
+      // Wave 3 / Step 3.2: an empty roster is an answer, not a reason to keep
+      // the previous blocks on screen. A brand-new clinic shows an empty
+      // calendar. (A FAILED fetch is different: the catch keeps the screen.)
+      if (!Array.isArray(docSchedules) || docSchedules.length === 0) {
+        set({ blocks: [], leavePeriods: {} });
+        return;
+      }
 
       const remoteBlocks = [];
       const leavePeriods = {};
+      const mappedDoctors = [];
 
       docSchedules.forEach((docItem) => {
-        const docNameLower = (docItem.doctor_name || '').toLowerCase();
-        let mappedDocId = docItem.doctor_id;
-        if (docNameLower.includes('bello')) mappedDocId = 'doc-bello';
-        else if (docNameLower.includes('okafor') || docNameLower.includes('chin')) mappedDocId = 'doc-okafor';
-        else if (docNameLower.includes('babawo')) mappedDocId = 'doc-babawo';
+        // Wave 3 / Step 3.4: the backend's own doctor id IS the lane key.
+        // The old name-substring heuristics (bello/okafor/babawo) mapped
+        // every real doctor onto a mock lane - a fourth doctor matched
+        // nothing and a raw UUID id matched no column at all.
+        const docId = String(docItem.doctor_id);
+
+        mappedDoctors.push({
+          id: docId,
+          name: docItem.doctor_name || 'Doctor',
+          specialty: docItem.doctor_specialty || 'General Practice',
+          workingDays: docItem.working_days || [],
+          shiftStart: docItem.shift_start || null,
+          shiftEnd: docItem.shift_end || null,
+          isOnDuty: true,
+          isEmergencyLeave: false,
+          emergencyReason: null,
+        });
 
         // Keep the RAW periods. A leave only greys out the days it covers, so
         // the calendar derives the flag for whatever day it is showing.
-        leavePeriods[mappedDocId] = (docItem.leave_periods || []).map((period) => ({
+        leavePeriods[docId] = (docItem.leave_periods || []).map((period) => ({
           start: new Date(`${period.start_date}T00:00:00`).getTime(),
           end: period.end_date
             ? new Date(`${period.end_date}T00:00:00`).getTime()
@@ -910,10 +917,15 @@ export const useCalendarStore = create(
           remoteBlocks.push({
             id: aptId,
             appointmentId: aptId,
-            doctorId: mappedDocId,
-            serviceId: 'svc-dental',
+            // Wave 3 / Step 3.4: the REAL identities. The old mapping gave
+            // every block serviceId 'svc-dental', so the details modal and
+            // the lanes showed a service the patient never booked.
+            doctorId: docId,
+            doctorName: docItem.doctor_name || null,
+            serviceId: String(apt.service_id || ''),
+            serviceName: apt.service_name || null,
             patientName: apt.patient_name || 'Patient',
-            patientPhone: apt.patient_phone || '+2348000000000',
+            patientPhone: apt.patient_phone || '',
             type: apt.status === 'held' ? 'hold' : 'appointment',
             status: apt.status || 'confirmed',
             label:
@@ -930,7 +942,10 @@ export const useCalendarStore = create(
         });
       });
 
-      set({ leavePeriods });
+      // Wave 3 / Step 3.4: the lane columns come from the backend roster —
+      // the mock DOCTORS list is only the pre-sync initial state (and is
+      // removed entirely in Step 3.7-B).
+      set({ leavePeriods, doctors: mappedDoctors });
 
       if (remoteBlocks.length > 0) {
         set((state) => {
@@ -949,6 +964,9 @@ export const useCalendarStore = create(
             return {
               ...b,
               doctorId: rb.doctorId,
+              doctorName: rb.doctorName ?? b.doctorName ?? null,
+              serviceId: rb.serviceId,
+              serviceName: rb.serviceName ?? b.serviceName ?? null,
               start: rb.start,
               end: rb.end,
               durationMin: rb.durationMin,
@@ -1381,7 +1399,7 @@ export const useCalendarStore = create(
               doctorName: report.doctor_name || doctorName,
               placedCount: report.auto_resolved_count || 0,
               unplacedCount: report.unplaced_count || 0,
-              createdAt: Date.now(),
+              createdAt: clinicNow(),
             }
           : null,
       });
@@ -1490,7 +1508,7 @@ export const useCalendarStore = create(
       if (!doctor?.isEmergencyLeave) return;
       if (block.type !== 'appointment' && block.type !== 'hold') return;
       const when = new Date(block.start);
-      if (!Number.isFinite(when.getTime()) || when.getTime() < Date.now()) return;
+      if (!Number.isFinite(when.getTime()) || when.getTime() < clinicNow()) return;
       const date = `${when.getFullYear()}-${String(when.getMonth() + 1).padStart(2, '0')}-${String(when.getDate()).padStart(2, '0')}`;
       const key = `${date}|${doctor.id}`;
       if (!groups[key]) {
@@ -1660,6 +1678,15 @@ export const useCalendarStore = create(
   simulateIncomingHold: () => {
     const { currentDateOffset, doctors } = get();
     const doc = doctors[0];
+    if (!doc) {
+      set({
+        toast: {
+          tone: 'error',
+          text: 'No doctor on the roster yet — sync the calendar first.',
+        },
+      });
+      return { success: false, message: 'No doctor on the roster.' };
+    }
     const startTs = at(currentDateOffset, 15, 30);
     const holdId = `HOLD-${Math.floor(100 + Math.random() * 900)}`;
 
@@ -1677,7 +1704,7 @@ export const useCalendarStore = create(
       end: startTs + 30 * MIN,
       durationMin: 30,
       bufferMin: 10,
-      holdExpiresAt: Date.now() + 15 * MIN,
+      holdExpiresAt: clinicNow() + 15 * MIN,
       channel: 'telegram',
       isRecentUpdate: true,
     };
@@ -1727,11 +1754,13 @@ export const useCalendarStore = create(
   },
 
   resetToDemoDefaults: () => {
+    // Wave 3 / Step 3.7-B: a reset is an honest CLEAR — syncFromBackend will
+    // refill the schedule with the REAL roster and blocks.
     set({
-      blocks: initCalendarBlocks(),
+      blocks: [],
       toast: {
         tone: 'info',
-        text: 'Calendar schedule reset to clean demo seeds.',
+        text: 'Calendar cleared. The real schedule will re-appear on the next sync.',
       },
     });
   },
@@ -1740,6 +1769,13 @@ export const useCalendarStore = create(
     }),
     {
       name: 'cbs_calendar_storage',
+      version: 2,
+      // Wave 3 / Step 3.7-B: v1 persisted the seeded demo blocks. One-time
+      // migration wipes them — the API is the only source now.
+      migrate: (persisted) => ({
+        ...persisted,
+        blocks: [],
+      }),
       partialize: (state) => ({
         blocks: state.blocks,
       }),
@@ -1774,10 +1810,11 @@ appointmentSyncBus.subscribe('walkInAdmitted', (visit) => {
     (b) => b.appointmentId === visit.appointmentId || b.id === visit.id
   );
   if (!exists) {
-    const service = getService(visit.serviceId) || SERVICES[0];
-    const duration = service.durationMin || 30;
-    const buffer = service.bufferMin !== undefined ? service.bufferMin : 10;
-    const startTs = visit.scheduledTime || visit.arrivedAt || Date.now();
+    // Wave 3 / Step 3.7-B: no mock fallback for a real (UUID) service id.
+    const service = getService(visit.serviceId) || null;
+    const duration = service?.durationMin || visit.serviceDurationMin || 30;
+    const buffer = service?.bufferMin !== undefined ? service.bufferMin : 10;
+    const startTs = visit.scheduledTime || visit.arrivedAt || clinicNow();
     const endTs = startTs + duration * MIN;
 
     const walkInBlock = {

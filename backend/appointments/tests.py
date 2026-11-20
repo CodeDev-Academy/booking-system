@@ -6048,6 +6048,78 @@ class DispatchSlotRecheckTests(APITestCase):
         self.assertEqual(self.booking.status, 'awaiting_review')
 
 
+class HealthClockContractTests(APITestCase):
+    """
+    Wave 3 / Step 3.1 — the clinic's clock is the site's only clock.
+
+    The health endpoint publishes `server_time` and the clinic `timezone` so
+    the frontend can correct a wrong device clock and render every date and
+    hour in the clinic's own timezone (Africa/Lagos), never the visitor's.
+    """
+
+    def test_health_publishes_the_clinic_clock(self):
+        response = self.client.get('/api/v1/health/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertIn('server_time', data)
+        self.assertEqual(data['timezone'], 'Africa/Lagos')
+        # An ISO instant with an offset, parseable by the browser's Date.
+        parsed = datetime.datetime.fromisoformat(data['server_time'])
+        self.assertIsNotNone(parsed.tzinfo)
+
+
+class StaffRolePatchTests(APITestCase):
+    """
+    Wave 3 / Step 3.6 — a staff role edit must actually persist.
+
+    AdminStaffDetailView.patch accepted name/email/specialty/shift/is_active
+    and silently ignored `role`, so every role change in the staff edit modal
+    was UI-only: the toast said saved, the roster snapped back on refresh.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.admin = StaffUser.objects.create(
+            full_name='Admin Role Patch',
+            email='admin.rolepatch@clinic.com',
+            role='clinic_admin',
+            is_active=True,
+        )
+        self.admin.set_password('RolePatch123!')
+        self.admin.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'admin.rolepatch@clinic.com',
+            'password': 'RolePatch123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+        self.receptionist = StaffUser.objects.create(
+            full_name='Role Patch Target',
+            email='rolepatch.target@clinic.com',
+            role='receptionist',
+            is_active=True,
+        )
+
+    def test_role_change_persists(self):
+        response = self.client.patch(
+            f'/api/v1/staff/{self.receptionist.id}/',
+            {'role': 'clinic_admin'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.receptionist.refresh_from_db()
+        self.assertEqual(self.receptionist.role, 'clinic_admin')
+
+    def test_an_invalid_role_is_rejected(self):
+        response = self.client.patch(
+            f'/api/v1/staff/{self.receptionist.id}/',
+            {'role': 'supreme_leader'}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.receptionist.refresh_from_db()
+        self.assertEqual(self.receptionist.role, 'receptionist')
+
+
 class SeedClinicHygieneTests(TestCase):
     """
     Wave 1 / Step 1.5 — the seed ships clean.

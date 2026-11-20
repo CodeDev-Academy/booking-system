@@ -37,7 +37,13 @@ export const useStaffDirectory = () => {
         if (!active || !data) return;
         const doctors = data.doctors || [];
         const staff = data.staff || [];
-        if (doctors.length === 0 && staff.length === 0) return;
+
+        // Wave 3 / Step 3.7-B: an EMPTY roster is an answer — it replaces the
+        // on-screen list instead of keeping whatever was there.
+        if (doctors.length === 0 && staff.length === 0) {
+          useStaffStore.setState({ staffList: [] });
+          return;
+        }
 
         const remoteStaffList = [
           ...doctors.map((d) => ({

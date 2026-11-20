@@ -121,7 +121,10 @@ export const useSettingsStore = create(
       operatingHours: DEFAULT_HOURS.map((h) => ({ ...h })),
       schedulingRules: { ...DEFAULT_RULES },
       notificationRules: { ...DEFAULT_NOTIFICATIONS },
-      services: DEFAULT_SERVICES.map((s) => ({ ...s })),
+      // Wave 3 / Step 3.7-B: services come from the API — the seeded
+      // DEFAULT_SERVICES menu is deleted. A clinic that configured no
+      // services shows none until sync (or an admin) provides them.
+      services: [],
       customCategories: [],
       staffRoles: [...DEFAULT_STAFF_ROLES],
       staffSpecialties: [...DEFAULT_STAFF_SPECIALTIES],
@@ -263,7 +266,10 @@ export const useSettingsStore = create(
         }));
       }
 
-      if (Array.isArray(servicesData) && servicesData.length > 0) {
+      // Wave 3 / Step 3.2: an empty service list replaces the seeded one. A
+      // clinic that configured no services shows none - it does not keep
+      // showing the template's demo menu.
+      if (Array.isArray(servicesData)) {
         const mappedServices = servicesData.map((svc) => ({
           id: svc.id,
           name: svc.name,
@@ -342,12 +348,14 @@ export const useSettingsStore = create(
       operatingHours: DEFAULT_HOURS.map((h) => ({ ...h })),
       schedulingRules: { ...DEFAULT_RULES },
       notificationRules: { ...DEFAULT_NOTIFICATIONS },
-      services: DEFAULT_SERVICES.map((s) => ({ ...s })),
+      // Wave 3 / Step 3.7-B: a config reset is a CLEAR, not a re-seed —
+      // the real services come back with the next API sync.
+      services: [],
       customCategories: [],
       isDirty: false,
       toast: {
         tone: 'neutral',
-        text: 'Configuration reset to MedPulse agency default benchmarks.',
+        text: 'Configuration reset to agency default benchmarks. Services will re-load from the server.',
       },
     });
   },
@@ -581,6 +589,13 @@ export const useSettingsStore = create(
 }),
     {
       name: 'cedarcare_settings_storage',
+      version: 2,
+      // Wave 3 / Step 3.7-B: v1 persisted the seeded DEFAULT_SERVICES menu.
+      // One-time migration wipes it — the API is the only source now.
+      migrate: (persisted) => ({
+        ...persisted,
+        services: [],
+      }),
       partialize: (state) => ({
         clinicProfile: state.clinicProfile,
         operatingHours: state.operatingHours,
