@@ -2461,10 +2461,69 @@ assertions, `test_disruption_notifier.js` 140/140, all 10 n8n harnesses green;
 `claim_expired`; pointed at a dead port -> `claim_check_unavailable`. Probes
 deleted; DB back to the 6 baseline appointments, 0 leave rows, 0 batches.
 
-### Leave flow: nothing open
+### Live proof in the real n8n instance (2026-11-20)
 
-No known gap remains in the leave flow. The stranded panel moves one patient,
-undo cannot race a send, and the docs match the shipped claim-ref shape.
+The gap-3 evidence so far ran the shipped node source directly against Django,
+never through n8n. The live instance was still the old 13-node graph (no claim
+gate), and its stored API key had expired at 05:00 that morning, so the first
+job was access, not code.
+
+What was done, all against `127.0.0.1:5678`:
+
+1. Fresh 60-day API key, used for every call below.
+2. Live graph compared with the repo file first. Thirteen shared nodes, all
+   connections identical; the only parameter differences were encoding damage
+   in comments (`?` where the repo has `-`/`+`) and the intended claim-ref
+   comment. Nothing on the live side was newer, so the overwrite lost nothing.
+   Backup written to `n8n_live_08_backup.json` before the write.
+3. Repo graph pushed (`PUT /api/v1/workflows/II2eWdnZIt364WPE`): 16 nodes,
+   `active` still true, every node and connection byte-equal to the file.
+4. Two real runs through the webhook, both with the provider simulator
+   (mock bearer, `provider-sim` URLs, mock template - no message left the box):
+
+   - **Live claim.** Probe AP-0007 (Fri 27 Nov 09:30, Bello -> Babawo), two
+     `queued` claims. Execution 2130: `Check Claim Liveness` ran, both answered
+     `live: true`, `IF Claim Live` sent 2 to the adapter, both sends fired, both
+     log nodes ran. `Log Halted Claims` never executed.
+   - **Withdrawn claim.** Probe AP-0008 (Fri 4 Dec 09:30), two `queued` claims,
+     then the plan was undone for real (2 notices `expired`, patient moved back,
+     leave removed). Execution 2135 pushed the SAME items: gate answered
+     `live: false` / `claim_expired` for both, `IF Claim Live` sent 0 to the
+     adapter, `Log Halted Claims` wrote 2 rows, and **no send node ran at all**.
+     Django's rows stayed `expired` - the halt path writes nothing back.
+
+### Gap 4 - a delivered notice never closes its claim (found by the live proof)
+
+The live run exposed a defect the unit tests could not see. After a successful
+send, the log nodes post the provider's message id as `external_ref`
+(`mock-sms-AP-0007-...`, `wamid.mock-whatsapp-AP-0007-...`), while the claim row
+is keyed by `disrupt-AP-0007-<signature>-<channel>`. Django's interactions
+endpoint upserts only by `external_ref`, so it created a second row and left the
+claim at `queued` forever. Asked again after the sends, the claim endpoint
+answered `live: true` for a message the patient had already received.
+
+Two real consequences:
+
+- **Notify-once is not enforced across pushes.** `claim_liveness` still says
+  the notice may be delivered, and the adapter's `seen[channel]` guard is only
+  per push, so a retry or re-push repeats the same words.
+- **Undo safety is inverted.** `_undo_blocker` refuses to undo when a notice is
+  `sent`; because the claim never reaches `sent`, undo proceeds after a real
+  delivery and tells reception nothing was sent.
+
+The gate itself is correct: it reports what Django knows. Django is what fails
+to record the outcome against the claim. Fix direction (not built): the log
+nodes send `claim_ref` alongside the provider id; Django accepts it and advances
+that row's status under the existing rank guard, leaving the provider row for
+delivery receipts. Tests red-first on `InteractionListCreateView` plus three
+harness assertions per log node.
+
+### Leave flow: one gap open
+
+The stranded panel moves one patient, undo cannot race a withdrawn send, and the
+docs match the shipped claim-ref shape. One defect remains: a delivered notice
+never closes its claim (Gap 4 above), so a re-push can repeat it and undo cannot
+see that it was delivered.
 
 ### Files
 `backend/appointments/services/disruption_service.py`,

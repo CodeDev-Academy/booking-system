@@ -316,6 +316,17 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
   auth, parse hygiene, the D+1-D+7 multi-item adapter cases that pin the item[0]
   regression, log-node zipping, and G1-G23 for the claim gate - expired/sent/unknown
   claims held, unreachable Django holding the whole push, no config meaning no send).
+- **Live instance**: the running instance at `127.0.0.1:5678` was updated to this
+  exact graph on 2026-11-20 (`PUT /api/v1/workflows/II2eWdnZIt364WPE`, 16 nodes,
+  still active; the pre-update copy is `n8n_live_08_backup.json`). Two real webhook
+  runs on the provider simulator proved both branches: a fresh plan sent both
+  channels, an undone plan was held entirely (`claim_expired`, 2 rows in
+  `Log Halted Claims`, no send node executed).
+- **Known limitation (Gap 4)**: the log nodes post the provider's message id as
+  `external_ref`, not the `claim_ref`, so a delivered notice stays `queued` in
+  Django. The gate therefore protects against a *withdrawn* notice, not against a
+  *retry* of one already sent. Until the log write-back carries `claim_ref`, do not
+  re-push a plan whose notices have already gone out.
 
 ---
 ## 3. Webhook Security & Idempotency Governance
