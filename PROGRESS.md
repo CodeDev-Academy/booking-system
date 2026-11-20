@@ -2400,14 +2400,71 @@ With three probe patients on Fri 20 Nov under Dr. Bello:
 Probes, notices and batches deleted afterwards; DB back to the 6 baseline
 appointments, 0 leave rows, 0 batches, no doctor on leave.
 
-### Still open (not in this step)
-- The stranded panel has no per-patient move action. The real route is
-  re-approving, and that second plan has `leave_created=False`, so it can never
-  be undone and it supersedes the first.
-- Workflow `08` never re-checks claim status before sending, so an undo can
-  still race a message that is already in flight.
-- `08`'s parse comment still documents the old claim ref (no placement
-  signature). Partner-facing doc drift only.
+### Gap 2 - a real per-patient move (2026-11-20)
+
+The panel told reception to "move each one to a colleague" and then offered no
+move. The only route was re-approving the leave, which creates a second plan
+with `leave_created=False`: it can never be undone and it supersedes the first.
+One correction permanently removed the undo.
+
+Django now answers the question the panel was leaving to the browser: who can
+take this patient at this exact time? Every stranded patient carries
+`colleagues`, built by `_colleague_options` through the same gate the move
+itself passes (`_apply_move`): qualified for the service, active, working that
+weekday, inside their shift, under the daily cap, free at that time. Free
+colleagues come first, the rest carry Django's own sentence ("Busy at 11:00
+AM.", "On leave that day.", "Already at the daily limit (1 of 1)."), and a
+patient nobody offers the service for says so instead of showing a broken list.
+
+The panel renders that list as a select plus "Move patient". It cannot offer a
+colleague the save would refuse; if the list goes stale and Django still
+refuses, the toast shows `details.detail`. A hand move is not a batch: an
+unplaced patient is absent from the plan's placements, so moving them never
+blocks undo; if the plan HAD placed them, the batch reports `MOVES_CHANGED`,
+which is the truth.
+
+Proof: 9 tests (`StrandedMoveOptionsTests`), first run red (`KeyError:
+'colleagues'`), then 9/9; disruption + leave set 88/88. Live: 3 probes, approve
+with no colleague allowed -> 0 placed / 3 stranded; each row offered only Dr.
+Babawo (the one qualified dental colleague); AP-0008 moved -> "Moved Probe
+Patient Two to Dr. Babawo at 11:00 AM.", row gone (3 -> 2), rail badge 3 -> 2,
+DB confirmed the new doctor. `batches/last` still said `can_undo: true` -
+correct, because the moved patient was never in that batch's placements.
+
+### Gap 3 - `08` asks before it sends (2026-11-20)
+
+Undo refused to proceed when a notice was `sent`, but `queued` only means "not
+sent yet". Workflow `08` never re-checked, so an undo during a push could still
+let withdrawn words reach the patient.
+
+Django now answers, per claim ref, whether the notice is still `queued`
+(`POST /api/v1/webhooks/disruption-claims/check/`, `X-Webhook-Secret` only, 500
+refs per call). Only an outbound `queued` row is live; `expired`, `sent`,
+`delivered`, `answered`, `failed`, an inbound row or an unknown ref all answer
+`live: false` with their own status (`missing` when there is no row).
+
+Workflow `08` calls it between `Parse Disruption Items` and the adapter
+(`Check Claim Liveness`), then `IF Claim Live` routes the yeses to the adapter
+and everything else to `Log Halted Claims` - one row per held claim, no send,
+and no write back to Django (the notice's true status is already there). It
+fails closed: unreachable Django, a non-2xx answer, a body without `claims`, a
+missing `live: true`, or unset `DJANGO_API_BASE_URL`/`DJANGO_WEBHOOK_SECRET`
+hold the whole push with a named reason (`claim_expired`, `claim_already_sent`,
+`claim_unknown`, `claim_check_unavailable`). The parse comment now names the
+real ref (`disrupt-<code>-<placement signature>-<channel>`).
+
+Proof: 12 endpoint tests written red (route 404), then 12/12; 30 new harness
+assertions, `test_disruption_notifier.js` 140/140, all 10 n8n harnesses green;
+**full suite 373/373 OK in 225 s**. Live: probe AP-0007 placed, both claims
+`queued` -> the shipped node code answered `live: true` twice; undid the plan
+(both notices `expired`) -> the same items answered `live: false`,
+`claim_expired`; pointed at a dead port -> `claim_check_unavailable`. Probes
+deleted; DB back to the 6 baseline appointments, 0 leave rows, 0 batches.
+
+### Leave flow: nothing open
+
+No known gap remains in the leave flow. The stranded panel moves one patient,
+undo cannot race a send, and the docs match the shipped claim-ref shape.
 
 ### Files
 `backend/appointments/services/disruption_service.py`,
@@ -2426,12 +2483,12 @@ appointments, 0 leave rows, 0 batches, no doctor on leave.
 
 ## Next up - Phase 5 (partner handover)
 
-**Leave flow: steps 1-3 plus hardening done (2026-11-19).** The leave story is
-complete: dated leave, a rolled-back preview, distribution with caps, a stranded
-queue, an honest undo that survives a refresh, notify-once, a manual transfer
-that refuses an unqualified doctor, and a stranded count on the rail from any
-page. Next work is partner handover - deploy staging, collect the partner
-credentials, then the joint acceptance run.
+**Leave flow complete (2026-11-20).** Dated leave, a rolled-back preview,
+distribution with caps, a stranded queue that can move one patient, an honest
+undo that survives a refresh and cannot race a message in flight, notify-once, a
+manual transfer that refuses an unqualified doctor, and a stranded count on the
+rail from any page. Next work is partner handover - deploy staging, collect the
+partner credentials, then the joint acceptance run.
 
 ## Phase 5 (partner handover)
 

@@ -216,6 +216,36 @@ Validates 4-digit Quick PIN after 20-minute idle screen lock.
 - `POST /api/v1/webhooks/expiry-sweep/` (Invoked every 1m by n8n cron worker)
 - `POST /api/v1/webhooks/re-engagement/` (Triggered upon offer expiry to send `[🔄 See New Times]`)
 - `POST /api/v1/webhooks/patient-reply/` (SMS / WhatsApp patient reply — see below)
+- `POST /api/v1/webhooks/disruption-claims/check/` (Workflow `08` asks if a notice is still live before sending — see below)
+
+### `POST /api/v1/webhooks/disruption-claims/check/`
+Answers, per claim reference, whether a disruption notice may still be delivered. Workflow `08`
+calls it immediately before any send node, because `queued` means "not sent yet", not "never
+will be": an undo can withdraw a notice while a push is already running.
+
+**Auth:** `X-Webhook-Secret` header only (fail closed, `401` and no reads). Staff JWT is not
+accepted.
+
+**Request Payload:**
+```json
+{ "claim_refs": ["disrupt-AP-1042-9f2c1a77b0-sms", "disrupt-AP-1042-9f2c1a77b0-whatsapp"] }
+```
+
+**Response (`200 OK`):**
+```json
+{
+  "claims": {
+    "disrupt-AP-1042-9f2c1a77b0-sms": { "live": true, "status": "queued" },
+    "disrupt-AP-1042-9f2c1a77b0-whatsapp": { "live": false, "status": "expired" }
+  }
+}
+```
+
+**Rules:** only an `outbound` `InteractionLog` row with status `queued` is `live: true`. Anything
+else — `expired`, `sent`, `delivered`, `answered`, `failed`, an inbound row, or a ref with no row
+(`status: "missing"`) — is `live: false`. Unknown refs are never assumed safe. `400
+CLAIM_REFS_REQUIRED` for a non-list body, `400 TOO_MANY_CLAIMS` above 500 refs. On any non-200
+answer workflow `08` holds the whole push.
 
 ### `POST /api/v1/webhooks/patient-reply/`
 Interprets a patient's text reply for a channel that has no buttons (SMS, WhatsApp). Django

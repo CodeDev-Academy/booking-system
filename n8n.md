@@ -274,28 +274,48 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
   |- true  -> [Respond Disruption Accepted] (200) -> [Parse Disruption Items]
               (one item per channel; malformed items dropped)
                 |
-         [Provider Config & Adapter]
-           - adapts EVERY input item 1:1 (one push carries every impacted patient;
-             item[0]-only silently stranded 3 of 4 patients in the live proof)
-           - mock mode -> Provider Simulator; live mode -> real APIs
+         [Check Claim Liveness]  POST /api/v1/webhooks/disruption-claims/check/
+           - asks Django, immediately before any send, whether each notice is
+             still `queued`; an undo can withdraw one while `08` is running
+           - fail closed: unreachable Django, 401, a body without `claims`, an
+             unknown claim, or missing config -> the item is HELD, never sent
                 |
-         [Route Provider Request] -+- whatsapp -> [Send WhatsApp Interactive Message]
-                                   +- sms      -> [Send SMS (VoiceBip)]
-                                   +- skip     -> [Log Skipped Channel]
+         [IF Claim Live] -+- true  -> [Provider Config & Adapter]
+                          +- false -> [Log Halted Claims]   (dead end, by design)
                 |
-         [Log WhatsApp Interaction] / [Log SMS Interaction]
-           POST /api/v1/interactions/ - upsert by external_ref
+          [Provider Config & Adapter]
+            - adapts EVERY input item 1:1 (one push carries every impacted patient;
+              item[0]-only silently stranded 3 of 4 patients in the live proof)
+            - mock mode -> Provider Simulator; live mode -> real APIs
+                 |
+          [Route Provider Request] -+- whatsapp -> [Send WhatsApp Interactive Message]
+                                    +- sms      -> [Send SMS (VoiceBip)]
+                                    +- skip     -> [Log Skipped Channel]
+                 |
+          [Log WhatsApp Interaction] / [Log SMS Interaction]
+            POST /api/v1/interactions/ - upsert by external_ref
 ```
 
 - **Message contract**: Django's notice sentence is passed **verbatim**; the WhatsApp
   template is its own approved template (`WHATSAPP_DISRUPTION_TEMPLATE_NAME`) whose body
   is a single `{{1}}` placeholder. No quick-reply buttons and no voice leg (decision
   2026-11-17: a disruption notice is a message, not an interaction).
+- **Claim gate (Gap 3)**: `queued` in Django means "not sent yet", not "never will be".
+  An undo marks a notice `expired` while a push may already be in flight, so `08` asks
+  `POST /api/v1/webhooks/disruption-claims/check/` (secret-authenticated, 200 refs max
+  per call) before the adapter. Only a definite `live: true` is sent; everything else
+  goes to `Log Halted Claims`, which logs one row per held claim and writes nothing back
+  (the notice is already visible in Django's log). A failed or unreachable check holds
+  the whole push - a delayed notice is recoverable, a wrong one is not.
 - **Env**: `N8N_DISRUPTION_WEBHOOK_URL` (Django side), `WHATSAPP_DISRUPTION_TEMPLATE_NAME`
-  (n8n side), `DJANGO_WEBHOOK_SECRET` (shared auth), plus the standard `WHATSAPP_*` /
-  `VOICEBIP_*` pair. Unset URL on the Django side = fail-safe (nothing claimed).
-- **Tests**: `node n8n/tests/test_disruption_notifier.js` (77 checks, including the
-  D+1-D+7 multi-item adapter cases that pin the item[0] regression).
+  (n8n side), `DJANGO_WEBHOOK_SECRET` (shared auth), `DJANGO_API_BASE_URL` (the claim
+  check and the log nodes), plus the standard `WHATSAPP_*` / `VOICEBIP_*` pair. Unset URL
+  on the Django side = fail-safe (nothing claimed); unset `DJANGO_API_BASE_URL` or secret
+  = the claim check holds everything.
+- **Tests**: `node n8n/tests/test_disruption_notifier.js` (140 assertions: fail-closed
+  auth, parse hygiene, the D+1-D+7 multi-item adapter cases that pin the item[0]
+  regression, log-node zipping, and G1-G23 for the claim gate - expired/sent/unknown
+  claims held, unreachable Django holding the whole push, no config meaning no send).
 
 ---
 ## 3. Webhook Security & Idempotency Governance
@@ -318,6 +338,7 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
    | `06` Provider Simulator | `/webhook/provider-sim/*` | none — dev-only, deactivated before launch | n/a |
    | `04` Patient Response (C.2) | `/webhook/whatsapp-inbound` + `/webhook/sms-inbound` (**both POST**) | `X-Webhook-Secret` checked **before** the graph runs (`Verify Reply Secret` → `IF Reply Authorized`), same pattern as `05` | **401** `{ok:false,error:"unauthorized",reason}` — nothing is sent; its call **into** Django (`POST /api/v1/webhooks/patient-reply/`) carries the same secret and Django checks it again (C.1, §5.8) |
    | `08` Disruption Notifier (B.3) | `/webhook/disruption-alerts` (**POST**) | `X-Webhook-Secret` checked **before** the graph runs (`Verify Disruption Secret` -> `IF Disruption Authorized`), same pattern as `05` | **401** `{ok:false,error:"unauthorized",reason}` - nothing is sent; Django fires it fire-and-forget after commit |
+   | `08` -> Django claim check (Gap 3) | `/api/v1/webhooks/disruption-claims/check/` (**POST**) | `X-Webhook-Secret` only (no staff JWT); body `{"claim_refs": [...]}`, 500 refs max | **401** `INVALID_WEBHOOK_SECRET`, **400** `CLAIM_REFS_REQUIRED` / `TOO_MANY_CLAIMS`; `08` holds the whole push on any other answer |
 
    `05` is the most sensitive entry point because it triggers real outbound messages and
    calls, so it answers with a true **401** (`responseMode: responseNode`) instead of the
