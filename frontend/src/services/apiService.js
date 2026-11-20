@@ -114,6 +114,43 @@ function triggerBrowserDownload(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
+// Wave 1 / Step 1.1: the ONE place camelCase store data becomes the snake_case
+// body Django's SlotHoldRequestSerializer actually reads. Django requires
+// `patient_name` / `patient_phone` / `request_id`; forwarding raw `name`/`phone`
+// made every dashboard confirm and walk-in answer 400 while the UI toasted
+// success. Keys the backend does not declare are dropped before they are sent.
+function toWireBookingPayload(input = {}, { isWalkIn = false } = {}) {
+  const pick = (...keys) => {
+    for (const key of keys) {
+      const value = input[key];
+      if (value !== undefined && value !== null && value !== '') return value;
+    }
+    return undefined;
+  };
+  const body = {
+    doctor_id: pick('doctorId', 'doctor_id'),
+    service_id: pick('serviceId', 'service_id'),
+    patient_name: pick('patientName', 'patient_name', 'name'),
+    patient_phone: pick('patientPhone', 'patient_phone', 'phone'),
+    start_datetime:
+      pick('startDatetime', 'start_datetime') ||
+      (input.startTs ? new Date(input.startTs).toISOString() : undefined),
+    end_datetime:
+      pick('endDatetime', 'end_datetime') ||
+      (input.endTs ? new Date(input.endTs).toISOString() : undefined),
+    request_id: pick('requestId', 'request_id', 'bookingRequestId', 'booking_request_id'),
+    date_of_birth: pick('dateOfBirth', 'date_of_birth'),
+    gender: pick('gender'),
+    is_emergency: Boolean(pick('isEmergency', 'is_emergency')),
+    notes: pick('notes'),
+  };
+  if (isWalkIn) body.is_walk_in = true;
+  else body.is_instant_confirm = Boolean(pick('isInstantConfirm', 'is_instant_confirm'));
+  // Never send `undefined` - JSON.stringify would keep the key out anyway, but
+  // being explicit keeps the payload readable in the network tab.
+  return Object.fromEntries(Object.entries(body).filter(([, v]) => v !== undefined));
+}
+
 export const apiService = {
   baseUrl: API_BASE_URL,
 
@@ -270,32 +307,14 @@ export const apiService = {
   async holdSlot(payload) {
     return request('/slots/hold/', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify(toWireBookingPayload(payload)),
     });
   },
 
   async registerWalkIn(walkInData) {
-    const payload = {
-      doctor_id: walkInData.doctorId || walkInData.doctor_id,
-      service_id: walkInData.serviceId || walkInData.service_id,
-      name: walkInData.patientName || walkInData.name,
-      phone: walkInData.patientPhone || walkInData.phone,
-      start_datetime:
-        walkInData.startDatetime ||
-        walkInData.start_datetime ||
-        (walkInData.startTs ? new Date(walkInData.startTs).toISOString() : new Date().toISOString()),
-      end_datetime:
-        walkInData.endDatetime ||
-        walkInData.end_datetime ||
-        (walkInData.endTs ? new Date(walkInData.endTs).toISOString() : undefined),
-      notes: walkInData.notes || '',
-      date_of_birth: walkInData.dateOfBirth || walkInData.date_of_birth || null,
-      gender: walkInData.gender || '',
-      is_emergency: Boolean(walkInData.isEmergency || walkInData.is_emergency),
-    };
     return request('/appointments/walk-in/', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify(toWireBookingPayload(walkInData, { isWalkIn: true })),
     });
   },
 

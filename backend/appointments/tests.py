@@ -1,8 +1,11 @@
+import os
 import uuid
 import datetime
+from unittest.mock import patch
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from django.core.cache import cache
+from django.core.management import call_command
 from rest_framework.test import APITestCase
 from rest_framework import status
 from .models import (
@@ -5196,6 +5199,249 @@ class AsyncDispatchWebhookTests(APITestCase):
         self.assertEqual(headers.get('content-type'), 'application/json')
 
 
+class DashboardBookingContractTests(APITestCase):
+    """
+    Wave 1 / Step 1.1 — the exact wire contract the dashboard POSTs.
+
+    The queue "confirm slot", the calendar walk-in and the visits walk-in all
+    go through SlotHoldRequestSerializer. This pins the payload shape the fixed
+    apiService sends (`patient_name` / `patient_phone` / `request_id`) and keeps
+    a regression guard for the old `name`/`phone` keys that made every dashboard
+    confirm answer 400 while the UI toasted success.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+
+        self.doctor = Doctor.objects.create(
+            name='Dr. Contract Hold',
+            specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0),
+            shift_end=datetime.time(17, 0),
+        )
+        self.service = Service.objects.create(
+            name='Dental Consultation',
+            duration_minutes=30,
+            buffer_minutes=5,
+            price=10000,
+        )
+        self.booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0077',
+            patient_name='Amina Dashboard',
+            patient_phone='+2348030001177',
+            service=self.service,
+            status='slots_offered',
+        )
+
+        # The walk-in endpoint is staff-only (no webhook path), so the test logs
+        # in exactly like the dashboard does.
+        self.receptionist = StaffUser.objects.create(
+            full_name='Reception Contract',
+            email='reception.contract@clinic.com',
+            role='receptionist',
+            is_active=True,
+        )
+        self.receptionist.set_password('ContractPass123!')
+        self.receptionist.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'reception.contract@clinic.com',
+            'password': 'ContractPass123!',
+        }, format='json')
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {login.data['access']}"
+        )
+
+    def _slot(self):
+        """A clean weekday slot inside the doctor's shift, well past today."""
+        days_ahead = (7 - timezone.localdate().isoweekday()) % 7 or 7
+        day = timezone.localdate() + datetime.timedelta(days=days_ahead)
+        return timezone.make_aware(datetime.datetime.combine(day, datetime.time(10, 0)))
+
+    def _post(self, payload, url='/api/v1/slots/hold/'):
+        return self.client.post(
+            url, payload, format='json',
+            HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026',
+        )
+
+    def test_the_fixed_dashboard_payload_books(self):
+        start = self._slot()
+        response = self._post({
+            'doctor_id': str(self.doctor.id),
+            'service_id': str(self.service.id),
+            'start_datetime': start.isoformat(),
+            'patient_name': 'Amina Dashboard',
+            'patient_phone': '+2348030001177',
+            'request_id': self.booking.request_code,
+            'is_instant_confirm': True,
+        })
+
+        # An instant confirm answers 200 with the full appointment payload.
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data['status'], 'confirmed')
+        appt = Appointment.objects.get(patient_name='Amina Dashboard')
+        self.assertEqual(appt.booking_request.request_code, 'REQ-2026-0077')
+        self.assertEqual(appt.doctor.id, self.doctor.id)
+
+    def test_the_fixed_walk_in_payload_books(self):
+        start = self._slot()
+        response = self._post({
+            'doctor_id': str(self.doctor.id),
+            'service_id': str(self.service.id),
+            'start_datetime': start.isoformat(),
+            'patient_name': 'Walkin Wura',
+            'patient_phone': '08030001188',
+        }, url='/api/v1/appointments/walk-in/')
+
+        # A walk-in patient is already at the desk, so the backend registers
+        # them as 'arrived' from the first moment. There is no persisted
+        # is_walk_in flag - 'arrived' at registration time IS the walk-in mark.
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data['status'], 'arrived')
+        appt = Appointment.objects.get(patient_name='Walkin Wura')
+        self.assertEqual(appt.status, 'arrived')
+        self.assertIsNotNone(appt.arrival_at)
+
+    def test_the_old_raw_keys_are_rejected(self):
+        """The broken payload the dashboard used to send must keep failing loudly."""
+        start = self._slot()
+        response = self._post({
+            'doctor_id': str(self.doctor.id),
+            'service_id': str(self.service.id),
+            'start_datetime': start.isoformat(),
+            'name': 'Amina Dashboard',
+            'phone': '+2348030001177',
+            'booking_request_id': self.booking.request_code,
+        })
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_the_workflow_01_intake_body_is_accepted(self):
+        """
+        Wave 1 / Step 1.2 — the EXACT body n8n workflow 01 now sends.
+
+        The normalize node builds this object in code (service_id omitted when
+        the intake did not name one - the field has no allow_null), so this
+        test posts that literal shape. If either side drifts, this fails
+        before a real patient intake does.
+        """
+        response = self.client.post('/api/v1/booking-requests/', {
+            'patient_name': "Ngozi O'Brien",
+            'patient_phone': '08030001199',
+            'preferred_dates': ['2026-12-01', '2026-12-14'],
+            'preferred_time_window': 'morning',
+            'channel': 'web',
+            'patient_notes': 'sharp pain',
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        booking = BookingRequest.objects.get(patient_name="Ngozi O'Brien")
+        self.assertEqual(booking.patient_phone, '+2348030001199')
+        self.assertEqual(booking.channel, 'web')
+
+    def test_a_direct_booking_stores_the_e164_phone(self):
+        """
+        Wave 1 / Step 1.3 — the sanitisation result must actually be stored.
+
+        The serializer used to compute `sanitize_phone_e164(phone)` and then
+        overwrite it with the raw string, so every direct booking kept
+        '0803-000-1188' while every lookup compares '+2348030001188' — the
+        same patient stopped matching themselves.
+        """
+        start = self._slot()
+        response = self._post({
+            'doctor_id': str(self.doctor.id),
+            'service_id': str(self.service.id),
+            'start_datetime': start.isoformat(),
+            'patient_name': 'Raw Phone Ada',
+            'patient_phone': '0803-000-1188',
+            'is_instant_confirm': True,
+        })
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        appt = Appointment.objects.get(patient_name='Raw Phone Ada')
+        self.assertEqual(appt.patient_phone, '+2348030001188')
+
+    def test_an_unknown_named_service_is_rejected(self):
+        """
+        Wave 1 / Step 1.4 — a named-but-unknown service must not become a
+        different, real service. The old resolver fell back to the first
+        active service, so 'svc-does-not-exist' quietly booked the wrong
+        treatment, duration and price.
+        """
+        start = self._slot()
+        response = self._post({
+            'doctor_id': str(self.doctor.id),
+            'service_id': 'svc-does-not-exist',
+            'start_datetime': start.isoformat(),
+            'patient_name': 'Wrong Service Ada',
+            'patient_phone': '+2348030001190',
+            'is_instant_confirm': True,
+        })
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Appointment.objects.count(), 0)
+
+    def test_an_intake_with_an_unknown_service_is_rejected_not_swapped(self):
+        response = self.client.post('/api/v1/booking-requests/', {
+            'patient_name': 'Wrong Service Intake',
+            'patient_phone': '08030001191',
+            'service_id': 'svc-not-real',
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(
+            BookingRequest.objects.filter(patient_name='Wrong Service Intake').exists()
+        )
+
+
+class SeedClinicHygieneTests(TestCase):
+    """
+    Wave 1 / Step 1.5 — the seed ships clean.
+
+    A live Telegram bot token used to sit in this file, the same people were
+    seeded twice under two different emails, and every staff account shared
+    the same published passwords. An agency template must never do any of
+    that: the token comes from the environment only, one identity per person,
+    and passwords are random unless the operator explicitly asks for the demo
+    set (SEED_DEMO_PASSWORDS=1).
+    """
+
+    def test_the_seed_carries_no_secret_and_one_identity_per_person(self):
+        with patch.dict(os.environ, {'TELEGRAM_BOT_TOKEN': '', 'SEED_DEMO_PASSWORDS': ''}):
+            call_command('seed_clinic', verbosity=0)
+
+        clinic = ClinicSetting.get_settings()
+        self.assertNotIn('telegram_bot_token', clinic.custom_config)
+
+        emails = list(StaffUser.objects.values_list('email', flat=True))
+        self.assertEqual(len(emails), len(set(emails)))
+        self.assertNotIn('sarah@cedarcare.ng', emails)
+        self.assertNotIn('admin@cedarcare.ng', emails)
+
+        # The published demo password must no longer open the admin account.
+        admin = StaffUser.objects.get(email='admin@clinic.com')
+        self.assertFalse(admin.check_password('adminpassword123'))
+        # And two staff accounts must not share one generated password.
+        sarah = StaffUser.objects.get(email='sarah@clinic.com')
+        chioma = StaffUser.objects.get(email='chioma@clinic.com')
+        self.assertNotEqual(sarah.password_hash, chioma.password_hash)
+
+    def test_the_demo_credentials_are_opt_in(self):
+        with patch.dict(os.environ, {'TELEGRAM_BOT_TOKEN': 'test-token-123',
+                                     'SEED_DEMO_PASSWORDS': '1'}):
+            call_command('seed_clinic', verbosity=0)
+
+        clinic = ClinicSetting.get_settings()
+        self.assertEqual(clinic.custom_config.get('telegram_bot_token'), 'test-token-123')
+        admin = StaffUser.objects.get(email='admin@clinic.com')
+        self.assertTrue(admin.check_password('adminpassword123'))
+
+
 class SlotOptionNumberHoldTests(APITestCase):
     """
     n8n patient replies resolved BY THE BACKEND (Phase 4 prep / build-sheet contract):
@@ -5780,25 +6026,30 @@ class NeedsAttentionFieldsTests(APITestCase):
 
 class SeedClinicPasswordPersistenceTests(TestCase):
     """
-    Receptionist-approved credential persistence: seed_clinic sets demo
-    passwords/PINs only for NEWLY created staff (or blank hashes). A re-seed
-    on server restart must never wipe credentials changed from the dashboard
-    (the pre-launch defect: every restart reset the admin password back to
-    the seed value, silently undoing admin resets).
+    Receptionist-approved credential persistence: seed_clinic sets passwords/PINs
+    only for NEWLY created staff (or blank hashes). A re-seed on server restart
+    must never wipe credentials changed from the dashboard (the pre-launch
+    defect: every restart reset the admin password back to the seed value,
+    silently undoing admin resets).
+
+    Wave 1 / Step 1.5: the deterministic demo passwords are OPT-IN
+    (SEED_DEMO_PASSWORDS=1) so these persistence cases run against a known
+    value; the default random-credential behaviour is pinned separately in
+    SeedClinicHygieneTests.
     """
 
-    def test_first_seed_still_sets_demo_passwords(self):
-        from django.core.management import call_command
+    DEMO_ENV = {'SEED_DEMO_PASSWORDS': '1', 'TELEGRAM_BOT_TOKEN': ''}
 
-        call_command('seed_clinic', verbosity=0)
+    def test_first_seed_sets_the_opt_in_demo_passwords(self):
+        with patch.dict(os.environ, self.DEMO_ENV):
+            call_command('seed_clinic', verbosity=0)
         admin = StaffUser.objects.get(email='admin@clinic.com')
         self.assertTrue(admin.check_password('adminpassword123'))
         self.assertTrue(admin.check_pin('9900'))
 
     def test_reseed_preserves_changed_password_and_pin(self):
-        from django.core.management import call_command
-
-        call_command('seed_clinic', verbosity=0)
+        with patch.dict(os.environ, self.DEMO_ENV):
+            call_command('seed_clinic', verbosity=0)
         admin = StaffUser.objects.get(email='admin@clinic.com')
         self.assertTrue(admin.check_password('adminpassword123'))
 
@@ -5806,7 +6057,8 @@ class SeedClinicPasswordPersistenceTests(TestCase):
         admin.set_pin('2468')
         admin.save()
 
-        call_command('seed_clinic', verbosity=0)  # simulates a server restart
+        with patch.dict(os.environ, self.DEMO_ENV):
+            call_command('seed_clinic', verbosity=0)  # simulates a server restart
         admin = StaffUser.objects.get(email='admin@clinic.com')
         self.assertTrue(admin.check_password('NewVaultPass456!'))
         self.assertTrue(admin.check_pin('2468'))

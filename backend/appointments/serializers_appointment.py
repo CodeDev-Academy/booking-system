@@ -113,8 +113,10 @@ class SlotHoldRequestSerializer(serializers.Serializer):
             attrs['start_dt'] = start_dt
             attrs['end_dt'] = end_dt
             attrs['name'] = name.strip()
+            # Wave 1 / Step 1.3: the E.164 form is the stored one. A raw
+            # '0803-000-1188' here would stop matching the same patient on
+            # every phone-based lookup (returning-patient, dossier, history).
             attrs['phone'] = sanitize_phone_e164(phone)
-            attrs['phone'] = phone
 
             # Optional request lookup
             req_id = attrs.get('request_id')

@@ -1,3 +1,6 @@
+import os
+import secrets
+import string
 import uuid
 import datetime
 from django.core.management.base import BaseCommand
@@ -20,10 +23,41 @@ from appointments.models import (
 class Command(BaseCommand):
     help = 'Seeds Cedarcare Specialist Clinic demo data for live testing and agency pitch.'
 
+    # Wave 1 / Step 1.5: the seed never carries a secret. A bot token must come
+    # from the environment, and passwords/PINs are random per staff unless the
+    # operator explicitly asks for the shared demo credentials.
+    DEMO_CREDENTIALS_ENV = 'SEED_DEMO_PASSWORDS'
+
+    @staticmethod
+    def _demo_credentials():
+        return os.environ.get(Command.DEMO_CREDENTIALS_ENV, '') == '1'
+
+    @staticmethod
+    def _random_password():
+        alphabet = string.ascii_letters + string.digits
+        return ''.join(secrets.choice(alphabet) for _ in range(16))
+
+    @staticmethod
+    def _random_pin():
+        return ''.join(secrets.choice(string.digits) for _ in range(4))
+
     def handle(self, *args, **options):
+        demo_credentials = self._demo_credentials()
         self.stdout.write(self.style.NOTICE('Seeding Cedarcare Specialist Clinic database...'))
 
         # 1. Clinic Settings
+        # The Telegram bot token is NEVER hardcoded (a live token was committed
+        # here once — treat any token in a repo as leaked and revoke it). It is
+        # read from TELEGRAM_BOT_TOKEN and only written when provided.
+        bot_token = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+        custom_config = {
+            'currency': 'NGN',
+            'currency_symbol': '₦',
+            'telegram_bot': '@babawo_bot',
+            'theme': 'ember_dark',
+        }
+        if bot_token:
+            custom_config['telegram_bot_token'] = bot_token
         clinic, created = ClinicSetting.objects.update_or_create(
             id=uuid.UUID('00000000-0000-0000-0000-000000000001'),
             defaults={
@@ -46,18 +80,20 @@ class Command(BaseCommand):
                 'emergency_slots_per_shift': 1,
                 'enable_24h_reminder': True,
                 'enable_2h_reminder': False,
-                'custom_config': {
-                    'currency': 'NGN',
-                    'currency_symbol': '₦',
-                    'telegram_bot': '@babawo_bot',
-                    'telegram_bot_token': '8461748218:AAESXX8H8Z9HCk7id_me37fDTfQ5Dqm8xtY',
-                    'theme': 'ember_dark',
-                }
+                'custom_config': custom_config,
             }
         )
         self.stdout.write(self.style.SUCCESS(f"[OK] Clinic Setting: {clinic.clinic_name}"))
+        if not bot_token:
+            self.stdout.write(self.style.NOTICE(
+                '[NOTE] No TELEGRAM_BOT_TOKEN in the environment - the Telegram leg '
+                'stays unconfigured until you provide one (never hardcoded).'
+            ))
 
         # 2. Staff Accounts
+        # Wave 1 / Step 1.5: one identity per person. The old roster seeded the
+        # same people twice (sarah@clinic.com AND sarah@cedarcare.ng, same for
+        # admin), which made login ambiguous and left stale rows behind.
         staff_data = [
             {
                 'email': 'admin@clinic.com',
@@ -87,21 +123,17 @@ class Command(BaseCommand):
                 'pin': '1234',
                 'password': 'password123',
             },
-            {
-                'email': 'sarah@cedarcare.ng',
-                'full_name': 'Sarah Aliyu (Lead Receptionist)',
-                'role': 'receptionist',
-                'pin': '1234',
-                'password': 'password123',
-            },
-            {
-                'email': 'admin@cedarcare.ng',
-                'full_name': 'Dr. Ibrahim Musa (Practice Manager)',
-                'role': 'clinic_admin',
-                'pin': '9900',
-                'password': 'adminpassword123',
-            },
         ]
+
+        # Known stale identities from older seeds - removed so a re-seed leaves
+        # exactly one account per person.
+        legacy_duplicates = ['sarah@cedarcare.ng', 'admin@cedarcare.ng']
+        removed, _ = StaffUser.objects.filter(email__in=legacy_duplicates).delete()
+        if removed:
+            self.stdout.write(self.style.NOTICE(
+                f"[CLEANED] Removed {removed} duplicate staff identities from older seeds."
+            ))
+
         for s in staff_data:
             staff, created = StaffUser.objects.update_or_create(
                 email=s['email'],
@@ -119,12 +151,22 @@ class Command(BaseCommand):
             seed_password = created or not staff.password_hash
             seed_pin = created or not staff.quick_pin_hash
             if seed_password:
-                staff.set_password(s['password'])
+                password = s['password'] if demo_credentials else self._random_password()
+                staff.set_password(password)
             if seed_pin:
-                staff.set_pin(s['pin'])
+                pin = s['pin'] if demo_credentials else self._random_pin()
+                staff.set_pin(pin)
             staff.save()
             cred_note = 'credentials seeded' if (seed_password or seed_pin) else 'credentials preserved'
             self.stdout.write(self.style.SUCCESS(f"[OK] Staff Account: {staff.full_name} ({staff.email} | {cred_note})"))
+            # A fresh install must know its own passwords, so they are printed
+            # exactly once, at the moment they are created - never stored.
+            if seed_password and not demo_credentials:
+                self.stdout.write(self.style.NOTICE(
+                    f"       first-time password for {staff.email}: {password}"
+                ))
+            if seed_pin and not demo_credentials:
+                self.stdout.write(self.style.NOTICE(f"       first-time PIN for {staff.email}: {pin}"))
 
         # 3. Doctors
         doc_bello, _ = Doctor.objects.update_or_create(

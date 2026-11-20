@@ -12,23 +12,29 @@
       "name": "Patient Intake Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [180, 300],
+      "position": [
+        180,
+        300
+      ],
       "webhookId": "medpulse-patient-intake"
     },
     {
       "parameters": {
-        "jsCode": "// Normalizes input payload from Web Form, WhatsApp Flow, or Telegram Bot\nconst item = $input.item.json;\nconst body = item.body || item;\n\n// 1. Normalize Phone to E.164 (+234 standard for Nigeria / international fallback)\nlet phone = String(body.phone || body.patient_phone || '').trim().replace(/[^0-9+]/g, '');\nif (phone.startsWith('0') && phone.length === 11) {\n  phone = '+234' + phone.substring(1);\n} else if (!phone.startsWith('+') && phone.length >= 10) {\n  phone = '+' + phone;\n}\n\n// 2. Validate Service and Patient Name\nconst patientName = String(body.patient_name || body.name || 'Valued Patient').trim();\nconst serviceId = body.service_id || body.service || null;\nconst doctorId = body.doctor_id || body.preferred_doctor_id || null;\nconst channel = (body.channel || 'web').toLowerCase();\nconst telegramChatId = body.telegram_chat_id || body.chat_id || null;\nconst preferredWindow = body.preferred_time_window || 'morning';\nconst notes = body.notes || body.patient_notes || '';\n\n// 3. Preferred dates formatting (default to next 14 days if not provided)\nlet preferredDates = body.preferred_dates;\nif (!preferredDates || !Array.isArray(preferredDates) || preferredDates.length === 0) {\n  const today = new Date();\n  const tomorrow = new Date(today);\n  tomorrow.setDate(tomorrow.getDate() + 1);\n  const inTwoWeeks = new Date(today);\n  inTwoWeeks.setDate(inTwoWeeks.getDate() + 14);\n  preferredDates = [tomorrow.toISOString().split('T')[0], inTwoWeeks.toISOString().split('T')[0]];\n}\n\nreturn {\n  json: {\n    patient_name: patientName,\n    phone: phone,\n    service_id: serviceId,\n    preferred_doctor_id: doctorId,\n    preferred_dates: preferredDates,\n    preferred_time_window: preferredWindow,\n    channel: channel,\n    telegram_chat_id: telegramChatId,\n    patient_notes: notes,\n    raw_received_at: new Date().toISOString()\n  }\n};"
+        "jsCode": "// Workflow 01 · Stage B — normalize an intake from the Web Form, WhatsApp Flow\n// or Telegram bot into EXACTLY the body Django's BookingRequestCreateSerializer\n// reads, and compose the outbound request in code so the HTTP node never\n// re-templates patient input (a quote in a name used to break the JSON) and\n// never appends /api/v1 to a base that already includes it.\nconst item = $input.item.json;\nconst body = item.body || item;\n\n// 1. Normalize Phone to E.164 (+234 standard for Nigeria / international fallback)\nlet phone = String(body.phone || body.patient_phone || '').trim().replace(/[^0-9+]/g, '');\nif (phone.startsWith('0') && phone.length === 11) {\n  phone = '+234' + phone.substring(1);\n} else if (!phone.startsWith('+') && phone.length >= 10) {\n  phone = '+' + phone;\n}\n\n// 2. Validate Service and Patient Name\nconst patientName = String(body.patient_name || body.name || 'Valued Patient').trim();\nconst serviceId = body.service_id || body.service || null;\nconst doctorId = body.doctor_id || body.preferred_doctor_id || null;\nconst channel = (body.channel || 'web').toLowerCase();\nconst telegramChatId = body.telegram_chat_id || body.chat_id || null;\nconst preferredWindow = body.preferred_time_window || 'morning';\nconst notes = body.notes || body.patient_notes || '';\n\n// 3. Preferred dates formatting (default to next 14 days if not provided)\nlet preferredDates = body.preferred_dates;\nif (!preferredDates || !Array.isArray(preferredDates) || preferredDates.length === 0) {\n  const today = new Date();\n  const tomorrow = new Date(today);\n  tomorrow.setDate(tomorrow.getDate() + 1);\n  const inTwoWeeks = new Date(today);\n  inTwoWeeks.setDate(inTwoWeeks.getDate() + 14);\n  preferredDates = [tomorrow.toISOString().split('T')[0], inTwoWeeks.toISOString().split('T')[0]];\n}\n\n// 4. The outbound contract, built in code.\n//    Django reads `patient_name` / `patient_phone` (serializers_booking.py);\n//    `service_id` is a CharField WITHOUT allow_null, so the key is omitted\n//    when the intake did not name a service - never sent as null.\nconst django_body = {\n  patient_name: patientName,\n  patient_phone: phone,\n  preferred_dates: preferredDates,\n  preferred_time_window: preferredWindow,\n  channel: channel,\n  patient_notes: notes,\n};\nif (serviceId) django_body.service_id = String(serviceId);\nif (doctorId) django_body.preferred_doctor_id = String(doctorId);\n\n// Fail-closed transport: the env base already includes /api/v1 (see the build\n// sheet's URL contract), and NO fallback host or secret exists. An unset env\n// var must fail loudly in this workflow, not post to a guessed server.\nconst apiBase = String($env.DJANGO_API_BASE_URL || '').replace(/\\/+$/, '');\nconst djangoUrl = apiBase ? apiBase + '/booking-requests/' : '';\nconst webhookSecret = String($env.DJANGO_WEBHOOK_SECRET || '');\n\nreturn {\n  json: {\n    patient_name: patientName,\n    phone: phone,\n    service_id: serviceId,\n    preferred_doctor_id: doctorId,\n    preferred_dates: preferredDates,\n    preferred_time_window: preferredWindow,\n    channel: channel,\n    telegram_chat_id: telegramChatId,\n    patient_notes: notes,\n    raw_received_at: new Date().toISOString(),\n    django_url: djangoUrl,\n    secret: webhookSecret,\n    django_body: django_body,\n  }\n};\n"
       },
       "id": "node-normalize-input",
       "name": "Normalize Input & E.164 Phone",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [400, 300]
+      "position": [
+        400,
+        300
+      ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ ($env.DJANGO_API_BASE_URL || 'http://backend:8000') + '/api/v1/booking-requests/' }}",
+        "url": "={{ $json.django_url }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -38,13 +44,13 @@
             },
             {
               "name": "X-Webhook-Secret",
-              "value": "={{ $env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026' }}"
+              "value": "={{ $json.secret }}"
             }
           ]
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"patient_name\": \"{{ $json.patient_name }}\",\n  \"phone\": \"{{ $json.phone }}\",\n  \"service_id\": {{ $json.service_id ? '\"' + $json.service_id + '\"' : 'null' }},\n  \"preferred_doctor_id\": {{ $json.preferred_doctor_id ? '\"' + $json.preferred_doctor_id + '\"' : 'null' }},\n  \"preferred_dates\": {{ JSON.stringify($json.preferred_dates) }},\n  \"preferred_time_window\": \"{{ $json.preferred_time_window }}\",\n  \"channel\": \"{{ $json.channel }}\",\n  \"patient_notes\": \"{{ $json.patient_notes }}\"\n}",
+        "jsonBody": "={{ JSON.stringify($json.django_body) }}",
         "options": {
           "timeout": 10000
         }
@@ -53,7 +59,10 @@
       "name": "Post to Django Booking Queue",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [620, 300]
+      "position": [
+        620,
+        300
+      ]
     },
     {
       "parameters": {
@@ -90,7 +99,10 @@
       "name": "Is Clinic Open Now?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [840, 300]
+      "position": [
+        840,
+        300
+      ]
     },
     {
       "parameters": {
@@ -104,7 +116,10 @@
       "name": "Respond Open Hours ACK",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1080, 200]
+      "position": [
+        1080,
+        200
+      ]
     },
     {
       "parameters": {
@@ -118,7 +133,10 @@
       "name": "Respond After-Hours ACK",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1080, 420]
+      "position": [
+        1080,
+        420
+      ]
     }
   ],
   "connections": {

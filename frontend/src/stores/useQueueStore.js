@@ -413,14 +413,14 @@ export const useQueueStore = create(
         const endIso = new Date(chosenSlot.start + 30 * MIN).toISOString();
         apiService
           .holdSlot({
-            doctor_id: chosenSlot.doctorId,
-            service_id: req.serviceId,
-            name: req.patientName,
-            phone: req.phone,
-            start_datetime: startIso,
-            end_datetime: endIso,
-            is_instant_confirm: true,
-            booking_request_id: req.backendUuid || req.code || requestId,
+            doctorId: chosenSlot.doctorId,
+            serviceId: req.serviceId,
+            patientName: req.patientName,
+            patientPhone: req.phone,
+            startDatetime: startIso,
+            endDatetime: endIso,
+            isInstantConfirm: true,
+            requestId: req.backendUuid || req.code || requestId,
           })
           .catch((err) => {
             console.warn('Backend slot hold failed:', err);

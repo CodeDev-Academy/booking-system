@@ -27,6 +27,9 @@ def resolve_service_or_default(service_id):
     Defaults to the first active clinic service if not found.
     """
     if not service_id:
+        # An intake lead that names NO service is still a lead — reception
+        # triages it against the real list. The first active service is only
+        # a starting point, never a silent swap.
         return Service.objects.filter(is_active=True).first()
     try:
         val = uuid.UUID(str(service_id))
@@ -47,7 +50,10 @@ def resolve_service_or_default(service_id):
         srv = Service.objects.filter(name__icontains='Eye', is_active=True).first()
     else:
         srv = Service.objects.filter(name__icontains=id_str, is_active=True).first()
-    return srv or Service.objects.filter(is_active=True).first()
+    # Wave 1 / Step 1.4: a service the caller NAMED but that does not resolve
+    # must return None - never the first active service. A silent swap booked
+    # the wrong treatment, duration and price and told nobody.
+    return srv
 
 
 def resolve_doctor_or_default(doctor_id):
