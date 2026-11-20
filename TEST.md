@@ -414,6 +414,44 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
   printed exactly once at seed time, with the shared demo set only under `SEED_DEMO_PASSWORDS=1`.
   Red proven by stashing the fix (the token itself appeared in the failure message). The token in
   git history is still leaked — revoke it with BotFather; code cannot do that.
+  **Closed 2026-11-20:** the leak was revoked in BotFather; the original and the intermediate token
+  both answer 401, and the live token now exists only in the environment and clinic settings.
+- [x] `T-747`: **The clinic's rules follow the booking, not just the slot generator**: a direct
+  calendar pick or walk-in used to bypass every rule the availability engine enforces — it could
+  land at 03:00, on a Sunday, inside lunch, in the past, on a blocked date or past the daily cap
+  (`hold_service.acquire_slot` checked only active / leave / overlap). New
+  `services/slot_rules.py` exposes ONE `validate_clinic_slot` that mirrors the generator exactly;
+  `acquire_slot` calls it and the 409 carries a named code (`SLOT_IN_PAST`, `CLINIC_CLOSED`,
+  `DOCTOR_OFF_DUTY`, `OUTSIDE_SHIFT`, `LUNCH_BREAK`, `DATE_BLOCKED`, `EMERGENCY_RESERVE_ONLY`,
+  `TOO_SOON`, `DAILY_CAP_REACHED`) plus a sentence reception can read out. Deliberate exemptions:
+  a walk-in skips the notice window (the patient is at the desk); an emergency may book inside an
+  `emergency_reserve`; holds count against the cap. 14 tests written red first (11 violations
+  accepted), then 14/14.
+- [x] `T-748`: **A reschedule is held to the same standard as a fresh booking**: the view already
+  re-checked leave and overlap but accepted any time of day, so a visit could be moved into lunch,
+  before the shift, or into the past. It now calls the same `validate_clinic_slot`, with
+  `exclude_appointment_id` so a move never counts against its own daily cap. 4 tests red first,
+  then 6/6.
+- [x] `T-749`: **An appointment is a state machine, not a free text field**: the status endpoint
+  accepted any listed value, so `completed -> arrived`, `cancelled -> confirmed` and
+  `no_show -> confirmed` all succeeded and were audited. `Appointment.STATUS_TRANSITIONS` on the
+  model now defines the only legal edges; anything else answers 409 `INVALID_TRANSITION` with the
+  current status, and completed / cancelled / no_show / hold_expired are terminal. The ghost
+  `rescheduled` value (never a model status) is refused. Internal writers (sweeper, Telegram,
+  patient replies, slot selection) set status directly and are unaffected by design. 5 tests red
+  first, then 8/8.
+- [x] `T-750`: **Dispatch re-checks the slots reception picked**: the explicit-slot branch created
+  offer rows straight from the request payload, so a patient could be offered a slot taken seconds
+  earlier. Every pick is now validated under the doctor's row lock (rules + overlap, with expired
+  holds purged first — a dead hold must not block dispatch); invalid picks are skipped with a named
+  reason in `skipped_slots`, and if nothing survives the answer is 409 `ALL_SLOTS_INVALID` with the
+  request untouched. 3 tests red first, then 4/4.
+
+  Wave 2 also hardened the fixtures the new rules exposed: bookings built from `now + N hours`
+  floated with the wall clock and could land at 03:00 on a Saturday, five test doctors were created
+  with **no working days** (off duty every day — silently unbookable before, loudly refused now),
+  and one stranded-patient booking sat inside lunch. A shared `next_legal_slot()` helper now gives
+  every fixture a deterministic legal weekday. Full suite **422/422 OK**.
 
 ---
 
@@ -462,6 +500,9 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 | 2026-11-20 | Brain Agent | `Live n8n / T-740` | **PASSED** | Gap 3 proven inside the running instance, not just against the shipped node source. Access first: the stored API key had expired at 05:00, so a fresh 60-day key was created and the live graph compared with the repo file before anything was written - 13 shared nodes, identical connections, differences only in mojibake comment characters and the intended claim-ref comment. Backed up to `n8n_live_08_backup.json`, then PUT all 16 nodes; `active` stayed true and the stored graph now equals the file. Run 1 (fresh plan, execution 2130): gate answered `live: true` twice, `IF Claim Live` passed 2 to the adapter, both simulator sends fired, both log nodes ran, `Log Halted Claims` never executed. Run 2 (plan undone first, execution 2135): the same two items came back `live: false` / `claim_expired`, 0 items reached the adapter, `Log Halted Claims` wrote 2 rows, no send node ran, and Django's claims stayed `expired`. The live run also exposed Gap 4 (T-741): a delivered notice never closes its claim, so the claim endpoint still reported `live: true` after the patient had been messaged. Probes and their rows deleted; baseline restored (6 appointments, 0 leave rows, 0 batches, 0 disrupt logs). |
 | 2026-11-20 | Brain Agent | `Gap 4 / T-741` | **PASSED** | Fix shipped and proven in the live instance. `claim_ref` now travels on both log nodes' payloads; `InteractionListCreateView._close_claim()` advances the claim under the existing status-rank guard (outbound only, same channel only, unknown refs ignored, claim keeps its own `external_ref`). 8 `ClaimCloseOnLogTests` written red first (`'queued' != 'sent'`, `'queued' != 'failed'`, `blocker unexpectedly None`), green with the interaction + claim suites 52/52; harness 146/146 with 6 new checks. Live: execution 2159 sent both channels and both claims became `sent` with the log node's summary; execution 2162 re-pushed the same items and was held as `claim_already_sent` (0 to the adapter, 2 halted rows, no send node); `_undo_blocker` returned `NOTICES_DELIVERED`. Full suite 381/381 OK in 404 s. |
 | 2026-11-20 | Brain Agent | `Review Wave 1 / T-742-T-746` | **PASSED** | The independent review's stop-the-bleeding wave, every item red-first. (T-742) `apiService.toWireBookingPayload` now translates camelCase to the wire names Django reads (`patient_name`/`patient_phone`/`request_id`) — both booking paths used to 400 while the UI toasted success; harness `test_booking_payloads.js` 9 red → 15/15, build clean, Django guard pins book/400 both ways. (T-743) Workflow 01 rebuilt outbound: no doubled `/api/v1`, no raw `phone`, no null service, values built in code and JSON-stringified, no fallback secret; harness `test_intake_webhook.js` 12 red → 22/22, all 11 n8n harnesses green, Django accepts the exact body (201). (T-744) The E.164 sanitisation is now actually stored (overwrite line deleted, red first). (T-745) A named-but-unknown service answers 400 instead of silently becoming the first active service. (T-746) Seed clean: token env-only, duplicate identities removed and cleaned from old seeds, random per-staff passwords/PINs printed once, demo set opt-in via `SEED_DEMO_PASSWORDS=1` (red proven by stashing the fix). Full suite **390/390 OK in 435 s**. The committed Telegram token remains leaked until revoked in BotFather — owner action. |
+| 2026-11-20 | Brain Agent | `Live n8n / workflow 01 create + intake proof` | **PASSED** | The live instance had NO workflow 01 at all (never imported), so nothing was overwritten: created from the repo file (`XKuMYjt7vOtU5xVE`), byte-verified the stored graph against the file, then activated. Live proof (execution 2293) posted a real intake through `/webhook/intake` with a **quote in the name** (the thing that used to break the JSON): `django_url` = `http://127.0.0.1:8000/api/v1/booking-requests/` (no doubling), body carried `patient_name`/`patient_phone` E.164 with the quote intact, no raw `phone`, no null `service_id`, secret from env; Django created `REQ-2026-0007` at `awaiting_review` with the E.164 number stored. Probe row deleted; dev DB clean. |
+| 2026-11-20 | Owner + Brain Agent | `Telegram token leak / T-746 closure` | **CLOSED** | The committed bot token was revoked in BotFather: the original and an intermediate token both answer **401 Unauthorized** from the Bot API, verified live. The live token exists only in the environment and `ClinicSetting.custom_config` (seeded via the env-only path); both dead values wiped from the dev DB. Git history now holds only a corpse. |
+| 2026-11-20 | Brain Agent | `Review Wave 2 / T-747-T-750` | **PASSED** | The booking-engine honesty wave, every step red-first. (T-747) `services/slot_rules.py` — ONE `validate_clinic_slot` mirroring the availability generator exactly; `acquire_slot` enforces past / clinic day / doctor day / shift+buffer / lunch / blocked dates / emergency reserve / notice / daily cap, with walk-in and emergency exemptions, and the 409 names the code: 11 violations red, then 14/14. (T-748) reschedule calls the same validator with `exclude_appointment_id`: 4 red, then 6/6. (T-749) `Appointment.STATUS_TRANSITIONS` — the staff endpoint answers 409 `INVALID_TRANSITION` for impossible edges (`completed -> arrived`, `cancelled -> confirmed`, the ghost `rescheduled`); terminal states are terminal: 5 red, then 8/8. (T-750) dispatch re-checks reception's picks under the doctor row lock, expired holds purged first; bad picks skipped with named reasons, none surviving → 409 `ALL_SLOTS_INVALID`, request untouched: 3 red, then 4/4. The first full run failed 21 legacy tests whose fixtures booked `now + N hours` (could land at 03:00 on a Saturday) or used doctors created with NO working days — fixed with the shared `next_legal_slot()` helper and real calendars; one real product defect found in the fallout: the dispatch re-check originally counted expired holds as conflicts, now purged like the booking path. Full suite **422/422 OK** (second run, after the fixes). |
 
 ---
 

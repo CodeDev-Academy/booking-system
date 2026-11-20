@@ -2599,6 +2599,50 @@ until the next re-seed without `TELEGRAM_BOT_TOKEN` set. Waves 2-5 of the
 review remediation (booking-engine honesty, frontend truth, sessions,
 medium sweep) remain open and are tracked in TEST.md and the review record.
 
+## Review Wave 2 — the booking engine gets honest (2026-11-20)
+
+The independent review's High findings 4, 7, 13 and 18: the engine that
+generates slot OPTIONS enforced the clinic's contract, but every path where a
+human or a bot PICKED a time bypassed it. Four fixes, all red-first:
+
+1. **One validator, three callers (T-747).** `services/slot_rules.py` exposes
+   `validate_clinic_slot`, mirroring `AvailabilityEngine` exactly: past time,
+   clinic day, doctor day, shift bounds with the sterilization buffer, lunch,
+   blocked dates, emergency reserves, advance notice, daily cap (holds
+   count). `acquire_slot` calls it; a violation is a 409 with a named code
+   and a sentence reception can read to a patient. A walk-in skips the notice
+   window (the patient is at the desk); an emergency may use the reserve.
+2. **Reschedule plays by the same rules (T-748)**, with the moving
+   appointment excluded from its own cap count.
+3. **The lifecycle is a map (T-749).** `Appointment.STATUS_TRANSITIONS` on
+   the model; the staff endpoint answers 409 `INVALID_TRANSITION` for edges
+   that cannot exist (`completed -> arrived`, `cancelled -> confirmed`, the
+   ghost `rescheduled` value), terminal states are terminal, and internal
+   writers (sweeper, Telegram, replies) are untouched by design.
+4. **Dispatch re-checks reception's picks (T-750)** under the doctor row
+   lock, purging expired holds first; bad picks are skipped with named
+   reasons in `skipped_slots`, and an all-invalid dispatch answers 409
+   `ALL_SLOTS_INVALID` without touching the request.
+
+The fallout was instructive: the first full run failed 21 legacy tests whose
+fixtures booked `now + N hours` — times that floated with the wall clock and
+could land at 03:00 on a Saturday — or used doctors created with NO working
+days, which the old engine silently made unbookable and the new rules refuse
+loudly. All fixtures now use the shared `next_legal_slot()` helper, and the
+five day-less fixture doctors got real calendars. One genuine product bug
+surfaced: the dispatch re-check originally counted an expired hold as a live
+conflict — it now purges dead holds first, exactly like the booking path.
+
+Also closed today, outside the wave: the **Telegram token leak** (review
+finding 1) — revoked in BotFather (both prior tokens answer 401), the live
+token lives only in the environment and clinic settings, and the live n8n
+instance gained workflow 01 (created, verified, activated) with a real
+intake proven end to end, quote-in-name included.
+
+Proof: 33 new tests (14 + 6 + 8 + 4 + 1 control), every step red first;
+full suite **422/422 OK**. Waves 3-5 of the review remediation remain open.
+
+
 ## Next up - Phase 5 (partner handover)
 
 **Leave flow complete (2026-11-20).** Dated leave, a rolled-back preview,
