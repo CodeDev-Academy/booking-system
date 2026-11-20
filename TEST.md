@@ -452,6 +452,76 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
   with **no working days** (off duty every day — silently unbookable before, loudly refused now),
   and one stranded-patient booking sat inside lunch. A shared `next_legal_slot()` helper now gives
   every fixture a deterministic legal weekday. Full suite **422/422 OK**.
+- [x] `T-751`: **One clock — the clinic's** (owner requirement, step 3.1): every date and hour on the
+  site came from the visitor's computer (`new Date()`, `getHours()`, local midnight), so a wrong
+  laptop clock or a foreign timezone could shift the schedule or mark the wrong day "today". New
+  `services/clinicTimeService.js` (logic layer, no JSX): `now()` is server-synced from
+  `GET /api/v1/health/` (which now publishes `server_time` + `timezone`, red-first Django test), and
+  every day key, hour label, midnight anchor and date/hour string conversion runs in Africa/Lagos
+  through the world-clock formatter. The whole calendar day engine, the walk-in anchors, the visits
+  timers and the queue aging read it. Harness `test_clinic_time.js` red first (13/13), then 25/25 —
+  including the proof matrix: the service EXECUTED on fake computers set to **New York and Tokyo**
+  still answers `10:30 AM` / `2026-11-24` in Lagos time, and a laptop running **2 hours slow is
+  corrected** by the server clock. Owner acceptance: set the laptop clock wrong — the site doesn't move.
+- [x] `T-752`: **An empty backend means an empty screen** (review finding 9, step 3.2): every sync
+  bailed on an empty answer, leaving seeded rows on screen forever. A successful empty answer now
+  replaces the queue, the calendar blocks/leave periods and the settings service list; a FAILED
+  fetch still keeps the screen (network down ≠ empty clinic). Harness `test_truthful_screens.js`
+  6 red → 8/8.
+- [x] `T-753`: **The Live Visits board reads real data** (review finding 8, step 3.3): the store had
+  no fetch at all — `fetchTodayAppointments` was defined and never called; the board always showed
+  seeded rows. New `syncFromBackend` maps by status (`arrived → waiting`, `in_consultation`,
+  `completed`; `confirmed/held → expected today`; cancelled/no-show absent), runs on mount and
+  every 60s, and the hook prefers the row's own backend doctor/service names. Harness
+  `test_visits_sync.js` red 4 → 12/12; live check against the dev DB showed Mariam waiting, Ibrahim
+  in consultation, Ngozi completed — the real rows, real names.
+- [x] `T-754`: **The calendar shows the appointment's own data** (review Batch 3 High, step 3.4):
+  the details modal invented its times (`Date.now()`), guessed the service from label text, read a
+  phone key the grid never filled and defaulted the doctor to `doc-bello`; the remote mapping gave
+  every block `svc-dental` and matched doctors by NAME SUBSTRING, so a fourth doctor landed nowhere
+  and every unknown doctor showed Bello's fake week (`DOCTOR_META['doc-bello']` fallback). Now: the
+  modal gets the row's real start/end/phone/service/doctor; blocks and lane columns carry the
+  backend UUIDs and real names; the roster is replaced from the schedule response. Harness
+  `test_calendar_truth.js` red 11 → 11/11.
+- [x] `T-755`: **No ghost rows** (review Batch 3 High, step 3.5): every write path committed a
+  fake row, toasted success, published it to every store and only THEN called the API
+  (`console.warn` on failure). Live mode now asks the backend FIRST and commits the row IT created
+  (real appointment code, real times); a refusal answers with the server's own sentence — Wave 2's
+  409s are finally visible — and leaves the screen untouched. Covers queue confirm, calendar
+  walk-in, staff add. The optimistic path survives only for pitch-simulator rows. Harness
+  `test_no_ghosts.js` red 10 → 10/10.
+- [x] `T-756`: **The staff screen tells the truth, and secrets leave the browser** (review Batch 3
+  High, step 3.6): role changes were UI-only (backend ignored `role`), the duty select called
+  nothing, the modal held and could REVEAL the current password and PIN, the success toast PRINTED
+  the PIN, the lock screen PRINTED the PIN, and `createStaff` sent shift fields the backend never
+  read. Fixed on both sides: `AdminStaffDetailView` persists `role` (invalid → 400 `INVALID_ROLE`,
+  red-first, 2/2), the store maps the display label to a real backend role and drives the doctor
+  duty endpoint, resets await the backend, live rows never hold a PIN or password, and both PIN
+  prints are gone. Harness `test_staff_truth.js` red 10 → 11/11.
+- [x] `T-757`: **Option B — the API is the only source of clinic rows** (owner decision, step 3.7):
+  the in-browser demo seeds are DELETED (queue, calendar, visits, staff roster, settings service
+  menu, the fake default receptionist, the hardcoded rail badges, the fake workload floors, the
+  hardcoded clinic brand). The pitch look comes from `seed_clinic` on the database; the pitch
+  SIMULATOR keeps its own private dataset. Two traps handled: every persisted store got
+  `version: 2` + a one-time migration so old localStorage cannot resurrect the seeds (the staff
+  migration also wipes the demo passwords/PINs that were persisted), and `resetToDemoDefaults` is
+  now an honest CLEAR everywhere. The staff directory hook replaces the roster on an empty answer
+  too. Harness `test_no_demo_seeds.js` red 15 → 15/15.
+- [x] `T-758`: **The API base never guesses in production** (review finding 3, step 3.8): the
+  frontend silently fell back to the page's own origin (and kept a dead constant pointing at
+  someone else's Render server). A production build without `VITE_API_URL`/`VITE_API_BASE_URL` now
+  refuses to start with one clear instruction; localhost/LAN development keeps its convenient
+  default. Checks in `test_truthful_screens.js` (X1/X2), red first.
+
+  Wave 3 gates: 8 frontend harnesses **109/109** (`test_booking_payloads` 15, `test_calendar_truth`
+  11, `test_clinic_time` 25, `test_no_demo_seeds` 15, `test_no_ghosts` 10, `test_staff_truth` 11,
+  `test_truthful_screens` 10, `test_visits_sync` 12), `npm run build` clean, Django suite
+  **425/425 OK** (422 + 1 health-clock + 2 role-patch). Live browser proof against the running dev
+  backend: logged in, zero console errors on queue / live-visits / calendar; the rail showed the
+  REAL clinic name + address and the real signed-in session; the queue showed the 4 real seeded
+  requests; the board showed today's real lanes; the calendar showed the real roster (Bello,
+  Okafor, Babawo) with real visit counts. One real crash found by the smoke test and fixed on the
+  spot: LeftRail read the now-removed fake staff default without a guard.
 
 ---
 
@@ -503,6 +573,7 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 | 2026-11-20 | Brain Agent | `Live n8n / workflow 01 create + intake proof` | **PASSED** | The live instance had NO workflow 01 at all (never imported), so nothing was overwritten: created from the repo file (`XKuMYjt7vOtU5xVE`), byte-verified the stored graph against the file, then activated. Live proof (execution 2293) posted a real intake through `/webhook/intake` with a **quote in the name** (the thing that used to break the JSON): `django_url` = `http://127.0.0.1:8000/api/v1/booking-requests/` (no doubling), body carried `patient_name`/`patient_phone` E.164 with the quote intact, no raw `phone`, no null `service_id`, secret from env; Django created `REQ-2026-0007` at `awaiting_review` with the E.164 number stored. Probe row deleted; dev DB clean. |
 | 2026-11-20 | Owner + Brain Agent | `Telegram token leak / T-746 closure` | **CLOSED** | The committed bot token was revoked in BotFather: the original and an intermediate token both answer **401 Unauthorized** from the Bot API, verified live. The live token exists only in the environment and `ClinicSetting.custom_config` (seeded via the env-only path); both dead values wiped from the dev DB. Git history now holds only a corpse. |
 | 2026-11-20 | Brain Agent | `Review Wave 2 / T-747-T-750` | **PASSED** | The booking-engine honesty wave, every step red-first. (T-747) `services/slot_rules.py` — ONE `validate_clinic_slot` mirroring the availability generator exactly; `acquire_slot` enforces past / clinic day / doctor day / shift+buffer / lunch / blocked dates / emergency reserve / notice / daily cap, with walk-in and emergency exemptions, and the 409 names the code: 11 violations red, then 14/14. (T-748) reschedule calls the same validator with `exclude_appointment_id`: 4 red, then 6/6. (T-749) `Appointment.STATUS_TRANSITIONS` — the staff endpoint answers 409 `INVALID_TRANSITION` for impossible edges (`completed -> arrived`, `cancelled -> confirmed`, the ghost `rescheduled`); terminal states are terminal: 5 red, then 8/8. (T-750) dispatch re-checks reception's picks under the doctor row lock, expired holds purged first; bad picks skipped with named reasons, none surviving → 409 `ALL_SLOTS_INVALID`, request untouched: 3 red, then 4/4. The first full run failed 21 legacy tests whose fixtures booked `now + N hours` (could land at 03:00 on a Saturday) or used doctors created with NO working days — fixed with the shared `next_legal_slot()` helper and real calendars; one real product defect found in the fallout: the dispatch re-check originally counted expired holds as conflicts, now purged like the booking path. Full suite **422/422 OK** (second run, after the fixes). |
+| 2026-11-20 | Brain Agent | `Review Wave 3 / T-751-T-758` | **PASSED** | The screen-tells-the-truth wave, every step red-first, plus the owner's two decisions: the site runs on the clinic's clock (not the visitor's computer), and Option B — the in-browser demo data is deleted, the pitch look comes from `seed_clinic` on the database. (T-751) `clinicTimeService` + health-published `server_time`/`timezone`; the proof matrix executed the service on fake computers set to New York and Tokyo — still `10:30 AM` in Lagos, a 2h-slow laptop corrected by the server; 13 red → 25/25. (T-752) empty answer replaces queue/calendar/settings; a failed fetch keeps the screen: 6 red → 8/8. (T-753) the Live Visits board fetches today's real appointments and maps them by status; live check showed the real lanes (Mariam waiting, Ibrahim in consultation, Ngozi completed): 4 red → 12/12. (T-754) the details modal and the remote mapping carry the backend UUIDs and real names; the default-to-Bello meta and the `svc-dental` hardcode are gone: 11 red → 11/11. (T-755) live writes ask the backend first and commit the row IT created; refusals surface the server's own sentence (Wave 2's 409s, finally visible): 10 red → 10/10. (T-756) `AdminStaffDetailView` persists `role` (invalid → 400, red-first 2/2); the store maps labels to real roles, drives the doctor duty endpoint, and live rows never hold a password or PIN; both PIN prints (toast + lock screen) removed: 10 red → 11/11. (T-757) Option B: all in-browser seeds deleted, every persisted store version-bumped with a one-time wipe migration (including the persisted demo passwords), resets are honest clears, the rail badges count real rows only, the brand shows the API-synced clinic name: 15 red → 15/15. (T-758) a production build without `VITE_API_URL` refuses to start with one clear message; the dead foreign-server constant is deleted: 2 red → green. Gates: 8 frontend harnesses **109/109**, build clean, Django **425/425 OK**. Live browser proof (logged in, zero console errors on queue / live-visits / calendar): the rail showed the real clinic name, address and signed-in session; the queue showed the 4 real seeded requests; the calendar showed the real roster with real visit counts. The smoke test caught one real crash (LeftRail read the removed fake staff default) — fixed and re-verified on the spot. |
 
 ---
 

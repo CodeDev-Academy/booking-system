@@ -2642,6 +2642,62 @@ intake proven end to end, quote-in-name included.
 Proof: 33 new tests (14 + 6 + 8 + 4 + 1 control), every step red first;
 full suite **422/422 OK**. Waves 3-5 of the review remediation remain open.
 
+## Review Wave 3 — the screen tells the truth (2026-11-20)
+
+The independent review's frontend findings (2, 3, 8, 9, 11 plus Batch 3
+High/Medium), the owner's calendar-clock requirement, and the owner's Option B
+decision. Eight steps, every one red-first, all frontend except two small
+backend additions:
+
+1. **One clock — the clinic's (T-751, owner requirement).** The site used to
+   read the visitor's computer for every date and hour. New
+   `services/clinicTimeService.js`: `now()` is server-synced from the health
+   endpoint (which now publishes `server_time` + `timezone`), and every day
+   key, hour label, midnight anchor and date/hour conversion runs in
+   Africa/Lagos. The harness executed the service on fake computers set to
+   New York and Tokyo and proved it still answers in Lagos time, and that a
+   2h-slow laptop is corrected by the server clock.
+2. **Empty backend = empty screen (T-752).** A successful empty answer
+   replaces the queue, the calendar and the settings service list. A failed
+   fetch keeps the screen.
+3. **Live Visits reads real data (T-753).** The store had NO fetch at all;
+   the board always showed seeds. New sync maps today's real appointments by
+   status into the lanes, on mount and every 60s.
+4. **The calendar shows the appointment's own data (T-754).** The details
+   modal stopped inventing times/services/phones/doctors; the remote mapping
+   and lane columns carry backend UUIDs and real names; the roster is
+   replaced from the schedule response; the default-to-Bello demo week is
+   gone.
+5. **No ghost rows (T-755).** Live writes ask the backend FIRST and commit
+   the row it created; a refusal surfaces the server's own sentence (Wave
+   2's 409s, finally visible) and leaves the screen untouched.
+6. **Staff screen honest, secrets out of the browser (T-756).** The backend
+   persists `role` (red-first); the store maps labels to real roles, drives
+   the duty endpoint, awaits resets; live rows never hold a password or
+   PIN; the toast and the lock screen no longer PRINT the PIN.
+7. **Option B (T-757, owner decision).** The in-browser demo data is
+   DELETED — every store starts empty and syncs from the API; every
+   persisted store is version-bumped with a one-time wipe migration so old
+   localStorage cannot resurrect the seeds (including the persisted demo
+   passwords); resets are honest clears; the rail badges count real rows
+   only; the brand shows the API-synced clinic name and address. The pitch
+   look comes from `seed_clinic` on the database; the pitch simulator keeps
+   its own private dataset.
+8. **The API base never guesses in production (T-758).** A production build
+   without `VITE_API_URL` refuses to start with one clear instruction; the
+   dead constant pointing at someone else's demo server is deleted.
+
+Gates: 8 new frontend harnesses **109/109**, `npm run build` clean, Django
+suite **425/425 OK** (health-clock + role-patch tests added). Live browser
+proof with zero console errors across queue / live-visits / calendar: the
+rail showed the real clinic name, address and signed-in session, the queue
+showed the 4 real seeded requests, the board showed today's real lanes, the
+calendar showed the real roster. The smoke test caught one real crash
+(LeftRail read the removed fake staff default) — fixed and re-verified.
+
+Waves 4-5 of the review remediation remain open (sessions, unified reply
+path, the medium sweep, doc sync).
+
 
 ## Next up - Phase 5 (partner handover)
 
