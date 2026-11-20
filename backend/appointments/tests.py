@@ -9146,3 +9146,167 @@ class DisruptionClaimCheckTests(_DisruptionFixture, APITestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data['error'], 'TOO_MANY_CLAIMS')
+
+class ClaimCloseOnLogTests(_DisruptionFixture, APITestCase):
+    """
+    Gap 4 - a delivered notice closes its claim.
+
+    Workflow 08's log nodes report the provider's own id as `external_ref`
+    (``mock-sms-AP-0007-...``), while the claim row Django queued is keyed by
+    ``disrupt-<code>-<signature>-<channel>``. Without a `claim_ref` in the same
+    payload the outcome lands on a second row and the claim stays `queued`
+    forever, so the claim gate keeps saying `live: true` for a message the
+    patient has already received.
+    """
+
+    URL = '/api/v1/interactions/'
+    CHECK = '/api/v1/webhooks/disruption-claims/check/'
+    SECRET = 'clinic_dev_secret_2026'
+
+    def _queued_refs(self):
+        monday = self._next_monday()
+        self._book(self.doctor, monday, 11, 0, name='Amina Closed',
+                   phone='+2348055567801')
+        self._approve(monday, max_lookahead_days=0)
+        return list(
+            InteractionLog.objects.filter(
+                direction='outbound', external_ref__startswith='disrupt-'
+            ).values_list('external_ref', flat=True)
+        )
+
+    def _log(self, **overrides):
+        payload = {
+            'provider': 'voicebip',
+            'channel': 'sms',
+            'direction': 'outbound',
+            'status': 'sent',
+            'patient_name': 'Amina Closed',
+            'patient_phone': '+2348055567801',
+            'external_ref': 'mock-sms-AP-0007-provider',
+            'summary': 'Disruption notice sent via SMS',
+        }
+        payload.update(overrides)
+        return self.client.post(
+            self.URL, payload, format='json', HTTP_X_WEBHOOK_SECRET=self.SECRET
+        )
+
+    def _claim(self, ref):
+        return InteractionLog.objects.get(external_ref=ref)
+
+    def _live(self, ref):
+        response = self.client.post(
+            self.CHECK, {'claim_refs': [ref]}, format='json',
+            HTTP_X_WEBHOOK_SECRET=self.SECRET,
+        )
+        return response.data['claims'][ref]['live']
+
+    def test_a_sent_log_closes_its_claim(self):
+        refs = self._queued_refs()
+        sms = next(ref for ref in refs if ref.endswith('-sms'))
+
+        response = self._log(claim_ref=sms)
+
+        self.assertEqual(response.status_code, 201)
+        claim = self._claim(sms)
+        self.assertEqual(claim.status, 'sent')
+        self.assertEqual(claim.summary, 'Disruption notice sent via SMS')
+        # the provider's own row still exists for delivery receipts
+        self.assertTrue(
+            InteractionLog.objects.filter(
+                external_ref='mock-sms-AP-0007-provider'
+            ).exists()
+        )
+        # and the gate now refuses to deliver it again
+        self.assertFalse(self._live(sms))
+
+    def test_closing_the_claim_never_moves_its_identity(self):
+        refs = self._queued_refs()
+        sms = next(ref for ref in refs if ref.endswith('-sms'))
+
+        self._log(claim_ref=sms)
+
+        claim = self._claim(sms)
+        self.assertEqual(claim.external_ref, sms)
+        self.assertEqual(claim.patient_phone, '+2348055567801')
+
+    def test_a_late_sent_event_never_downgrades_a_delivered_claim(self):
+        refs = self._queued_refs()
+        sms = next(ref for ref in refs if ref.endswith('-sms'))
+        InteractionLog.objects.filter(external_ref=sms).update(status='delivered')
+
+        response = self._log(claim_ref=sms, status='sent')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(self._claim(sms).status, 'delivered')
+
+    def test_a_failed_log_closes_the_claim_as_failed(self):
+        refs = self._queued_refs()
+        sms = next(ref for ref in refs if ref.endswith('-sms'))
+
+        response = self._log(
+            claim_ref=sms, status='failed', external_ref='',
+            error_detail='Provider rejected the request: bad sender id',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        claim = self._claim(sms)
+        self.assertEqual(claim.status, 'failed')
+        self.assertIn('bad sender id', claim.error_detail)
+        self.assertFalse(self._live(sms))
+
+    def test_an_unknown_claim_ref_is_ignored(self):
+        refs = self._queued_refs()
+
+        response = self._log(claim_ref='disrupt-AP-0000-deadbeef-sms')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(
+            InteractionLog.objects.filter(
+                external_ref='mock-sms-AP-0007-provider'
+            ).exists()
+        )
+        self.assertTrue(all(self._claim(ref).status == 'queued' for ref in refs))
+
+    def test_a_claim_ref_for_the_other_channel_is_ignored(self):
+        refs = self._queued_refs()
+        whatsapp = next(ref for ref in refs if ref.endswith('-whatsapp'))
+
+        response = self._log(claim_ref=whatsapp, channel='sms')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(self._claim(whatsapp).status, 'queued')
+
+    def test_an_inbound_row_is_never_closed_by_a_log(self):
+        InteractionLog.objects.create(
+            provider='meta_whatsapp', channel='whatsapp', direction='inbound',
+            status='queued', patient_name='Amina Closed',
+            patient_phone='+2348055567801', external_ref='wamid.NOTACLAIM',
+            summary='patient reply',
+        )
+
+        self._log(claim_ref='wamid.NOTACLAIM', channel='whatsapp',
+                  provider='meta_whatsapp')
+
+        self.assertEqual(self._claim('wamid.NOTACLAIM').status, 'queued')
+
+    def test_closing_a_claim_blocks_undo(self):
+        monday = self._next_monday()
+        self._book(self.doctor, monday, 11, 0, name='Amina Undo',
+                   phone='+2348055567802')
+        report = self._approve(monday, max_lookahead_days=0)
+        sms = next(
+            ref for ref in
+            InteractionLog.objects.filter(
+                direction='outbound', external_ref__startswith='disrupt-'
+            ).values_list('external_ref', flat=True)
+            if ref.endswith('-sms')
+        )
+
+        self._log(claim_ref=sms, patient_phone='+2348055567802')
+
+        from appointments.services.disruption_service import DisruptionService
+        batch = DisruptionBatch.objects.get(id=report['batch']['id'])
+        blocker = DisruptionService._undo_blocker(batch)
+        self.assertIsNotNone(blocker)
+        self.assertEqual(blocker[0], 'NOTICES_DELIVERED')
+

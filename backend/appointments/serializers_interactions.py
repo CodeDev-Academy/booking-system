@@ -77,6 +77,10 @@ class InteractionWriteSerializer(serializers.Serializer):
     request_code = serializers.CharField(max_length=32, required=False, allow_blank=True, default='')
     appointment_code = serializers.CharField(max_length=32, required=False, allow_blank=True, default='')
     external_ref = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+    # Gap 4: workflow 08 reports the provider's own message id as external_ref,
+    # while the claim row Django queued is keyed by `disrupt-<code>-<sig>-<channel>`.
+    # The claim_ref travels alongside so the outcome can close that row too.
+    claim_ref = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
     call_duration_seconds = serializers.IntegerField(required=False, min_value=0, allow_null=True, default=None)
     recording_url = serializers.URLField(required=False, allow_blank=True, default='')
     summary = serializers.CharField(required=False, allow_blank=True, default='')

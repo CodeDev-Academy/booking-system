@@ -579,6 +579,38 @@ const wrap = (status, body) => status + ' - ' + JSON.stringify(body);
     && haltOut[1].json.held_reason === 'claim_check_unavailable');
   check('G23 halt rows are marked not sent', haltOut.every((i) => i.json.sent === false));
 
+  // ---- H. Gap 4: the log write-back names the claim it closes -----------------
+  // The provider row is keyed by the provider's own message id, so Django needs
+  // the claim_ref in the same payload to close the queued claim. Without it the
+  // claim stays deliverable forever and the gate keeps saying live:true after the
+  // patient has already been messaged.
+  console.log('');
+  console.log('H. log write-back closes the claim');
+  for (const [nodeName, channel] of [['Log SMS Interaction', 'sms'],
+    ['Log WhatsApp Interaction', 'whatsapp']]) {
+    const sent = await runLog(nodeName, channel, [{
+      messages: [{ id: 'provider-id-' + channel }], status: 'sent',
+    }]);
+    const body = (sent.posts[0] || {}).body || {};
+    check('H1 ' + channel + ' log sends claim_ref',
+      body.claim_ref === sent.bases[0].claim_ref,
+      JSON.stringify(body.claim_ref));
+    check('H2 ' + channel + ' log still sends the provider id as external_ref',
+      body.external_ref === 'provider-id-' + channel, String(body.external_ref));
+  }
+
+  const failedLog = await runLog('Log SMS Interaction', 'sms', [{ status: 'failed' }]);
+  check('H3 a failed send still names its claim',
+    (failedLog.posts[0] || {}).body.claim_ref === failedLog.bases[0].claim_ref);
+
+  const noClaim = await runLog('Log SMS Interaction', 'sms', [{ status: 'sent' }], {
+    bases: [{ request_id: 'AP-1049', patient_name: 'No Claim', patient_phone: '+2348031112299',
+      provider_channel: 'sms' }],
+  });
+  check('H4 an item without a claim sends an empty claim_ref',
+    (noClaim.posts[0] || {}).body.claim_ref === '');
+
+
   console.log('');
   if (failures) {
     console.log('FAILED: ' + failures + ' check(s)');

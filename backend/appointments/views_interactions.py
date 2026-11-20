@@ -60,6 +60,47 @@ class InteractionListCreateView(APIView):
             return [IsStaffAuthenticated()]
         return [AllowAny()]
 
+    @staticmethod
+    def _close_claim(claim_ref, validated):
+        """
+        Gap 4 — record the delivery outcome against the claim row n8n asked about.
+
+        Workflow 08's log nodes report the provider's own message id as
+        `external_ref` (`mock-sms-AP-0007-...`), while the queued claim is keyed
+        by `disrupt-<code>-<signature>-<channel>`. Without this the outcome lands
+        on a second row and the claim stays `queued` forever: the claim gate
+        keeps answering `live: true` for a message the patient already received,
+        and undo cannot see the delivery.
+
+        Narrow by construction — outbound rows only, the same channel only, and
+        the existing status-rank guard still applies (a late `sent` never
+        downgrades a `delivered`/`answered` row). The claim keeps its own
+        `external_ref`: that ref is what the gate and undo are keyed by.
+        """
+        ref = (claim_ref or '').strip()
+        if not ref:
+            return
+        claim = InteractionLog.objects.filter(
+            external_ref=ref, direction='outbound'
+        ).first()
+        if claim is None or claim.channel != validated.get('channel'):
+            return
+
+        incoming = validated.get('status') or 'sent'
+        if InteractionLog.STATUS_RANK.get(incoming, 0) < claim.status_rank():
+            return
+
+        changed = []
+        for field in ('status', 'summary', 'error_detail'):
+            value = incoming if field == 'status' else validated.get(field)
+            if value in (None, ''):
+                continue
+            if getattr(claim, field) != value:
+                setattr(claim, field, value)
+                changed.append(field)
+        if changed:
+            claim.save(update_fields=changed + ['updated_at'])
+
     def post(self, request):
         if not has_staff_or_webhook_access(request):
             return Response(
@@ -78,6 +119,8 @@ class InteractionListCreateView(APIView):
         external_ref = (validated.get('external_ref') or '').strip()
         # Empty-string external_ref must map to NULL — '' would collide on the unique index.
         validated['external_ref'] = external_ref or None
+        # Gap 4: never a model field, only a hint that closes the queued claim.
+        claim_ref = (validated.pop('claim_ref', '') or '').strip()
 
         existing = (
             InteractionLog.objects.filter(external_ref=external_ref).first()
@@ -172,6 +215,10 @@ class InteractionListCreateView(APIView):
             created = True
 
         payload = InteractionLogSerializer(instance).data
+
+        # Gap 4: the delivery outcome belongs to the claim too, not only to the
+        # provider row created above.
+        self._close_claim(claim_ref, validated)
 
         # SSE visibility (non-authoritative — spec §4B)
         if created:
