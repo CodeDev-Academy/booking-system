@@ -389,6 +389,7 @@ WhatsApp, SMS, Telegram) — the Hybrid AI OS spec §6 "Interactions" data area.
   "request_code": "REQ-2026-0042",     // optional FK resolution (400 if unknown)
   "appointment_code": "AP-1042",       // optional FK resolution (400 if unknown)
   "external_ref": "VB-CALL-7788",      // provider's unique ID — idempotency key
+  "claim_ref": "disrupt-AP-1042-9f2c1a77b0-sms", // optional: closes a queued disruption claim
   "call_duration_seconds": 45,
   "recording_url": "https://cdn.voicebip.com/rec/7788.mp3",
   "summary": "Patient accepted the 10:00 slot.",
@@ -401,6 +402,13 @@ WhatsApp, SMS, Telegram) — the Hybrid AI OS spec §6 "Interactions" data area.
 - `201` on create, `200` on re-delivery (same `external_ref` **updates** the existing row — no duplicates)
 - `401` without a valid secret/staff credentials; `400` on unknown request/appointment codes or invalid choices
 - Broadcasts `interaction_logged` over SSE (non-authoritative, spec §4B)
+- `claim_ref` (optional, not a model field) names the queued disruption notice this
+  outcome belongs to (`disrupt-<code>-<signature>-<channel>`). Django advances **that**
+  row's `status` / `summary` / `error_detail` under the existing status-rank guard, so a
+  late `sent` never downgrades a `delivered` row and the claim keeps its own
+  `external_ref`. Deliberately narrow: outbound rows only, same channel only, unknown
+  refs ignored. This is how a delivered notice stops being deliverable and starts
+  blocking automated undo.
 
 ### `GET /api/v1/interactions/`
 **Auth:** staff JWT only (receptionists and admins).

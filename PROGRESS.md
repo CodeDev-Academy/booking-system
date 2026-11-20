@@ -2492,7 +2492,7 @@ What was done, all against `127.0.0.1:5678`:
      adapter, `Log Halted Claims` wrote 2 rows, and **no send node ran at all**.
      Django's rows stayed `expired` - the halt path writes nothing back.
 
-### Gap 4 - a delivered notice never closes its claim (found by the live proof)
+### Gap 4 - a delivered notice never closes its claim (found by the live proof, fixed)
 
 The live run exposed a defect the unit tests could not see. After a successful
 send, the log nodes post the provider's message id as `external_ref`
@@ -2504,32 +2504,55 @@ answered `live: true` for a message the patient had already received.
 
 Two real consequences:
 
-- **Notify-once is not enforced across pushes.** `claim_liveness` still says
-  the notice may be delivered, and the adapter's `seen[channel]` guard is only
-  per push, so a retry or re-push repeats the same words.
-- **Undo safety is inverted.** `_undo_blocker` refuses to undo when a notice is
-  `sent`; because the claim never reaches `sent`, undo proceeds after a real
-  delivery and tells reception nothing was sent.
+- **Notify-once was not enforced by Django.** `claim_liveness` still said the
+  notice may be delivered. (The adapter's own `<code>:<channel>` registry does
+  stop the repeat while n8n keeps its static data, but that store is memory-only
+  and per appointment, not per placement - it is a second line, not the record.)
+- **Undo safety was inverted.** `_undo_blocker` refuses to undo when a notice is
+  `sent`; because the claim never reached `sent`, undo proceeded after a real
+  delivery and told reception nothing was sent.
 
-The gate itself is correct: it reports what Django knows. Django is what fails
-to record the outcome against the claim. Fix direction (not built): the log
-nodes send `claim_ref` alongside the provider id; Django accepts it and advances
-that row's status under the existing rank guard, leaving the provider row for
-delivery receipts. Tests red-first on `InteractionListCreateView` plus three
-harness assertions per log node.
+**Fixed.** Both log nodes now send `claim_ref` next to the provider id, and
+`InteractionListCreateView._close_claim()` advances that row under the existing
+status-rank guard. Narrow by construction: outbound rows only, same channel
+only, unknown refs ignored, a late `sent` never downgrades `delivered`/`answered`,
+and the claim keeps its own `external_ref` because that is what the gate and undo
+are keyed by. The provider row still exists for delivery receipts.
 
-### Leave flow: one gap open
+Proof, in the order it happened:
 
-The stranded panel moves one patient, undo cannot race a withdrawn send, and the
-docs match the shipped claim-ref shape. One defect remains: a delivered notice
-never closes its claim (Gap 4 above), so a re-push can repeat it and undo cannot
-see that it was delivered.
+1. Eight `ClaimCloseOnLogTests` cases written first, red on exactly the new
+   behaviour (`'queued' != 'sent'`, `'queued' != 'failed'`,
+   `blocker unexpectedly None`), then green together with
+   `DisruptionClaimCheckTests` + `InteractionLogAPITests`: 52/52.
+2. Harness assertions H1-H4 added first (146 checks, 4 failing), then
+   `claim_ref: base.claim_ref || ''` in both payload builders: 146/146, all 10
+   n8n harnesses green. Full suite: **381 tests, 381 pass, exit 0** (404 s).
+3. The fixed graph pushed to the live instance, then proven there: execution
+   2159 sent both channels and Django showed both claims `sent` with the log
+   node's summary (the gate answering `live: false` afterwards); execution 2162
+   re-pushed the same two items, got `claim_already_sent` twice, sent 0 to the
+   adapter, wrote 2 rows in `Log Halted Claims` and ran no send node;
+   `_undo_blocker` on that batch returned `NOTICES_DELIVERED`.
+
+Probes and every row they created were deleted; the DB is back to the 6 baseline
+appointments, 0 leave rows, 0 batches, 0 disrupt logs.
+
+### Leave flow: nothing open
+
+The stranded panel moves one patient, undo cannot race a withdrawn send, a
+delivered notice closes its claim, and the docs match the shipped claim-ref
+shape.
 
 ### Files
 `backend/appointments/services/disruption_service.py`,
 `backend/appointments/views_appointment.py`,
 `backend/appointments/urls.py`,
+`backend/appointments/views_interactions.py`,
+`backend/appointments/serializers_interactions.py`,
 `backend/appointments/tests.py`,
+`n8n/workflows/08_disruption_notifier.json`,
+`n8n/tests/test_disruption_notifier.js`,
 `frontend/src/services/apiService.js`,
 `frontend/src/stores/useCalendarStore.js`,
 `frontend/src/hooks/useCalendar.js`,

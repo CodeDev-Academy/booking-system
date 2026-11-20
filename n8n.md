@@ -312,21 +312,29 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
   check and the log nodes), plus the standard `WHATSAPP_*` / `VOICEBIP_*` pair. Unset URL
   on the Django side = fail-safe (nothing claimed); unset `DJANGO_API_BASE_URL` or secret
   = the claim check holds everything.
-- **Tests**: `node n8n/tests/test_disruption_notifier.js` (140 assertions: fail-closed
+- **Tests**: `node n8n/tests/test_disruption_notifier.js` (146 assertions: fail-closed
   auth, parse hygiene, the D+1-D+7 multi-item adapter cases that pin the item[0]
-  regression, log-node zipping, and G1-G23 for the claim gate - expired/sent/unknown
-  claims held, unreachable Django holding the whole push, no config meaning no send).
+  regression, log-node zipping, G1-G23 for the claim gate - expired/sent/unknown
+  claims held, unreachable Django holding the whole push, no config meaning no send -
+  and H1-H4: both log nodes send `claim_ref` alongside the provider id, a failed send
+  still names its claim, and an item with no claim sends an empty string).
 - **Live instance**: the running instance at `127.0.0.1:5678` was updated to this
   exact graph on 2026-11-20 (`PUT /api/v1/workflows/II2eWdnZIt364WPE`, 16 nodes,
-  still active; the pre-update copy is `n8n_live_08_backup.json`). Two real webhook
-  runs on the provider simulator proved both branches: a fresh plan sent both
-  channels, an undone plan was held entirely (`claim_expired`, 2 rows in
-  `Log Halted Claims`, no send node executed).
-- **Known limitation (Gap 4)**: the log nodes post the provider's message id as
-  `external_ref`, not the `claim_ref`, so a delivered notice stays `queued` in
-  Django. The gate therefore protects against a *withdrawn* notice, not against a
-  *retry* of one already sent. Until the log write-back carries `claim_ref`, do not
-  re-push a plan whose notices have already gone out.
+  still active; the pre-update copy is `n8n_live_08_backup.json`). Real webhook
+  runs on the provider simulator proved every branch: a fresh plan sent both channels
+  and closed both claims (`queued` -> `sent`); a re-push of those same items was held
+  as `claim_already_sent` with no send node; a plan undone before the push was held
+  entirely (`claim_expired`, 2 rows in `Log Halted Claims`, no send node executed).
+- **Delivery bookkeeping**: the log nodes post the provider's message id as
+  `external_ref` (the delivery receipt row) **and** `claim_ref`, which is the row
+  `disrupt-<code>-<signature>-<channel>`. Django advances that claim under the existing
+  status-rank guard, so a late `sent` never downgrades a `delivered`/`answered` row and
+  the claim keeps its own ref (what the gate and undo are keyed by). A delivered notice
+  therefore becomes undeliverable and blocks automated undo (`NOTICES_DELIVERED`).
+- **Adapter dedupe**: the adapter also keeps a workflow-static registry keyed
+  `<appointment code>:<channel>`, stamped only for legs that actually fired. It is
+  memory-only (lost on an n8n restart) and per appointment, not per placement - the
+  claim rows in Django are the durable guard, this one is a cheap second line.
 
 ---
 ## 3. Webhook Security & Idempotency Governance

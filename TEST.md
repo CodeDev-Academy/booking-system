@@ -363,15 +363,23 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
   the adapter, `Log Halted Claims` wrote 2 rows, **no send node ran**, and Django's claims stayed
   `expired`. Probes and every row they created were deleted; DB back to the 6 baseline
   appointments, 0 leave rows, 0 batches, 0 disrupt logs.
-- [ ] `T-741`: **A delivered notice closes its claim (Gap 4, found by T-740)**: the log nodes post the
-  provider message id as `external_ref` (`mock-sms-AP-0007-...`) while the claim row is keyed by
-  `disrupt-AP-0007-<signature>-<channel>`, so Django creates a second row and leaves the claim at
-  `queued`. After the live send, the claim endpoint still answered `live: true` for a message the
-  patient had received. A retry or re-push therefore repeats it (`seen[channel]` is per push only),
-  and `_undo_blocker` - which refuses to undo when a notice is `sent` - cannot see the delivery.
-  Fix direction: the log nodes send `claim_ref` next to the provider id, and
-  `InteractionListCreateView` advances that row under the existing status-rank guard. Tests must be
-  written red first.
+- [x] `T-741`: **A delivered notice closes its claim (Gap 4, found by T-740)**: the log nodes used to
+  post only the provider message id as `external_ref` (`mock-sms-AP-0007-...`) while the claim row is
+  keyed by `disrupt-AP-0007-<signature>-<channel>`, so Django created a second row and left the claim
+  at `queued`; after a real send the claim endpoint still answered `live: true`, a re-push could repeat
+  the words, and `_undo_blocker` could not see the delivery. **Fixed**: both log nodes now send
+  `claim_ref` next to the provider id, and `InteractionListCreateView._close_claim()` advances that
+  row's `status` / `summary` / `error_detail` under the existing status-rank guard - outbound rows
+  only, same channel only, unknown refs ignored, the claim keeps its own `external_ref`. Eight
+  `ClaimCloseOnLogTests` cases written red first (`'queued' != 'sent'`, `'queued' != 'failed'`,
+  `blocker unexpectedly None`), then green with `DisruptionClaimCheckTests` + `InteractionLogAPITests`
+  (52/52). Six new harness assertions covering both log nodes (`test_disruption_notifier.js`
+  146/146, all 10 n8n harnesses green); **full suite 381/381 OK in 404 s**. Live re-proof: execution
+  2159 sent both channels, then Django
+  showed both claims `sent` with the log node's summary and the gate answered `live: false`; execution
+  2162 re-pushed the same items, got `claim_already_sent` twice, sent 0 to the adapter, wrote 2 rows in
+  `Log Halted Claims` and ran no send node; `_undo_blocker` on that batch returned `NOTICES_DELIVERED`.
+  Probes deleted; baseline restored (6 appointments, 0 leave rows, 0 batches, 0 disrupt logs).
 
 ---
 
