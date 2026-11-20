@@ -2563,6 +2563,42 @@ shape.
 
 ---
 
+## Review Wave 1 — stop the bleeding (2026-11-20)
+
+An independent review of the whole repo found defects the green suites never
+touched, because nothing tested the request the UI or the workflow actually
+sends. Wave 1 fixed the five that break a real user's day, every one red-first:
+
+1. **The dashboard books for real (T-742).** Every queue confirm and walk-in
+   POSTed `name`/`phone`/`booking_request_id`; Django reads
+   `patient_name`/`patient_phone`/`request_id`, so the API answered 400 while
+   the UI toasted success and the appointment lived only in the browser.
+   `apiService.toWireBookingPayload` is now the single camelCase→wire
+   translation point for `holdSlot` and `registerWalkIn`.
+2. **Workflow 01 delivers an intake (T-743).** Doubled `/api/v1` (404), raw
+   `phone` + literal `null` service (400), unescaped template values, and a
+   hardcoded fallback secret — all gone; the normalizer builds
+   `django_url`/`secret`/`django_body` in code and the HTTP node transports it.
+3. **A direct booking stores the E.164 phone (T-744).** The sanitisation result
+   is no longer overwritten by the raw string.
+4. **A named-but-unknown service is a 400, not a silent swap (T-745).** An
+   intake naming no service still defaults — it is a lead for reception.
+5. **The seed ships clean (T-746).** No committed token (env-only), one
+   identity per person (legacy duplicates removed), random per-staff
+   passwords/PINs printed once at seed time, demo credentials opt-in via
+   `SEED_DEMO_PASSWORDS=1`.
+
+Proof: two new harnesses (`frontend/tests/test_booking_payloads.js` 15/15,
+`n8n/tests/test_intake_webhook.js` 22/22, both red first), all 11 n8n
+harnesses green, `npm run build` clean, nine new Django tests, and the full
+suite **390/390 OK in 435 s**.
+
+Still the owner's: the committed Telegram bot token is leaked until revoked
+with BotFather (it is in git history), and the local dev DB still carries it
+until the next re-seed without `TELEGRAM_BOT_TOKEN` set. Waves 2-5 of the
+review remediation (booking-engine honesty, frontend truth, sessions,
+medium sweep) remain open and are tracked in TEST.md and the review record.
+
 ## Next up - Phase 5 (partner handover)
 
 **Leave flow complete (2026-11-20).** Dated leave, a rolled-back preview,

@@ -53,11 +53,14 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
   • Normalize phone to E.164 (+234...)
   • Validate service_id & preferred 2-week date range
   • Map channel ('telegram', 'whatsapp', 'web')
+  • Build the outbound request IN CODE: django_url / secret / django_body
        │
        ▼
 [HTTP Request Node: Django API]
-  • POST to http://backend:8000/api/v1/booking-requests/
-  • Header: X-Webhook-Secret: {{ $env.DJANGO_WEBHOOK_SECRET }}
+  • POST {{ $json.django_url }}  (env base + '/booking-requests/', base already ends in /api/v1)
+  • X-Webhook-Secret: {{ $json.secret }} — from $env only, NO fallback
+  • Body: {{ JSON.stringify($json.django_body) }} — patient_name / patient_phone,
+    service_id omitted when the intake named none (never a literal null)
        │
        ▼
 [IF Node: Operating Hours Check]
@@ -69,6 +72,19 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
              └─► [Messaging Node: Telegram/WhatsApp]
                    Send Template 4: "Front desk is closed. You are #1 in tomorrow morning's queue (8:00 AM)."
 ```
+
+> **Fixed 2026-11-20 (Wave 1).** This workflow used to be dead three ways at once:
+> the URL appended `/api/v1` to a base that already includes it (404), the body
+> sent `"phone"` where Django reads `patient_phone` and a literal `null`
+> `service_id` (400), and values were pasted into a JSON template so a quote in
+> a name broke the request. It also carried a hardcoded fallback secret. All
+> three are gone: the normalizer composes `django_url` / `secret` /
+> `django_body` once in code and the HTTP node only transports what code built;
+> an unset `DJANGO_API_BASE_URL` or `DJANGO_WEBHOOK_SECRET` now fails loudly
+> (empty URL / empty header) instead of posting to a guessed host.
+> Harness `n8n/tests/test_intake_webhook.js` (22 assertions) runs the shipped
+> node source and pins the URL, the secret and the exact body — including a
+> patient name containing a quote.
 
 ---
 

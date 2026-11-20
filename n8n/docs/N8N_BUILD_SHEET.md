@@ -681,10 +681,17 @@ review. Their flaws are **not to be patched** — the skeletons get rebuilt as W
 2. **URL contract.** `01`–`04` append `/api/v1/...` to `DJANGO_API_BASE_URL`, while
    `05`/`07` (and `.env.example`) expect the base to already include it. Canonical:
    **`DJANGO_API_BASE_URL` includes `/api/v1`** — the rebuilds follow 05/07.
+   **✅ `01` is fixed to this contract (Wave 1, 2026-11-20):** the normalizer builds
+   `base + '/booking-requests/'` in code; `n8n/tests/test_intake_webhook.js` pins it.
+   The shipped `02`/`03`/`04`/`08` already follow it (verified: they append
+   `/webhooks/...` only, no doubling, no fallback secret).
 3. **No fail-open secret fallbacks.** `01`–`04` embed `$env.DJANGO_WEBHOOK_SECRET ||
    'clinic_dev_…'` — if the env var is ever unset, the secret silently becomes a known
    string. This pattern is forbidden; 05's fail-closed pattern (`secret_not_configured`
    → refuse) is the rule.
+   **✅ Gone from `01` (Wave 1, 2026-11-20):** the secret is read from `$env` once, in
+   code; an unset value sends an empty header and the node fails visibly. Verified by
+   the same harness. `02`–`04` were already clean on audit.
 4. **Callback prefix.** `02` sends `re_request_slots_{id}`; `telegram_service` parses
    the `re_request_` prefix, producing id `slots_REQ-…` → 404. Use `re_request_{id}`
    (exactly what Django's own Telegram formatter emits).
