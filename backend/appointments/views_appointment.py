@@ -966,13 +966,27 @@ class ExportAttendanceCSVView(APIView):
             'Attendance Rate (%)',
         ])
 
+        # Wave 5 / Step 5.5: one aggregate for every doctor instead of four
+        # counts per doctor (a 50-doctor clinic paid 200+ queries for a file).
+        from django.db.models import Count, Q
+
+        stats = {
+            row['doctor_id']: row
+            for row in Appointment.objects.values('doctor_id').annotate(
+                total=Count('id'),
+                completed=Count('id', filter=Q(status='completed')),
+                no_shows=Count('id', filter=Q(status='no_show')),
+                cancelled=Count('id', filter=Q(status='cancelled')),
+            )
+        }
+
         doctors = Doctor.objects.all().order_by('name')
         for doc in doctors:
-            doc_appts = Appointment.objects.filter(doctor=doc)
-            total = doc_appts.count()
-            completed = doc_appts.filter(status='completed').count()
-            no_shows = doc_appts.filter(status='no_show').count()
-            cancelled = doc_appts.filter(status='cancelled').count()
+            row = stats.get(doc.id, {})
+            total = row.get('total', 0)
+            completed = row.get('completed', 0)
+            no_shows = row.get('no_shows', 0)
+            cancelled = row.get('cancelled', 0)
             denom = completed + no_shows
             rate = round((completed / denom) * 100, 1) if denom > 0 else 100.0
 

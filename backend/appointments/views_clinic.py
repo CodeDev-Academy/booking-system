@@ -10,6 +10,7 @@ from .models import ClinicSetting, Doctor, DoctorLeave, StaffUser, Appointment, 
 from .permissions import IsStaffAuthenticated, IsClinicAdmin
 from .serializers_clinic import (
     ClinicSettingSerializer,
+    MASKED_SECRET_SENTINEL,
     ServiceSerializer,
     DoctorDutyStatusUpdateSerializer,
     DoctorDirectorySerializer,
@@ -153,6 +154,25 @@ class ClinicSettingsImportView(APIView):
             return Response({'error': 'Invalid JSON payload structure.'}, status=status.HTTP_400_BAD_REQUEST)
 
         clinic = ClinicSetting.get_settings()
+
+        # Wave 5 / Step 5.4: an exported file carries MASKED secret values.
+        # Writing the payload back verbatim used to replace the real bot
+        # token (and every other secret) with the mask. Masked keys now keep
+        # their CURRENT value; a genuinely new value is written as given.
+        payload = dict(payload)
+        incoming_cfg = payload.get('custom_config')
+        if isinstance(incoming_cfg, dict):
+            current_cfg = clinic.custom_config or {}
+            safe_cfg = {}
+            for key, value in incoming_cfg.items():
+                if value == MASKED_SECRET_SENTINEL:
+                    if key in current_cfg:
+                        safe_cfg[key] = current_cfg[key]
+                    # Nothing to preserve: the key is simply not written.
+                else:
+                    safe_cfg[key] = value
+            payload['custom_config'] = safe_cfg
+
         serializer = ClinicSettingSerializer(clinic, data=payload, partial=True)
         serializer.is_valid(raise_exception=True)
         updated_clinic = serializer.save()
@@ -262,18 +282,24 @@ class DoctorDutyStatusView(APIView):
         Keep the 1-click switch and the dated leave rows in step: "off duty"
         opens an open-ended leave row from today, "on duty" closes it. Dated
         plans are left alone — they are edited in the leave planner, not here.
+
+        Wave 5 / Step 5.1: "on duty" removes ONLY the row this switch
+        created (its exact reason marker). It used to delete every row with
+        `end_date IS NULL`, which silently cut a legitimate "leave until
+        further notice" short.
         """
         today = timezone.localdate()
+        marker = 'Marked off duty from the roster'
         if doctor.is_on_leave:
             has_today = any(p.covers(today) for p in doctor.leaves.all())
             if not has_today:
                 DoctorLeave.objects.create(
                     doctor=doctor, start_date=today, end_date=None,
-                    leave_type='sick', reason='Marked off duty from the roster',
+                    leave_type='sick', reason=marker,
                     created_by=performed_by,
                 )
         else:
-            doctor.leaves.filter(end_date__isnull=True).delete()
+            doctor.leaves.filter(end_date__isnull=True, reason=marker).delete()
         doctor.sync_leave_flag()
 
     def post(self, request, id):
@@ -439,6 +465,23 @@ class ClinicServiceDetailView(APIView):
             return Response({'error': 'Service not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         if request.query_params.get('permanent') == 'true':
+            # Wave 5 / Step 5.2: appointments PROTECT their service. The
+            # unguarded delete raised ProtectedError and the client saw a raw
+            # 500; now it is a named conflict with the honest alternative.
+            referenced = service.appointments.count()
+            if referenced:
+                return Response(
+                    {
+                        'error': 'SERVICE_IN_USE',
+                        'detail': (
+                            f"{referenced} appointment(s) use this service, so it "
+                            'cannot be deleted. Deactivate it instead — existing '
+                            'visits keep their history.'
+                        ),
+                        'appointment_count': referenced,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
             service.delete()
             return Response({'detail': f'Service {service.name} permanently removed.'}, status=status.HTTP_200_OK)
 

@@ -519,7 +519,7 @@ class DispatchOffersView(APIView):
         telegram_payload = {
             "recipient_phone": booking.patient_phone,
             "message": (
-                f"Hello {booking.patient_name}, Cedarcare Specialist Clinic has reviewed your request.\n"
+                f"Hello {booking.patient_name}, {clinic.clinic_name} has reviewed your request.\n"
                 f"Please choose your preferred time for {booking.service.name} (valid for {expiry_minutes} mins):"
             ),
             "inline_keyboard": inline_buttons,

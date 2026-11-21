@@ -54,12 +54,20 @@ class HoldService:
         buffer_min = (service.buffer_minutes if service else None) or clinic.default_buffer_minutes
         effective_block_end = end_datetime + datetime.timedelta(minutes=buffer_min)
 
-        # Query all active appointments in the vicinity (including 60m lookback for prior appointment buffer)
+        # Wave 5 / Step 5.7(b): the lookback must cover the LONGEST buffer any
+        # prior appointment could carry. The old hardcoded 60 minutes missed a
+        # 120-minute buffer entirely — the prior visit was never fetched, so
+        # the overlap went undetected.
+        from django.db.models import Max
+        max_service_buffer = Service.objects.aggregate(m=Max('buffer_minutes'))['m'] or 0
+        lookback_minutes = max(max_service_buffer, clinic.default_buffer_minutes or 0)
+
+        # Query all active appointments in the vicinity.
         candidate_appts = Appointment.objects.filter(
             doctor=doctor,
             status__in=['confirmed', 'held', 'arrived', 'in_consultation'],
             start_datetime__lt=effective_block_end,
-            end_datetime__gt=start_datetime - datetime.timedelta(minutes=60)
+            end_datetime__gt=start_datetime - datetime.timedelta(minutes=lookback_minutes)
         ).select_related('service')
 
         if exclude_appointment_id:

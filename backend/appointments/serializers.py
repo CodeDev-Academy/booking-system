@@ -31,24 +31,14 @@ class StaffUserSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'last_login', 'created_at']
 
     def get_role_label(self, obj):
-        if obj.role == 'clinic_admin':
-            return 'Practice Manager & Clinic Director'
-        elif obj.role == 'receptionist':
-            if 'sarah' in obj.email.lower() or 'lead' in obj.full_name.lower() or 'head' in obj.full_name.lower():
-                return 'Lead Receptionist'
-            return 'Front Desk Receptionist'
+        # Wave 5 / Step 5.3: the real role only — never guessed from a name
+        # or an email. A new receptionist called Sarah is a receptionist.
         return obj.get_role_display()
 
     def get_shift(self, obj):
-        if obj.shift:
-            return obj.shift
-        if obj.role == 'clinic_admin':
-            return 'General Practice Administration'
-        if 'sarah' in obj.email.lower():
-            return 'Morning Shift (08:00 – 16:00)'
-        elif 'chioma' in obj.email.lower() or 'amina' in obj.email.lower():
-            return 'Afternoon / Evening Shift (12:00 – 18:00)'
-        return 'Day Shift (08:00 – 16:00)'
+        # The stored shift, verbatim. No email guessing: an unset shift says
+        # nothing rather than inventing someone else's hours.
+        return obj.shift or ''
 
     def get_avatar(self, obj):
         parts = [p for p in obj.full_name.strip().split() if not p.lower().startswith('dr.') and not p.lower().startswith('dr')]

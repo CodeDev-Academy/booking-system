@@ -3011,8 +3011,10 @@ class StaffAuthSecurityHardeningTests(APITestCase):
         self.assertIsNotNone(user_obj)
         self.assertEqual(user_obj.get('email'), self.receptionist.email)
         self.assertEqual(user_obj.get('role'), 'receptionist')
-        self.assertEqual(user_obj.get('role_label'), 'Lead Receptionist')
-        self.assertEqual(user_obj.get('shift'), 'Morning Shift (08:00 – 16:00)')
+        # Wave 5 / Step 5.3: the REAL role display and the stored shift —
+        # the old values were guessed from the name ("Amina Lead ...").
+        self.assertEqual(user_obj.get('role_label'), 'Receptionist')
+        self.assertEqual(user_obj.get('shift'), '')
         self.assertEqual(user_obj.get('avatar'), 'SA')
         self.assertTrue(user_obj.get('is_active'))
 
@@ -6491,6 +6493,557 @@ class TelegramTextReplyUnificationTests(APITestCase):
         )
         self.assertEqual(second.status_code, status.HTTP_200_OK)
         self.assertEqual(second.data['telegram_result']['status'], 'duplicate_ignored')
+
+
+class DutyLeaveSemanticsTests(APITestCase):
+    """
+    Wave 5 / Step 5.1 — "back on duty" cleans up ITS OWN row, not every
+    open-ended leave.
+
+    The switch opens an open-ended leave row when a doctor goes off duty and
+    used to delete EVERY row with `end_date IS NULL` when they came back —
+    including a legitimate "leave until further notice" entered in the
+    planner, silently cutting a real absence short.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.staff = StaffUser.objects.create(
+            full_name='Duty Staff', email='duty.staff@clinic.com',
+            role='clinic_admin', is_active=True,
+        )
+        self.staff.set_password('DutyPass123!')
+        self.staff.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'duty.staff@clinic.com', 'password': 'DutyPass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+        self.doctor = Doctor.objects.create(
+            name='Dr. Duty Switch', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+        )
+
+    def _set_duty(self, on_leave):
+        return self.client.patch(
+            f'/api/v1/clinic/doctors/{self.doctor.id}/duty-status/',
+            {'is_on_leave': on_leave}, format='json',
+        )
+
+    def test_turning_duty_on_keeps_a_real_open_ended_leave(self):
+        legitimate = DoctorLeave.objects.create(
+            doctor=self.doctor,
+            start_date=timezone.localdate(),
+            end_date=None,
+            leave_type='maternity',
+            reason='Leave until further notice',
+            created_by='admin@clinic.com',
+        )
+
+        self.assertEqual(self._set_duty(True).status_code, status.HTTP_200_OK)
+        self.assertEqual(self._set_duty(False).status_code, status.HTTP_200_OK)
+
+        self.assertTrue(
+            DoctorLeave.objects.filter(id=legitimate.id).exists(),
+            'a real open-ended leave must survive the duty switch',
+        )
+        # The switch's own row is gone.
+        self.assertFalse(
+            DoctorLeave.objects.filter(
+                doctor=self.doctor, reason='Marked off duty from the roster',
+            ).exists()
+        )
+
+    def test_turning_duty_on_removes_the_switch_row(self):
+        self.assertEqual(self._set_duty(True).status_code, status.HTTP_200_OK)
+        self.assertTrue(
+            DoctorLeave.objects.filter(
+                doctor=self.doctor, reason='Marked off duty from the roster',
+            ).exists()
+        )
+
+        self.assertEqual(self._set_duty(False).status_code, status.HTTP_200_OK)
+        self.assertFalse(
+            DoctorLeave.objects.filter(
+                doctor=self.doctor, reason='Marked off duty from the roster',
+            ).exists()
+        )
+        self.doctor.refresh_from_db()
+        self.assertFalse(self.doctor.is_on_leave)
+
+    def test_the_switch_does_not_touch_dated_leave(self):
+        dated = DoctorLeave.objects.create(
+            doctor=self.doctor,
+            start_date=timezone.localdate() + datetime.timedelta(days=10),
+            end_date=timezone.localdate() + datetime.timedelta(days=12),
+            leave_type='annual',
+            reason='Annual leave',
+            created_by='admin@clinic.com',
+        )
+
+        self._set_duty(True)
+        self._set_duty(False)
+
+        self.assertTrue(DoctorLeave.objects.filter(id=dated.id).exists())
+
+
+class ServiceDeleteGuardTests(APITestCase):
+    """
+    Wave 5 / Step 5.2 — a service with appointments cannot be deleted, and
+    says so.
+
+    `?permanent=true` called `service.delete()` unguarded; the PROTECT foreign
+    key from Appointment raised `ProtectedError` and the client saw a raw 500.
+    Now it answers 409 SERVICE_IN_USE with the count — and offers the honest
+    alternative (deactivate). A service nobody references still deletes.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.staff = StaffUser.objects.create(
+            full_name='Service Admin', email='service.admin@clinic.com',
+            role='clinic_admin', is_active=True,
+        )
+        self.staff.set_password('ServicePass123!')
+        self.staff.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'service.admin@clinic.com', 'password': 'ServicePass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+        self.doctor = Doctor.objects.create(
+            name='Dr. Service Delete', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+        )
+        self.used = Service.objects.create(name='Used Service', duration_minutes=30)
+        self.free = Service.objects.create(name='Free Service', duration_minutes=30)
+        day = timezone.localdate() + datetime.timedelta(days=1)
+        while day.isoweekday() > 5:
+            day += datetime.timedelta(days=1)
+        start = timezone.make_aware(datetime.datetime.combine(day, datetime.time(10, 0)))
+        Appointment.objects.create(
+            appointment_code='AP-DEL1', patient_name='Delete Ada',
+            patient_phone='+2348030001800', doctor=self.doctor, service=self.used,
+            start_datetime=start, end_datetime=start + datetime.timedelta(minutes=30),
+            status='confirmed',
+        )
+
+    def test_a_used_service_answers_409_instead_of_500(self):
+        response = self.client.delete(f'/api/v1/clinic/services/{self.used.id}/?permanent=true')
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data['error'], 'SERVICE_IN_USE')
+        self.assertIn('1', str(response.data.get('appointment_count')))
+        self.assertTrue(Service.objects.filter(id=self.used.id).exists())
+
+    def test_an_unused_service_still_deletes(self):
+        response = self.client.delete(f'/api/v1/clinic/services/{self.free.id}/?permanent=true')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(Service.objects.filter(id=self.free.id).exists())
+
+
+class StaffRoleLabelHonestyTests(APITestCase):
+    """
+    Wave 5 / Step 5.3 — labels come from the data, not from the name.
+
+    `get_role_label` turned any "sarah" into "Lead Receptionist" and
+    `get_shift` guessed shifts from emails — so a NEW receptionist called
+    Sarah inherited someone else's title and hours. The API now answers the
+    real role display and the stored shift, and says so plainly when no
+    shift is set.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.admin = StaffUser.objects.create(
+            full_name='Label Admin', email='label.admin@clinic.com',
+            role='clinic_admin', is_active=True,
+        )
+        self.admin.set_password('LabelPass123!')
+        self.admin.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'label.admin@clinic.com', 'password': 'LabelPass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+    def test_a_new_sarah_is_just_a_receptionist(self):
+        sarah = StaffUser.objects.create(
+            full_name='Sarah Brand New', email='sarah.new@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        from .serializers import StaffUserSerializer
+        data = StaffUserSerializer(sarah).data
+
+        self.assertEqual(data['role_label'], 'Receptionist')
+        self.assertNotIn('Lead', data['role_label'])
+        # No stored shift: an honest empty value, not someone else's hours.
+        self.assertEqual(data['shift'], '')
+
+    def test_a_stored_shift_is_returned_verbatim(self):
+        staff = StaffUser.objects.create(
+            full_name='Shift Holder', email='shift.holder@clinic.com',
+            role='receptionist', is_active=True, shift='09:00 – 17:00 WAT',
+        )
+        from .serializers import StaffUserSerializer
+        data = StaffUserSerializer(staff).data
+
+        self.assertEqual(data['shift'], '09:00 – 17:00 WAT')
+        self.assertEqual(data['role_label'], 'Receptionist')
+
+
+class SettingsRoundTripTests(APITestCase):
+    """
+    Wave 5 / Step 5.4 — export → import must not destroy a secret.
+
+    The export masks every sensitive custom_config value with the sentinel
+    `•••••••• (admin only)`; the importer wrote the payload back verbatim, so
+    a round-trip replaced the real bot token with the mask. Now the importer
+    SKIPS masked values (keeping the current secret) and still writes a
+    genuinely new value.
+    """
+
+    MASK = '•••••••• (admin only)'
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.admin = StaffUser.objects.create(
+            full_name='Config Admin', email='config.admin@clinic.com',
+            role='clinic_admin', is_active=True,
+        )
+        self.admin.set_password('ConfigPass123!')
+        self.admin.save()
+        self.receptionist = StaffUser.objects.create(
+            full_name='Config Receptionist', email='config.receptionist@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.receptionist.set_password('ConfigPass123!')
+        self.receptionist.save()
+
+        self.clinic.custom_config = {
+            **(self.clinic.custom_config or {}),
+            'telegram_bot_token': 'real-secret-123',
+            'currency': 'NGN',
+        }
+        self.clinic.save()
+
+    def _login(self, email):
+        res = self.client.post('/api/v1/auth/login/', {
+            'email': email, 'password': 'ConfigPass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {res.data['access']}")
+
+    def test_export_masks_and_import_keeps_the_real_secret(self):
+        # A receptionist is a staff member: their export is masked.
+        self._login('config.receptionist@clinic.com')
+        export = self.client.get('/api/v1/clinic/settings/export/')
+        self.assertEqual(export.status_code, status.HTTP_200_OK)
+        payload = export.json()
+        self.assertEqual(payload['custom_config']['telegram_bot_token'], self.MASK)
+        self.assertEqual(payload['custom_config']['currency'], 'NGN')
+
+        # An admin later imports that very file.
+        self._login('config.admin@clinic.com')
+        res = self.client.post('/api/v1/clinic/settings/import/', payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+        self.clinic.refresh_from_db()
+        self.assertEqual(self.clinic.custom_config['telegram_bot_token'], 'real-secret-123')
+        self.assertEqual(self.clinic.custom_config['currency'], 'NGN')
+
+    def test_a_genuinely_new_secret_is_written(self):
+        self._login('config.admin@clinic.com')
+        payload = {
+            'clinic_name': self.clinic.clinic_name,
+            'custom_config': {
+                'currency': 'NGN',
+                'telegram_bot_token': 'brand-new-token-456',
+            },
+        }
+        res = self.client.post('/api/v1/clinic/settings/import/', payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+        self.clinic.refresh_from_db()
+        self.assertEqual(self.clinic.custom_config['telegram_bot_token'], 'brand-new-token-456')
+
+
+class AttendanceCsvQueryTests(APITestCase):
+    """
+    Wave 5 / Step 5.5 — the attendance CSV is one query, not four per doctor.
+
+    The export ran four counts per doctor in a loop; a 50-doctor clinic paid
+    200+ queries for one file. The assertion compares the QUERY COUNT for one
+    doctor against four doctors: equal counts prove no N+1, whatever the
+    absolute number happens to be (auth adds its own query).
+    """
+
+    URL = '/api/v1/admin/export/attendance/'
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.staff = StaffUser.objects.create(
+            full_name='CSV Admin', email='csv.admin@clinic.com',
+            role='clinic_admin', is_active=True,
+        )
+        self.staff.set_password('CsvPass123!')
+        self.staff.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'csv.admin@clinic.com', 'password': 'CsvPass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+        self.service = Service.objects.create(name='CSV Service', duration_minutes=30)
+
+    def _doctor_with_appointments(self, name, completed, no_shows):
+        doctor = Doctor.objects.create(
+            name=name, specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+        )
+        day = timezone.localdate() - datetime.timedelta(days=30)
+        for index in range(completed + no_shows):
+            Appointment.objects.create(
+                appointment_code=f'AP-CSV{doctor.id.hex[:4]}{index}',
+                patient_name=f'CSV Patient {index}',
+                patient_phone=f'+23480300019{index:02d}',
+                doctor=doctor, service=self.service,
+                start_datetime=timezone.make_aware(
+                    datetime.datetime.combine(day, datetime.time(9, 0))
+                ) + datetime.timedelta(minutes=30 * index),
+                end_datetime=timezone.make_aware(
+                    datetime.datetime.combine(day, datetime.time(9, 30))
+                ) + datetime.timedelta(minutes=30 * index),
+                status='completed' if index < completed else 'no_show',
+            )
+        return doctor
+
+    def _query_count(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        with CaptureQueriesContext(connection) as ctx:
+            response = self.client.get(self.URL)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return len(ctx.captured_queries), response
+
+    def test_query_count_does_not_grow_with_doctors(self):
+        first = self._doctor_with_appointments('Dr. CSV One', completed=2, no_shows=1)
+        one_doctor_queries, response_one = self._query_count()
+        self.assertIn('Dr. CSV One', response_one.content.decode())
+
+        for i in range(2, 5):
+            self._doctor_with_appointments(f'Dr. CSV {i}', completed=1, no_shows=1)
+        four_doctors_queries, response_four = self._query_count()
+
+        self.assertEqual(
+            one_doctor_queries, four_doctors_queries,
+            'the attendance CSV must not add queries per doctor',
+        )
+        self.assertIn('Dr. CSV 4', response_four.content.decode())
+
+    def test_the_numbers_are_right(self):
+        self._doctor_with_appointments('Dr. CSV Math', completed=3, no_shows=1)
+        _, response = self._query_count()
+
+        line = next(
+            row for row in response.content.decode().splitlines()
+            if row.startswith('Dr. CSV Math')
+        )
+        cells = line.split(',')
+        # name, specialty, total, completed, no_shows, cancelled, rate
+        self.assertEqual(cells[2], '4')
+        self.assertEqual(cells[3], '3')
+        self.assertEqual(cells[4], '1')
+        self.assertEqual(cells[5], '0')
+        self.assertEqual(cells[6], '75.0%')
+
+
+class SingleApiMountTests(APITestCase):
+    """
+    Wave 5 / Step 5.6 — one mount, not two.
+
+    The router served every endpoint at `/api/v1/` AND `/api/`. The duplicate
+    hides URL mistakes (a client pointed at the wrong prefix still works)
+    and doubles maintenance. Nothing in the frontend, the n8n workflows or
+    the tests uses the bare prefix — verified before the change.
+    """
+
+    def test_the_versioned_mount_answers(self):
+        response = self.client.get('/api/v1/health/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_the_bare_prefix_is_gone(self):
+        response = self.client.get('/api/health/')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class LowSweepTests(APITestCase):
+    """
+    Wave 5 / Step 5.7 — the low findings, each with the honest behaviour.
+
+    (a) Telegram confirmation said "See you tomorrow" for appointments next
+        week; the sentence must name the real day.
+    (b) find_slot_conflict looked back a hardcoded 60 minutes, so a prior
+        service with a 120-minute buffer was never fetched and the overlap
+        was missed.
+    (c) Doctor.working_days defaulted to [] — a doctor created without days
+        was silently never bookable; the default is now Mon-Fri.
+    (d) The dispatch message hardcoded "Cedarcare Specialist Clinic" instead
+        of the configured clinic name.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.custom_config['telegram_secret_token'] = 'low-sweep-secret'
+        self.clinic.save()
+
+    # (a) ------------------------------------------------------------------
+    def test_the_telegram_confirmation_names_the_real_day(self):
+        from .services.telegram_service import TelegramService as TS
+
+        doctor = Doctor.objects.create(
+            name='Dr. Low Confirm', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+        )
+        service = Service.objects.create(name='Low Service', duration_minutes=30)
+        day = timezone.localdate() + datetime.timedelta(days=5)
+        while day.isoweekday() > 5:
+            day += datetime.timedelta(days=1)
+        start = timezone.make_aware(datetime.datetime.combine(day, datetime.time(10, 0)))
+        appt = Appointment.objects.create(
+            appointment_code='AP-LOW1', patient_name='Low Ada',
+            patient_phone='+2348030001900', doctor=doctor, service=service,
+            start_datetime=start, end_datetime=start + datetime.timedelta(minutes=30),
+            status='confirmed',
+        )
+
+        with patch.object(TS, 'answer_callback_query') as answer, \
+                patch.object(TS, 'send_message', return_value=True):
+            TS._handle_confirm_attendance(appt.id, 'cb-low', 555001)
+
+        text = answer.call_args.kwargs.get('text') if answer.call_args else ''
+        self.assertTrue(text, 'the callback must be answered')
+        self.assertNotIn('tomorrow', str(text).lower())
+        self.assertIn(start.strftime('%a'), str(text))
+
+    # (b) ------------------------------------------------------------------
+    def test_a_long_prior_buffer_cannot_be_missed(self):
+        doctor = Doctor.objects.create(
+            name='Dr. Low Buffer', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+        )
+        long_service = Service.objects.create(
+            name='Deep Clean', duration_minutes=30, buffer_minutes=120,
+        )
+        quick_service = Service.objects.create(
+            name='Quick Check', duration_minutes=30, buffer_minutes=5,
+        )
+        day = timezone.localdate() + datetime.timedelta(days=1)
+        while day.isoweekday() > 5:
+            day += datetime.timedelta(days=1)
+
+        def at(hour, minute=0):
+            return timezone.make_aware(
+                datetime.datetime.combine(day, datetime.time(hour, minute))
+            )
+
+        Appointment.objects.create(
+            appointment_code='AP-LOW2', patient_name='Prior Buffer',
+            patient_phone='+2348030001901', doctor=doctor, service=long_service,
+            start_datetime=at(14), end_datetime=at(15), status='confirmed',
+        )
+
+        # 16:20 starts 80 minutes after the prior visit ended — inside its
+        # 120-minute sterilization buffer, but OUTSIDE the old 60-min lookback.
+        response = self.client.post('/api/v1/slots/hold/', {
+            'doctor_id': str(doctor.id),
+            'service_id': str(quick_service.id),
+            'start_datetime': at(16, 20).isoformat(),
+            'end_datetime': at(16, 50).isoformat(),
+            'patient_name': 'Late Booking',
+            'patient_phone': '+2348030001902',
+        }, format='json', HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026')
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT, response.data)
+        self.assertEqual(response.data['error'], 'SLOT_CONFLICT')
+
+    # (c) ------------------------------------------------------------------
+    def test_a_doctor_created_without_days_is_bookable_on_a_weekday(self):
+        doctor = Doctor.objects.create(
+            name='Dr. Low Default', specialty='General Practice',
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+        )
+        service = Service.objects.create(name='Default Service', duration_minutes=30)
+        day = timezone.localdate() + datetime.timedelta(days=1)
+        while day.isoweekday() > 5:
+            day += datetime.timedelta(days=1)
+        start = timezone.make_aware(datetime.datetime.combine(day, datetime.time(10, 0)))
+
+        response = self.client.post('/api/v1/slots/hold/', {
+            'doctor_id': str(doctor.id),
+            'service_id': str(service.id),
+            'start_datetime': start.isoformat(),
+            'end_datetime': (start + datetime.timedelta(minutes=30)).isoformat(),
+            'patient_name': 'Default Days',
+            'patient_phone': '+2348030001903',
+            'is_instant_confirm': True,
+        }, format='json', HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+    # (d) ------------------------------------------------------------------
+    def test_the_dispatch_message_uses_the_configured_clinic_name(self):
+        self.clinic.clinic_name = 'Low Sweep Clinic'
+        self.clinic.save()
+        doctor = Doctor.objects.create(
+            name='Dr. Low Name', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+        )
+        service = Service.objects.create(name='Named Service', duration_minutes=30)
+        staff = StaffUser.objects.create(
+            full_name='Name Staff', email='name.staff@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        staff.set_password('NamePass123!')
+        staff.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'name.staff@clinic.com', 'password': 'NamePass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+        booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0630', patient_name='Named Ada',
+            patient_phone='+2348030001930', service=service,
+            status='awaiting_review',
+        )
+        day = timezone.localdate() + datetime.timedelta(days=1)
+        while day.isoweekday() > 5:
+            day += datetime.timedelta(days=1)
+        start = timezone.make_aware(datetime.datetime.combine(day, datetime.time(10, 0)))
+
+        response = self.client.post(
+            f'/api/v1/booking-requests/{booking.request_code}/dispatch-offers/',
+            {'slots': [{'doctor_id': str(doctor.id),
+                        'start_datetime': start.isoformat()}],
+             'dispatch_channels': ['sms']},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        message = response.data['telegram_payload']['message']
+        self.assertIn('Low Sweep Clinic', message)
+        self.assertNotIn('Cedarcare', message)
 
 
 class SeedClinicHygieneTests(TestCase):

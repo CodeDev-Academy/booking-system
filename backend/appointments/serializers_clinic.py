@@ -4,6 +4,12 @@ from rest_framework import serializers
 from .models import ClinicSetting, Doctor, StaffUser, Appointment, Service
 
 
+# Wave 5 / Step 5.4: one sentinel shared by the reader (masking) and the
+# importer (which must SKIP it instead of writing it over the real secret).
+MASKED_SECRET_SENTINEL = '•••••••• (admin only)'
+SENSITIVE_MARKERS = ('secret', 'token', 'password', 'api_key', 'apikey', 'private')
+
+
 class ClinicSettingSerializer(serializers.ModelSerializer):
     """
     Serializes central clinic operational and scheduling rules.
@@ -125,12 +131,11 @@ class ClinicSettingSerializer(serializers.ModelSerializer):
                 getattr(user, 'role', None) == 'clinic_admin'
             )
             if not is_admin:
-                sensitive_markers = ('secret', 'token', 'password', 'api_key', 'apikey', 'private')
                 masked = {}
                 for key, value in cfg.items():
                     key_lower = str(key).lower()
-                    if any(marker in key_lower for marker in sensitive_markers):
-                        masked[key] = '•••••••• (admin only)'
+                    if any(marker in key_lower for marker in SENSITIVE_MARKERS):
+                        masked[key] = MASKED_SECRET_SENTINEL
                     else:
                         masked[key] = value
                 data['custom_config'] = masked

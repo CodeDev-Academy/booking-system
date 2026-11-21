@@ -265,10 +265,13 @@ export const apiService = {
     return request('/auth/me/');
   },
 
-  async unlockPin(pin, email = '') {
+  // Wave 5 / Step 5.7: the PIN unlocks the SESSION's own staff account — the
+  // view reads request.user, so sending an email was dead weight (and a
+  // subtle hint that the body picks the account; it never did).
+  async unlockPin(pin) {
     return request('/auth/pin-unlock/', {
       method: 'POST',
-      body: JSON.stringify({ pin, email: email || undefined }),
+      body: JSON.stringify({ pin }),
     });
   },
 

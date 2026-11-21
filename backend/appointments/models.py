@@ -5,6 +5,11 @@ from django.utils import timezone
 from django.contrib.auth.hashers import make_password, check_password
 
 
+def default_working_days():
+    """Wave 5 / Step 5.7(c): Mon–Fri for a doctor created without days."""
+    return [1, 2, 3, 4, 5]
+
+
 class ClinicSetting(models.Model):
     """
     Central operational & scheduling configuration for the clinic.
@@ -176,7 +181,11 @@ class Doctor(models.Model):
     email = models.EmailField(blank=True)
     phone = models.CharField(max_length=32, blank=True)
     specialty = models.CharField(max_length=255, default='General Practice')
-    working_days = models.JSONField(default=list)  # [1, 2, 3, 4, 5]
+    # Wave 5 / Step 5.7(c): a doctor created without explicit days works
+    # Mon–Fri (the same default the seed and the admin UI use). The old `[]`
+    # made such a doctor silently never bookable. A clinic that wants a
+    # day-less doctor sets [] explicitly.
+    working_days = models.JSONField(default=default_working_days)
     shift_start = models.TimeField(default=datetime.time(9, 0))
     shift_end = models.TimeField(default=datetime.time(17, 0))
     max_daily_appointments = models.PositiveIntegerField(default=12)
