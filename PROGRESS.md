@@ -2776,6 +2776,49 @@ With Wave 5 the review remediation is complete. Still open by nature:
 partner credentials (5.2), staging deploy (5.3), CI, and Postgres/MySQL
 verification.
 
+## Zero-Partner Booking Route (2026-11-21)
+
+**Why.** VoiceBip and Meta are not connected, so a real patient had no way to
+book: the API accepted a request, but the only web form sat behind the staff
+login and every outbound channel needed a partner credential. Telegram is the
+one channel that works today, free.
+
+**What shipped.** A public page plus a Telegram handoff, so the whole loop runs
+without a single partner key:
+
+1. **`/book` — the patient's front door.** Outside the authenticated Shell
+   (no staff account), mobile-first, dark/amber. The FULL intake the backend
+   always accepted: service, optional preferred doctor, name, phone, optional
+   date of birth, gender, emergency flag (with a "call 112" warning), preferred
+   date range, preferred time window, and a reason-for-visit note. It shows the
+   clinic's REAL offer window and wording, fetched from
+   `GET /api/v1/public/booking-info/`.
+2. **A per-request link token.** `BookingRequest.telegram_link_token`
+   (migration `0009`) — random, because `REQ-2026-0042` is guessable. The
+   public 201 returns `telegram_link` (`t.me/<bot>?start=<token>`); the token
+   never appears in staff payloads.
+3. **The handoff.** `/start <token>` binds a chat exactly once. One chat per
+   request, so a forwarded link cannot take over someone else's booking;
+   unknown or closed requests are refused with the truth.
+4. **Reception sees the note.** The "reason for your visit" now appears in the
+   review modal as a patient-provided note.
+
+**Decisions recorded.** No email field (nothing sends email yet — the page does
+not promise what the system cannot do) and date of birth is optional (forcing
+it loses bookings; the phone identifies the patient).
+
+**Proven.** 14 new Django tests (469/469) and a 23-check frontend harness
+(139/139 across 10 files), plus 21 HTTP+DB live checks and the full browser flow
+ending in `REQ-2026-0007` with zero console errors.
+
+**Still needed for a real phone.** The bot token (`TELEGRAM_BOT_TOKEN`) is not
+set on this machine, and Telegram cannot reach `127.0.0.1`, so a real handset
+needs the token plus a public URL (tunnel or staging). `babawo_bot` is the
+configured username, so no new configuration is required for the link itself.
+
+VoiceBip/Meta remain upgrades that switch on by configuration once the partner
+credentials arrive — the web intake contract does not change.
+
 
 ## Next up - Phase 5 (partner handover)
 

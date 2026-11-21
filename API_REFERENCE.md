@@ -9,28 +9,53 @@ All endpoints are prefixed with `/api/v1/`.
 ### `POST /api/v1/booking-requests/`
 Creates a standardized booking request from web intake or WhatsApp flow.
 
-**Request Payload:**
+**Auth:** public on purpose (`AllowAny`) — this is the patient's front door. Protected by a
+honeypot field (`clinic_web_trap`) and a 5-requests-per-10-minutes IP limit.
+
+**Request Payload** (every field the web form sends; date of birth may be `null`, never `""`):
 ```json
 {
   "patient_name": "Amina Yusuf",
   "patient_phone": "+2348012345678",
-  "patient_type": "new",
   "service_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
   "preferred_doctor_id": null,
   "preferred_dates": ["2026-10-12", "2026-10-13"],
   "preferred_time_window": "morning",
-  "channel": "whatsapp"
+  "date_of_birth": "1990-04-02",
+  "gender": "female",
+  "is_emergency": false,
+  "patient_notes": "Tooth pain on the lower right side for three days.",
+  "channel": "web",
+  "clinic_web_trap": ""
 }
 ```
 
 **Response (`201 Created`):**
 ```json
 {
+  "id": "8b9d0c1a-...",
   "request_id": "REQ-2026-0042",
+  "request_code": "REQ-2026-0042",
   "status": "awaiting_review",
+  "telegram_link": "https://t.me/babawo_bot?start=Xk3vQ2pL9wR4tY6nB1cA",
   "created_at": "2026-10-08T09:30:00Z"
 }
 ```
+
+`telegram_link` is the handoff to the only channel that works without a partner credential. It
+carries a **random per-request token** (`telegram_link_token`, migration `0009`) — never the
+guessable request code. Opening it binds the patient's Telegram chat to this request (see
+`/start` below); `null` when no bot username is configured, and the page then offers the honest
+"front desk will call you" fallback.
+
+---
+
+### `GET /api/v1/public/booking-info/`
+**Auth:** public. Everything the `/book` page needs to render, and nothing more: clinic name, the
+clinic's REAL `offer_hold_minutes` (from `ClinicSetting.offer_expiry_minutes`) with its notice
+wording, `hold_expiry_minutes`, opening hours and working days, active services (`id`, `name`,
+`category`, `duration_minutes` — **no price**), active doctors (`id`, `name`, `specialty`), and
+`telegram_bot_username`. No secret, no patient data, no roster data.
 
 ---
 
@@ -226,6 +251,25 @@ Validates 4-digit Quick PIN after 20-minute idle screen lock.
 - `POST /api/v1/webhooks/re-engagement/` (Triggered upon offer expiry to send `[🔄 See New Times]`)
 - `POST /api/v1/webhooks/patient-reply/` (SMS / WhatsApp patient reply — see below)
 - `POST /api/v1/webhooks/disruption-claims/check/` (Workflow `08` asks if a notice is still live before sending — see below)
+
+### `POST /api/v1/webhooks/telegram/inbound/` — the web booking handoff
+The Telegram bot receives normal updates here. One command is special: **`/start <token>`**
+(also `/start@babawo_bot <token>` in a group), which binds the chat to the booking request that
+owns the token printed on the `/book` success screen.
+
+| Case | Behaviour |
+| :--- | :--- |
+| Valid token, chat not linked | Saves the `telegram_chat_id:<id>` marker that dispatch already reads, audits `TELEGRAM_LINKED`, replies with the request code and the next step. |
+| Same chat, same request | Idempotent — a friendly "already connected" reply, no duplicate marker. |
+| Request linked to a DIFFERENT chat | Refused. One chat per request, so a forwarded link cannot hijack another patient's booking. |
+| Unknown token | Refused politely; no writes. |
+| Request already `converted` / `rejected` / `offer_expired` | Refused with the truth; no writes. |
+| `/start` with no token | Falls through to the existing welcome menu with the service buttons. |
+
+Once bound, the normal flow takes over: reception approves times and the patient receives the
+slot buttons in that chat.
+
+---
 
 ### `POST /api/v1/webhooks/disruption-claims/check/`
 Answers, per claim reference, whether a disruption notice may still be delivered. Workflow `08`

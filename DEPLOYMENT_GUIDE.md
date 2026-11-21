@@ -140,9 +140,13 @@ Once deployed to Coolify:
    - Open `https://clinic.yourdomain.com` on your laptop or tablet.
    - Log in with `sarah.aliyu@cedarcare.ng` / `password123`.
 2. **Client Phone Booking**:
-   - Give the client the intake link (or open it on their phone): `https://clinic.yourdomain.com/simulator` or your public booking widget.
+   - Give the client the public booking link (or open it on their phone): `https://clinic.yourdomain.com/book`.
+     **Not `/simulator`** — that page sits behind the staff login and is the agency's demo screen.
    - The client can be on **cellular data (MTN, Airtel, etc.) anywhere in the world** — zero shared Wi-Fi needed.
-   - The client submits their name, phone number, and preferred appointment time.
+   - The client picks a service, enters their name, phone, optional date of birth, gender, an emergency
+     flag if the visit is urgent, a preferred date range and time of day, and a short reason for the visit.
+   - On submit they get a request code (`REQ-2026-0042`) and a **"Get your times on Telegram"** button.
+     Tapping it binds their chat to the request; without Telegram the page says the front desk will call.
 3. **Live Receptionist Triage**:
    - The receptionist dashboard receives the real-time event via Server-Sent Events (SSE) accompanied by an audio chime.
    - Click **Review Request** ➔ The backend Availability Engine calculates valid doctor slots based on working shifts and buffers.
