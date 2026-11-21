@@ -1,5 +1,6 @@
 import csv
 import os
+import re
 import uuid
 import datetime
 from django.db import transaction
@@ -1017,11 +1018,26 @@ class UpcomingRemindersView(APIView):
 
         reminders_list = []
         for appt in upcoming_appts:
+            # Wave 4 / Step 4.2: `telegram_chat_id` is a CHAT ID, not a phone.
+            # The old row handed the patient's phone number to the reminder
+            # workflow, which then tried to Telegram a "+234..." chat id — a
+            # send that can never succeed. The real chat id lives in the
+            # booking request's `telegram_chat_id:<id>` marker (the inbound
+            # protocol); no Telegram history answers None — honestly
+            # unreachable, not silently broken.
+            chat_id = None
+            if appt.booking_request and appt.booking_request.patient_notes:
+                marker = re.search(
+                    r'telegram_chat_id:(\d+)', appt.booking_request.patient_notes,
+                )
+                if marker:
+                    chat_id = marker.group(1)
+
             reminders_list.append({
                 'appointment_id': appt.appointment_code,
                 'patient_name': appt.patient_name,
                 'patient_phone': appt.patient_phone,
-                'telegram_chat_id': appt.patient_phone,
+                'telegram_chat_id': chat_id,
                 'doctor_name': appt.doctor.name,
                 'service_name': appt.service.name,
                 'start_datetime': appt.start_datetime.isoformat(),

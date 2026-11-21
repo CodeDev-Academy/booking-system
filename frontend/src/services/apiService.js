@@ -69,14 +69,25 @@ async function request(endpoint, options = {}) {
     });
 
     if (!res.ok) {
-      // 401 Session Ejection Broadcast (except for login or PIN unlock attempts)
+      // Wave 4 / Step 4.1 — the 30-day session: an expired access token is
+      // RENEWED, not punished. One silent refresh-and-retry per call; only
+      // when renewal fails (the 30 days are over, or the account was
+      // deactivated — the backend's kill-switch) does the old ejection fire.
       if (res.status === 401) {
         const isAuthAttempt =
           endpoint.includes('/auth/login') ||
           endpoint.includes('/auth/pin-unlock') ||
-          endpoint.includes('/auth/verify-pin');
+          endpoint.includes('/auth/verify-pin') ||
+          endpoint.includes('/auth/refresh');
+        if (!isAuthAttempt && !options._isRenewalRetry) {
+          const renewed = await refreshSession();
+          if (renewed) {
+            return request(endpoint, { ...options, _isRenewalRetry: true });
+          }
+        }
         if (!isAuthAttempt && typeof window !== 'undefined') {
           localStorage.removeItem('cbs_auth_token');
+          localStorage.removeItem('cbs_refresh_token');
           window.dispatchEvent(
             new CustomEvent('cbs_auth_unauthorized', {
               detail: { endpoint, status: res.status },
@@ -115,6 +126,31 @@ async function request(endpoint, options = {}) {
       err.isNetworkError = true;
     }
     throw err;
+  }
+}
+
+/**
+ * Wave 4 / Step 4.1 — redeem the 30-day refresh token for a fresh access
+ * token. Returns true when the session was renewed. A failure returns false
+ * (the caller decides whether to eject); the refresh call itself never
+ * triggers a renewal loop — /auth/refresh is an auth attempt.
+ */
+async function refreshSession() {
+  const refreshToken =
+    typeof localStorage !== 'undefined' ? localStorage.getItem('cbs_refresh_token') : null;
+  if (!refreshToken) return false;
+  try {
+    const data = await request('/auth/refresh/', {
+      method: 'POST',
+      body: JSON.stringify({ refresh: refreshToken }),
+    });
+    if (data && data.access) {
+      localStorage.setItem('cbs_auth_token', data.access);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    return false;
   }
 }
 
@@ -184,6 +220,11 @@ export const apiService = {
       return { ok: false, error: err.message, isNetworkError: err.isNetworkError };
     }
   },
+
+  // Wave 4 / Step 4.1 — exposed for boot: a returning staff member within
+  // the 30-day window gets a silently re-armed access token before the first
+  // data call fires.
+  refreshSession,
 
   // Wave 3 / Step 3.1 — the clinic's clock is the site's only clock. The
   // health endpoint publishes the server's own time and the clinic timezone;

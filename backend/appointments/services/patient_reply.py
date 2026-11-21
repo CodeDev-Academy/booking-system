@@ -160,7 +160,9 @@ def reply_rescheduled():
 
 # A bare number is a slot choice. Everything else is a word the patient typed:
 # keep the vocabulary small and obvious, because SMS has no buttons.
-OPTION_RE = re.compile(r'^\d{1,2}$')
+# The dispatch copy says "Reply 1, 2, or 3", so patients type exactly that on
+# BOTH channels; the engine accepts the leading word it taught them.
+OPTION_RE = re.compile(r'^(?:(?:reply|option|opt)\s*)?(\d{1,2})$', re.IGNORECASE)
 CANCEL_WORDS = {'cancel', 'cancelled', 'canceled', 'stop'}
 RESCHEDULE_WORDS = {'reschedule', 'change', 'move', 'new time'}
 
@@ -187,7 +189,7 @@ def parse_intent(text):
     """
     value = (text or '').strip().lower()
     if OPTION_RE.match(value):
-        return 'select', int(value)
+        return 'select', int(OPTION_RE.match(value).group(1))
     if value in CANCEL_WORDS:
         return 'cancel', None
     if value in RESCHEDULE_WORDS:

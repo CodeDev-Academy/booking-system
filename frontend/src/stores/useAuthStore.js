@@ -135,6 +135,12 @@ export const useAuthStore = create(
             const result = await apiService.login(normalizedEmail, normalizedPassword, honeypot);
             if (result && result.access) {
               localStorage.setItem('cbs_auth_token', result.access);
+              // Wave 4 / Step 4.1: keep the 30-day renewal key. The login body
+              // has always carried it — until now it was thrown away, so the
+              // session died with the 60-minute access token.
+              if (result.refresh) {
+                localStorage.setItem('cbs_refresh_token', result.refresh);
+              }
               const staffUser = result.user || {
                 id: result.id || 'staff-live',
                 name: result.full_name || 'Clinic Staff',
@@ -292,6 +298,7 @@ export const useAuthStore = create(
           // Ignore network errors on logout
         }
         localStorage.removeItem('cbs_auth_token');
+        localStorage.removeItem('cbs_refresh_token');
         set({
           isAuthenticated: false,
           currentStaff: null,
@@ -311,6 +318,7 @@ export const useAuthStore = create(
           // Ignore network errors
         }
         localStorage.removeItem('cbs_auth_token');
+        localStorage.removeItem('cbs_refresh_token');
         set({
           isAuthenticated: false,
           currentStaff: null,
@@ -406,6 +414,7 @@ export const useAuthStore = create(
       // Immediate 401 Session Ejection
       ejectSession: (reason = 'Staff session revoked by Clinic Administrator') => {
         localStorage.removeItem('cbs_auth_token');
+        localStorage.removeItem('cbs_refresh_token');
         set({
           isAuthenticated: false,
           currentStaff: null,

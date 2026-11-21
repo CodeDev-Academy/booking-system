@@ -873,8 +873,12 @@ class Phase3BookingQueueTests(APITestCase):
 
     def test_front_desk_inquiry_dispatch_t307(self):
         """
-        T-307: POST /api/v1/booking-requests/{id}/ask-info/ logs clarification inquiry
-        to patient_notes and creates an AuditLog entry.
+        T-307: POST /api/v1/booking-requests/{id}/ask-info/ logs the
+        clarification inquiry to patient_notes and creates an AuditLog entry.
+
+        Wave 4 / Step 4.3: this request has NO Telegram chat and no other
+        messaging channel, so the honest answer is `recorded_only` — the old
+        `dispatched` claimed a delivery that never happened.
         """
         self.client.force_authenticate(user=self.receptionist)
 
@@ -891,17 +895,18 @@ class Phase3BookingQueueTests(APITestCase):
         }, format='json')
 
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertEqual(res.data['status'], 'dispatched')
+        self.assertEqual(res.data['status'], 'recorded_only')
+        self.assertIn('No patient messaging channel', res.data['detail'])
 
         # Verify patient_notes updated
         req.refresh_from_db()
         self.assertIn('would 10:30 AM or 2:00 PM suit you better?', req.patient_notes)
 
-        # Verify AuditLog created
+        # Verify AuditLog created — the action matches what really happened
         audit = AuditLog.objects.filter(
             entity_name='BookingRequest',
             entity_id=req.id,
-            action='PATIENT_INQUIRY_DISPATCHED'
+            action='PATIENT_INQUIRY_RECORDED'
         ).first()
         self.assertIsNotNone(audit)
         self.assertEqual(audit.performed_by, self.receptionist.email)
@@ -3462,21 +3467,15 @@ class WebhookSecurityHardeningTests(APITestCase):
         self.staff.set_password('SecurityPass123!')
         self.staff.save()
 
+        # Wave 2 rules: bookings must land inside the clinic calendar, so the
+        # fixture uses the shared legal-slot helper instead of "+7 days".
+        hold_start = next_legal_slot(10)
+        hold_end = hold_start + datetime.timedelta(minutes=30)
         self.hold_payload = {
             'doctor_id': str(self.doctor.id),
             'service_id': str(self.service.id),
-            'start_datetime': (
-                timezone.make_aware(datetime.datetime.combine(
-                    timezone.now().date() + datetime.timedelta(days=7),
-                    datetime.time(10, 0),
-                )).isoformat()
-            ),
-            'end_datetime': (
-                timezone.make_aware(datetime.datetime.combine(
-                    timezone.now().date() + datetime.timedelta(days=7),
-                    datetime.time(10, 30),
-                )).isoformat()
-            ),
+            'start_datetime': hold_start.isoformat(),
+            'end_datetime': hold_end.isoformat(),
             'patient_name': 'Hauwa Webhook',
             'patient_phone': '+2348099988777',
         }
@@ -6118,6 +6117,380 @@ class StaffRolePatchTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.receptionist.refresh_from_db()
         self.assertEqual(self.receptionist.role, 'receptionist')
+
+
+class StaffRefreshFlowTests(APITestCase):
+    """
+    Wave 4 / Step 4.1 — the 30-day session finally exists.
+
+    Login has ALWAYS returned the refresh token in its body (and as an
+    HttpOnly cookie), but there was no endpoint to redeem it and the
+    frontend never stored it — so staff were ejected after 60 minutes and
+    had to retype email + password every hour.
+
+    Owner decision (2026-11-20): the STORED refresh token — the login body's
+    token goes to the client, and `POST /auth/refresh/` redeems it for a
+    fresh access token. The cookie remains a second, optional path.
+
+    Kill-switch preserved (T-303): a deactivated account cannot refresh.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.staff = StaffUser.objects.create(
+            full_name='Refresh Flow Staff',
+            email='refresh.flow@clinic.com',
+            role='receptionist',
+            is_active=True,
+        )
+        self.staff.set_password('RefreshPass123!')
+        self.staff.save()
+
+    def _login(self):
+        res = self.client.post('/api/v1/auth/login/', {
+            'email': 'refresh.flow@clinic.com',
+            'password': 'RefreshPass123!',
+        }, format='json')
+        return res.data
+
+    def test_a_valid_refresh_returns_a_working_access_token(self):
+        session = self._login()
+        refresh = session['refresh']
+
+        res = self.client.post('/api/v1/auth/refresh/', {'refresh': refresh}, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertIn('access', res.data)
+        # The new access token actually authenticates.
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {res.data['access']}")
+        me = self.client.get('/api/v1/auth/me/')
+        self.assertEqual(me.status_code, status.HTTP_200_OK)
+        self.assertEqual(me.data['email'], 'refresh.flow@clinic.com')
+
+    def test_a_garbage_refresh_token_is_rejected(self):
+        res = self.client.post('/api/v1/auth/refresh/', {'refresh': 'not-a-token'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_a_deactivated_account_cannot_refresh(self):
+        session = self._login()
+        refresh = session['refresh']
+
+        # The kill-switch (T-303) must hold on the refresh path too.
+        self.staff.is_active = False
+        self.staff.save(update_fields=['is_active'])
+
+        res = self.client.post('/api/v1/auth/refresh/', {'refresh': refresh}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_the_http_only_cookie_still_refreshes(self):
+        """The dual-mode promise: the cookie path keeps working."""
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'refresh.flow@clinic.com',
+            'password': 'RefreshPass123!',
+        }, format='json')
+        cookie_refresh = login.cookies.get('clinic_refresh_token')
+
+        res = self.client.post('/api/v1/auth/refresh/', {}, format='json',
+                               HTTP_COOKIE=f'clinic_refresh_token={cookie_refresh.value}')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertIn('access', res.data)
+
+
+class UpcomingRemindersChatIdTests(APITestCase):
+    """
+    Wave 4 / Step 4.2 — `telegram_chat_id` must be a chat id, not a phone.
+
+    The reminders feed handed the workflow a PATIENT PHONE in the
+    `telegram_chat_id` field; a Telegram send to a "chat id" of +234... can
+    never succeed. The real chat id lives in the booking request's
+    `telegram_chat_id:<id>` marker (the established inbound protocol); an
+    appointment with no Telegram history answers None — honestly
+    unreachable, not silently broken.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+        self.doctor = Doctor.objects.create(
+            name='Dr. Reminder Chat', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+        )
+        self.service = Service.objects.create(
+            name='Dental Consultation', duration_minutes=30, buffer_minutes=5,
+        )
+        day = timezone.localdate() + datetime.timedelta(days=1)
+        while day.isoweekday() > 5:
+            day += datetime.timedelta(days=1)
+        start = timezone.make_aware(datetime.datetime.combine(day, datetime.time(10, 0)))
+
+        self.booking_with_chat = BookingRequest.objects.create(
+            request_code='REQ-2026-0600',
+            patient_name='Chat Ada', patient_phone='+2348030001600',
+            service=self.service,
+            patient_notes='telegram_chat_id:555001 requested via bot',
+        )
+        self.appt_with_chat = Appointment.objects.create(
+            appointment_code='AP-CHAT1', patient_name='Chat Ada',
+            patient_phone='+2348030001600', doctor=self.doctor, service=self.service,
+            booking_request=self.booking_with_chat,
+            start_datetime=start, end_datetime=start + datetime.timedelta(minutes=30),
+            status='confirmed',
+        )
+
+        self.appt_without_chat = Appointment.objects.create(
+            appointment_code='AP-CHAT2', patient_name='Web Bola',
+            patient_phone='+2348030001601', doctor=self.doctor, service=self.service,
+            start_datetime=start + datetime.timedelta(hours=2),
+            end_datetime=start + datetime.timedelta(hours=2, minutes=30),
+            status='confirmed',
+        )
+
+    def _reminders(self):
+        res = self.client.get(
+            '/api/v1/appointments/upcoming-reminders/',
+            HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        return {r['appointment_id']: r for r in res.data['reminders']}
+
+    def test_a_telegram_booking_answers_its_real_chat_id(self):
+        reminders = self._reminders()
+        row = reminders[self.appt_with_chat.appointment_code]
+        self.assertEqual(row['telegram_chat_id'], '555001')
+        self.assertEqual(row['patient_phone'], '+2348030001600')
+
+    def test_a_non_telegram_booking_answers_none(self):
+        reminders = self._reminders()
+        row = reminders[self.appt_without_chat.appointment_code]
+        self.assertIsNone(row['telegram_chat_id'])
+        self.assertEqual(row['patient_phone'], '+2348030001601')
+
+    def test_no_phone_number_ever_poses_as_a_chat_id(self):
+        reminders = self._reminders()
+        for row in reminders.values():
+            chat = row['telegram_chat_id']
+            self.assertTrue(chat is None or not str(chat).startswith('+'))
+
+
+class AskInfoTruthTests(APITestCase):
+    """
+    Wave 4 / Step 4.3 — "Ask for info" either delivers or tells the truth.
+
+    The old view said `"status": "dispatched"` and audited
+    `PATIENT_INQUIRY_DISPATCHED` while sending NOTHING — a receptionist
+    believed the patient had been asked. Now:
+      - a Telegram booking (chat id marker) gets a REAL send through
+        TelegramService, logged as an InteractionLog row;
+      - a booking with no reachable channel answers `recorded_only` and the
+        audit says recorded, so nobody believes a message went out.
+    """
+
+    def setUp(self):
+        from .services.telegram_service import TelegramService as _TelegramService
+        globals()['TelegramService'] = _TelegramService
+
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+        self.service = Service.objects.create(
+            name='Dental Consultation', duration_minutes=30, buffer_minutes=5,
+        )
+        self.staff = StaffUser.objects.create(
+            full_name='Ask Info Staff', email='askinfo.staff@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.staff.set_password('AskInfoPass123!')
+        self.staff.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'askinfo.staff@clinic.com', 'password': 'AskInfoPass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+        self.telegram_booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0610',
+            patient_name='Ask Ada', patient_phone='+2348030001610',
+            service=self.service, channel='telegram',
+            patient_notes='telegram_chat_id:556001 came from the bot',
+        )
+        self.web_booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0611',
+            patient_name='Web Bola', patient_phone='+2348030001611',
+            service=self.service, channel='web',
+        )
+
+    def _ask(self, booking, message='Please confirm the preferred date.'):
+        return self.client.post(
+            f'/api/v1/booking-requests/{booking.request_code}/ask-info/',
+            {'message': message, 'prompt_code': 'date_confirm'}, format='json',
+        )
+
+    def test_a_telegram_booking_is_actually_messaged(self):
+        with patch.object(TelegramService, 'send_message', return_value=True) as sent:
+            res = self._ask(self.telegram_booking)
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(res.data['status'], 'sent_via_telegram')
+        sent.assert_called_once()
+        self.assertIn('556001', str(sent.call_args))
+        # The outcome is recorded against the request, like every send.
+        self.assertTrue(
+            InteractionLog.objects.filter(
+                booking_request=self.telegram_booking, channel='telegram',
+                status='sent',
+            ).exists()
+        )
+        # The dossier still carries the note.
+        self.telegram_booking.refresh_from_db()
+        self.assertIn('Staff Inquiry', self.telegram_booking.patient_notes)
+
+    def test_a_web_booking_answers_the_truth(self):
+        res = self._ask(self.web_booking)
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(res.data['status'], 'recorded_only')
+        self.assertIn('No patient messaging channel', res.data['detail'])
+        # Nothing was sent, so nothing pretends it was.
+        self.assertFalse(
+            InteractionLog.objects.filter(booking_request=self.web_booking).exists()
+        )
+        # The note is still useful — it stays on the dossier.
+        self.web_booking.refresh_from_db()
+        self.assertIn('Staff Inquiry', self.web_booking.patient_notes)
+
+    def test_the_audit_action_matches_what_really_happened(self):
+        with patch.object(TelegramService, 'send_message', return_value=True):
+            self._ask(self.telegram_booking)
+        self._ask(self.web_booking)
+
+        dispatched = AuditLog.objects.filter(
+            entity_name='BookingRequest', action='PATIENT_INQUIRY_DISPATCHED',
+        ).exists()
+        recorded = AuditLog.objects.filter(
+            entity_name='BookingRequest', action='PATIENT_INQUIRY_RECORDED',
+        ).exists()
+        self.assertTrue(dispatched, 'the telegram send must audit as dispatched')
+        self.assertTrue(recorded, 'the no-channel note must audit as recorded only')
+
+
+class TelegramTextReplyUnificationTests(APITestCase):
+    """
+    Wave 4 / Step 4.4 — ONE reply engine on every channel.
+
+    A plain TEXT reply on Telegram ("Reply 1") used to get the welcome menu
+    while the same words on SMS selected the slot — two parallel inbound
+    paths with different idempotency keys. Now a Telegram text routes
+    through the SAME `handle_patient_reply` engine SMS/WhatsApp use: the
+    chat id resolves the patient's request, the inbound row is the
+    idempotency claim (same primitive, same key scheme), and the engine's
+    answer is delivered back on Telegram. A chat with no booking history
+    still gets the welcome menu — that is an inquiry, not a reply.
+    """
+
+    def setUp(self):
+        from .services.telegram_service import TelegramService as _TelegramService
+        globals()['TelegramService'] = _TelegramService
+
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.custom_config['telegram_secret_token'] = 'tg-unify-secret-1'
+        self.clinic.save()
+        self.client.credentials(HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN='tg-unify-secret-1')
+
+        self.doctor = Doctor.objects.create(
+            name='Dr. Unify Reply', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+        )
+        self.service = Service.objects.create(
+            name='Dental Consultation', duration_minutes=30, buffer_minutes=5,
+        )
+        self.booking = BookingRequest.objects.create(
+            request_code='REQ-2026-0620',
+            patient_name='Unify Ada', patient_phone='+2348030001620',
+            service=self.service, channel='telegram',
+            status='slots_offered',
+            patient_notes='telegram_chat_id:777001 booked through the bot',
+        )
+        day = timezone.localdate() + datetime.timedelta(days=1)
+        while day.isoweekday() > 5:
+            day += datetime.timedelta(days=1)
+        start = timezone.make_aware(datetime.datetime.combine(day, datetime.time(10, 0)))
+        self.offer = SlotOffer.objects.create(
+            request=self.booking, doctor=self.doctor,
+            start_datetime=start, end_datetime=start + datetime.timedelta(minutes=30),
+            expires_at=timezone.now() + datetime.timedelta(minutes=60),
+        )
+
+    def _tg_text(self, update_id, chat_id, text, message_id):
+        return {
+            'update_id': update_id,
+            'channel': 'telegram',
+            'message': {
+                'message_id': message_id,
+                'text': text,
+                'chat': {'id': chat_id},
+                'from': {'id': chat_id, 'first_name': 'Unify'},
+            },
+        }
+
+    def test_a_text_reply_selects_the_slot_through_the_shared_engine(self):
+        with patch.object(TelegramService, 'send_message', return_value=True) as sent:
+            res = self.client.post(
+                '/api/v1/webhooks/telegram/inbound/',
+                self._tg_text(9101, 777001, 'Reply 1', 501), format='json',
+            )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        tg = res.data['telegram_result']
+        self.assertEqual(tg['status'], 'held')
+        self.assertEqual(tg['request_id'], 'REQ-2026-0620')
+        # The hold really exists — the same core the SMS path uses.
+        self.assertTrue(
+            Appointment.objects.filter(
+                booking_request=self.booking, status='held',
+            ).exists()
+        )
+        # The engine's answer was delivered back on Telegram.
+        self.assertTrue(sent.call_count >= 1)
+        # The inbound row is the idempotency claim, keyed like SMS/WhatsApp.
+        self.assertTrue(
+            InteractionLog.objects.filter(
+                direction='inbound', channel='telegram',
+                external_ref='tgmsg-501',
+            ).exists()
+        )
+
+    def test_an_unknown_chat_still_gets_the_welcome_menu(self):
+        with patch.object(TelegramService, 'send_message', return_value=True):
+            res = self.client.post(
+                '/api/v1/webhooks/telegram/inbound/',
+                self._tg_text(9102, 999001, 'Hello', 502), format='json',
+            )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['telegram_result']['status'], 'welcomed')
+
+    def test_a_provider_retry_is_duplicate_ignored_like_every_channel(self):
+        first = self.client.post(
+            '/api/v1/webhooks/telegram/inbound/',
+            self._tg_text(9103, 777001, 'Reply 1', 503), format='json',
+        )
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(first.data['telegram_result']['status'], 'held')
+
+        # Same provider message id, a NEW gateway delivery: the shared claim
+        # answers duplicate_ignored — the SMS/WhatsApp contract.
+        second = self.client.post(
+            '/api/v1/webhooks/telegram/inbound/',
+            self._tg_text(9104, 777001, 'Reply 1', 503), format='json',
+        )
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.data['telegram_result']['status'], 'duplicate_ignored')
 
 
 class SeedClinicHygieneTests(TestCase):

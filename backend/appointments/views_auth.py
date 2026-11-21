@@ -178,6 +178,78 @@ class StaffLoginView(views.APIView):
         }, status=status.HTTP_401_UNAUTHORIZED)
 
 
+class StaffRefreshView(views.APIView):
+    """
+    POST /api/v1/auth/refresh/ (Wave 4 / Step 4.1)
+    Redeems a 30-day refresh token for a fresh 60-minute access token — the
+    missing half of the "30-day session" the login endpoint always promised
+    (it already returned the token in the body AND set it as an HttpOnly
+    cookie, but nothing could redeem it).
+
+    Two redemption paths, by owner decision (2026-11-20) the STORED token is
+    primary: `{"refresh": "..."}` in the body. The HttpOnly cookie remains a
+    second, optional path for same-origin deployments.
+
+    Fail closed like login does: a malformed token, an unknown user, or a
+    DEACTIVATED account (the T-303 kill-switch) answers 401 — never a
+    half-useful session.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        refresh_value = (request.data.get('refresh') or '').strip()
+        if not refresh_value:
+            refresh_value = request.COOKIES.get('clinic_refresh_token', '')
+        if not refresh_value:
+            return response.Response(
+                {'error': 'REFRESH_TOKEN_REQUIRED',
+                 'detail': 'Provide the refresh token in the body or the session cookie.'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        try:
+            refresh = StaffRefreshToken(refresh_value)
+        except Exception:
+            return response.Response(
+                {'error': 'INVALID_REFRESH_TOKEN',
+                 'detail': 'This session cannot be renewed. Please sign in again.'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        try:
+            staff = StaffUser.objects.get(id=refresh.get('user_id'))
+        except StaffUser.DoesNotExist:
+            return response.Response(
+                {'error': 'INVALID_REFRESH_TOKEN',
+                 'detail': 'This session cannot be renewed. Please sign in again.'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # T-303 kill-switch: deactivation invalidates EVERY path a session
+        # could use to come back — including this one.
+        if not staff.is_active:
+            return response.Response(
+                {'error': 'ACCOUNT_DEACTIVATED',
+                 'detail': 'This account has been deactivated. Please contact the administrator.'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        access_token = str(refresh.access_token)
+        res = response.Response({'access': access_token}, status=status.HTTP_200_OK)
+
+        # Keep the dual-mode promise alive: a fresh access cookie rides along.
+        res.set_cookie(
+            key='clinic_access_token',
+            value=access_token,
+            max_age=3600,
+            httponly=True,
+            samesite='Lax',
+            secure=not settings.DEBUG,
+        )
+        return res
+
+
 class StaffLogoutView(views.APIView):
     """
     Clears authentication cookies and invalidates session.

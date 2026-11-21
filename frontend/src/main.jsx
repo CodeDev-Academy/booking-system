@@ -18,6 +18,10 @@ const bootClinicClock = async () => {
 bootClinicClock()
 setInterval(bootClinicClock, CLINIC_CLOCK_SYNC_MS)
 
+// Wave 4 / Step 4.1 — the 30-day session: renew silently on boot so a
+// returning staff member's first data call carries a live access token.
+apiService.refreshSession()
+
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <App />

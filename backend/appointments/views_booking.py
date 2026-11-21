@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import datetime
 import ipaddress
@@ -546,8 +547,10 @@ class DispatchOffersView(APIView):
         # Task 3.1: this is the "WhatsApp" checkbox leg — during the Telegram-first era the
         # instant-message leg for a telegram-intake patient is the Telegram card; when the
         # WhatsApp API key arrives the same checkbox flips to Meta WhatsApp (n8n Workflow D).
-        custom_cfg = getattr(booking, 'custom_config', None) or {}
-        chat_id = request.data.get('telegram_chat_id') or custom_cfg.get('telegram_chat_id')
+        # Wave 4 / Step 4.5: `BookingRequest` has no custom_config field — the
+        # old getattr was dead code. The chat id comes from the explicit
+        # request data or the patient_notes marker, nothing else.
+        chat_id = request.data.get('telegram_chat_id')
         notes_text = getattr(booking, 'patient_notes', '') or ''
         if not chat_id and 'telegram_chat_id:' in notes_text:
             try:
@@ -615,6 +618,10 @@ class DispatchOffersView(APIView):
                     except Exception:
                         logger.error("Failed to log Telegram interaction", exc_info=True)
 
+            # The n8n dispatch URL is CLINIC-level configuration (the booking
+            # has no custom_config field — that dead lookup was removed in
+            # Wave 4; the clinic-level one is the real source).
+            custom_cfg = clinic.custom_config or {}
             n8n_dispatch_url = os.environ.get('N8N_DISPATCH_WEBHOOK_URL') or custom_cfg.get('n8n_dispatch_url')
             if n8n_dispatch_url:
                 # Task 3.5: pre-format everything n8n needs so Workflow D never does
@@ -763,18 +770,61 @@ class AskInfoView(APIView):
 
         booking.save(update_fields=['patient_notes', 'updated_at'])
 
+        # Wave 4 / Step 4.3: the button either DELIVERS or says it did not.
+        # The old view answered "dispatched" while sending nothing at all.
+        # A Telegram booking carries its chat id in the patient_notes marker
+        # (the inbound protocol) and gets a real send, logged like every
+        # other; anything else answers recorded_only so nobody believes a
+        # message went out.
+        chat_id = None
+        if booking.patient_notes:
+            marker = re.search(r'telegram_chat_id:(\d+)', booking.patient_notes)
+            if marker:
+                chat_id = marker.group(1)
+
+        send_status = 'recorded_only'
+        send_detail = (
+            'No patient messaging channel exists for this request — the note is '
+            'saved to the dossier. Call the patient.'
+        )
+        if chat_id:
+            try:
+                TelegramService.send_message(chat_id, message)
+                send_status = 'sent_via_telegram'
+                send_detail = 'Clarification prompt delivered to the patient on Telegram.'
+                InteractionLog.objects.create(
+                    provider='telegram', channel='telegram', direction='outbound',
+                    status='sent', patient_name=booking.patient_name,
+                    patient_phone=booking.patient_phone, booking_request=booking,
+                    external_ref=f"askinfo-{booking.request_code}-{timezone.now().strftime('%Y%m%d%H%M%S')}",
+                    summary=f"Staff inquiry ({prompt_code}) sent via Telegram",
+                )
+            except Exception as send_err:
+                send_status = 'send_failed'
+                send_detail = f'The Telegram send failed: {str(send_err)[:200]}'
+                InteractionLog.objects.create(
+                    provider='telegram', channel='telegram', direction='outbound',
+                    status='failed', patient_name=booking.patient_name,
+                    patient_phone=booking.patient_phone, booking_request=booking,
+                    external_ref=f"askinfo-{booking.request_code}-{timezone.now().strftime('%Y%m%d%H%M%S')}",
+                    summary=f"Staff inquiry ({prompt_code}) FAILED to send",
+                    error_detail=str(send_err)[:300],
+                )
+
         AuditLog.objects.create(
             entity_name='BookingRequest',
             entity_id=booking.id,
-            action='PATIENT_INQUIRY_DISPATCHED',
+            action='PATIENT_INQUIRY_DISPATCHED' if send_status == 'sent_via_telegram'
+            else 'PATIENT_INQUIRY_RECORDED',
             performed_by=request.user.email,
-            changes={'prompt_code': prompt_code, 'message': message},
+            changes={'prompt_code': prompt_code, 'message': message,
+                     'send_status': send_status},
             ip_address=request.META.get('REMOTE_ADDR')
         )
 
         return Response({
-            "status": "dispatched",
-            "detail": "Clarification prompt dispatched to patient channel.",
+            "status": send_status,
+            "detail": send_detail,
             "request_id": booking.request_code,
             "prompt_code": prompt_code,
             "patient_notes": booking.patient_notes,

@@ -467,6 +467,33 @@ class TelegramService:
             chat_id = msg.get('chat', {}).get('id')
             from_user = msg.get('from', {})
             text = (msg.get('text') or '').strip()
+            message_id = msg.get('message_id')
+
+            # Wave 4 / Step 4.4 — ONE reply engine on every channel. A plain
+            # TEXT ("Reply 1", "cancel", ...) from a chat that belongs to a
+            # booking request routes through the SAME handle_patient_reply
+            # engine SMS/WhatsApp use: the chat id resolves the patient via
+            # the `telegram_chat_id:<id>` marker, the inbound InteractionLog
+            # row is the idempotency claim (the same primitive, the same key
+            # scheme), and the engine's answer is delivered back here.
+            # A chat with no booking history keeps the welcome menu — that is
+            # an inquiry, not a reply.
+            if chat_id and text and not text.startswith('/'):
+                from .patient_reply import handle_patient_reply
+                marker = BookingRequest.objects.filter(
+                    patient_notes__contains=f'telegram_chat_id:{chat_id}',
+                ).order_by('-created_at').first()
+                if marker:
+                    result = handle_patient_reply(
+                        phone=marker.patient_phone,
+                        text=text,
+                        channel='telegram',
+                        provider_message_id=f'tgmsg-{message_id}',
+                    )
+                    if result.get('reply_text'):
+                        cls.send_message(chat_id, result['reply_text'])
+                    result['chat_id'] = chat_id
+                    return result
 
             clinic_name = html.escape(clinic.clinic_name)
             services = list(Service.objects.filter(is_active=True).order_by('name')[:6])

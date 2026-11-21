@@ -4,6 +4,7 @@ from .views_auth import (
     StaffLoginView,
     StaffLogoutView,
     StaffMeView,
+    StaffRefreshView,
     PinUnlockView,
     AdminStaffListCreateView,
     AdminStaffDetailView,
@@ -111,6 +112,8 @@ urlpatterns = [
 
     # Task 3.1: Staff Authentication & Governance Endpoints
     path('auth/login/', StaffLoginView.as_view(), name='auth-login'),
+    # Wave 4 / Step 4.1: the missing half of the 30-day session.
+    path('auth/refresh/', StaffRefreshView.as_view(), name='auth-refresh'),
     path('auth/logout/', StaffLogoutView.as_view(), name='auth-logout'),
     path('auth/me/', StaffMeView.as_view(), name='auth-me'),
     path('auth/pin-unlock/', PinUnlockView.as_view(), name='auth-pin-unlock'),
