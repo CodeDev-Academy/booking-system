@@ -15,7 +15,7 @@ the runners themselves.
 | Test Suite / Category | Target Area | Tooling | Total Tests | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **Django application suite** | Models, availability, holds, disruption/leave, booking queue, live visits, auth & sessions, staff, settings, webhooks, analytics, exports, public intake, leave lifecycle, Telegram notices | Django Test Runner (`python manage.py test appointments`) | **491** | ✅ **491/491 OK** (~5 min) |
-| **Frontend contract harnesses** | Booking payloads, calendar truth, clinic clock (3-timezone matrix), leave lifecycle, no demo seeds, no ghost rows, public booking, session flow, staff truth, truthful screens, visits sync | Node (`frontend/tests/*.js`) | **155** | ✅ **155/155** (11 files) |
+| **Frontend contract harnesses** | Booking payloads, calendar truth, clinic clock (3-timezone matrix), leave lifecycle, no demo seeds, no ghost rows, public booking, queue tabs, session flow, staff truth, truthful screens, visits sync | Node (`frontend/tests/*.js`) | **160** | ✅ **160/160** (12 files) |
 | **n8n node harnesses** | Workflows 01–08: adapter, callback auth, disruption notifier, log nodes, format, reminders, reply handler, simulator ids, sweeper, voice guard | Node (`n8n/tests/*.js`) | **11 files** | ✅ all green |
 | **Frontend production build** | `vite build` (module graph, asset emit) | Vite | — | ✅ clean |
 | **Playwright E2E spec** | Full user journeys across queue / calendar / simulator / visits / staff / settings / auth | Playwright (`frontend/e2e/clinic-e2e.spec.js`) | 8 scenarios | ⚠️ spec exists and is runnable (`npm run test:e2e`), but it is **not** part of any automated run here — no CI, and it was last executed manually in live mode |
@@ -711,6 +711,14 @@ execution log). Production staging (Railway/Vercel) is not deployed yet.
   provider notices separate, and the response no longer carries raw chat ids. The success path
   (`sent` + idempotency) is pinned by the unit tests with a mocked Telegram call, because it needs
   the real token.
+- [x] `T-780`: **One request, one tab** (queue correction): a request whose newest delivery outcome is a
+  failure is `attention_open` on the backend, but the tab buckets did not exclude each other — so a
+  failed dispatch appeared in **New Requests** *and* Needs Attention, and "New" stopped meaning
+  "never dispatched". `new` and `rerequested` now exclude `attentionOpen`; a successful resend clears
+  the flag on the backend, so the request walks back to "New Requests" by itself. New harness
+  `test_queue_tabs.js`, 5 checks, red first.
+
+  Queue gates: 12 frontend harnesses **160/160**, `npm run build` clean.
 
 ---
 
