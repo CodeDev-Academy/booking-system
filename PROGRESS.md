@@ -2875,6 +2875,30 @@ real; the success path is already pinned by unit tests with a mocked send.
 Still open after this: the **voice leg** for disruptions (waits on VoiceBip) and
 the dead `markDoctorEmergencyLeave` shortcut.
 
+## Follow-Up Messages — typed, or silent (2026-11-21)
+
+**Owner rule B.** The recall pop-up gets a "Message for the patient" box that
+starts **empty**. If it stays empty, **nothing is sent** — the recall is saved
+as a private clinic note. Only typed words reach the patient.
+
+What changed:
+
+1. `FollowUpTask.patient_message` (empty by default) and `send_at` (default
+   09:00), migration `0010`. The sweep only sends once the due date **and**
+   time have passed, in clinic time — no more "just after midnight".
+2. The pop-up: message box (empty, 300 chars), send time, the clinical note
+   labelled private, the fake "feedback survey" tick box removed, and the chosen
+   date is now the date saved (the store used to guess +14 days).
+3. Copy is honest: the banner and the toast say "no message will be sent" when
+   the box is empty, and "message scheduled for <date> at <time>" when it is not.
+4. Telegram recalls send the typed words with a "Book Follow-Up Visit" button;
+   SMS/WhatsApp send the same words.
+
+Gates: 13 harnesses 171/171, build clean, Django 497/497 OK, live proof 12/12.
+
+Still open: delivery needs the Telegram token (or SMS/WhatsApp when connected);
+a "Recalls" list with cancel/mark-done is the natural next step.
+
 
 ## Next up - Phase 5 (partner handover)
 

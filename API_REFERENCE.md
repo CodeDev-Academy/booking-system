@@ -217,6 +217,37 @@ Allows the receptionist or automated webhook to advance appointment state.
 
 ---
 
+### `POST /api/v1/appointments/{appointment_id}/follow-up/`
+Schedules a doctor-directed recall after a visit. **Rule B (owner decision):
+the patient message starts empty, and an empty message sends NOTHING** — the
+recall is then a private clinic note only.
+
+```json
+{
+  "follow_up_date": "2026-12-05",
+  "send_at": "09:00",
+  "notes": "Private clinical note — never sent to the patient.",
+  "patient_message": "Please come back in two weeks and bring your X-ray."
+}
+```
+
+- `notes` is **private**: it is stored for the clinic and never quoted in any
+  outgoing message.
+- `patient_message` is the **only** text a patient receives. Max 300 characters;
+  omitted or empty means no message.
+- `send_at` is the clinic-clock time (default `09:00`). The hourly reminder sweep
+  (`POST /webhooks/reminder-sweep/`) only releases a recall once its date **and**
+  time have passed, and only once (`reminder_sent`).
+- Delivery mirrors the channels the patient was already reached on
+  (`sms`, `whatsapp`, `telegram`). The Telegram recall carries a
+  **"Book Follow-Up Visit"** button. A recall with no resolvable channel writes
+  no claim and is retried by a later sweep.
+
+`409`/`400` rules: the date cannot be in the past; a message over 300 characters
+is refused.
+
+---
+
 ## 4. Staff Authentication & Admin Governance
  
 ### `POST /api/v1/auth/login/`
