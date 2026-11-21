@@ -99,6 +99,15 @@ check('E2 the store sends the chosen kind with the plan',
   /kind:\s*get\(\)\.disruptionModal\.leaveKind/.test(storeSrc),
   'the backend needs to know which sentence to write');
 
+console.log('F. the banner reports the Telegram leg honestly');
+
+check('F1 the banner reads the Telegram sent count',
+  /telegram_sent_count/.test(storeSrc),
+  'Django sends this leg itself, so the number is real');
+check('F2 a failed Telegram send is shown, not hidden',
+  /telegram_failed_count/.test(storeSrc),
+  'no bot token must not look like a delivery');
+
 console.log('');
 if (failures) {
   console.log(`FAILED ${failures}/${checks} checks`);

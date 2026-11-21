@@ -1,5 +1,6 @@
 import datetime
 import hashlib
+import html
 from django.db import transaction
 from django.utils import timezone
 from appointments.models import (
@@ -13,7 +14,9 @@ from appointments.models import (
     InteractionLog,
 )
 from .availability import AvailabilityEngine
+from .channel_availability import resolve_telegram_chat_id
 from .hold_service import HoldService, SlotConflictException
+from .privacy import safe_external_body
 from .sweep_service import PROVIDER_BY_CHANNEL
 
 
@@ -573,7 +576,17 @@ class DisruptionService:
         prefix = f"{cls.DISRUPTION_CLAIM_PREFIX}{appointment.appointment_code}-"
         items = []
 
-        for channel in ('sms', 'whatsapp'):
+        for channel in ('sms', 'whatsapp', 'telegram'):
+            # Telegram is additive: only a booking that already carries a chat
+            # id can receive it. The SMS/WhatsApp legs still carry the news for
+            # everyone else.
+            chat_id = None
+            if channel == 'telegram':
+                booking = appointment.booking_request
+                chat_id = resolve_telegram_chat_id(booking) if booking else None
+                if not chat_id:
+                    continue
+
             claim_ref = cls._notice_claim_ref(appointment, channel, signature)
             if InteractionLog.objects.filter(external_ref=claim_ref).exists():
                 continue  # this exact placement was already announced
@@ -606,6 +619,8 @@ class DisruptionService:
                 'message': message,
                 'correction': delivered,
             }
+            if channel == 'telegram':
+                draft['telegram_chat_id'] = chat_id
             _, created = InteractionLog.objects.get_or_create(
                 external_ref=claim_ref,
                 defaults={
@@ -631,6 +646,60 @@ class DisruptionService:
             if created:
                 items.append(draft)
         return items
+
+    @classmethod
+    def deliver_telegram_notices(cls, items, performed_by='receptionist'):
+        """
+        Send the Telegram notices the plan just queued, and record the truth.
+
+        Leave lifecycle / Step 4 — Telegram is the one channel that works
+        without a partner credential, so a moved patient can finally be told.
+        Django sends it directly (the bot token lives in Django, like the slot
+        card). Each row was created `queued` by the claim-ref contract; here it
+        becomes `sent` or `failed`.
+
+        A `simulated` answer means no bot token is configured. That is a FAILED
+        row with an honest reason — never a quiet success.
+        """
+        from .telegram_service import TelegramService
+
+        sent = 0
+        failed = 0
+        for item in items or []:
+            chat_id = item.get('telegram_chat_id')
+            claim_ref = item.get('claim_ref')
+            if not chat_id or not claim_ref:
+                continue
+
+            text = html.escape(item.get('message') or '')
+            result = TelegramService.send_message(chat_id, text)
+            delivered = bool(result.get('ok')) and not result.get('simulated')
+
+            row = InteractionLog.objects.filter(external_ref=claim_ref).first()
+
+            if delivered:
+                sent += 1
+                if row:
+                    row.status = 'sent'
+                    row.error_detail = ''
+                    row.save(update_fields=['status', 'error_detail', 'updated_at'])
+                continue
+
+            failed += 1
+            if result.get('simulated'):
+                reason = 'Telegram is not configured (no bot token).'
+            else:
+                reason = str(
+                    result.get('error')
+                    or result.get('status_code')
+                    or 'Telegram send failed'
+                )
+            if row:
+                row.status = 'failed'
+                row.error_detail = safe_external_body(reason)[:500]
+                row.save(update_fields=['status', 'error_detail', 'updated_at'])
+
+        return {'sent': sent, 'failed': failed}
 
     @classmethod
     @transaction.atomic
@@ -705,6 +774,8 @@ class DisruptionService:
         next_day_count = 0
         unplaced_count = 0
         messages_queued_count = 0
+        telegram_queued_count = 0
+        telegram_items = []
 
         for appt in impacted_appts:
             old_doctor_name = appt.doctor.name
@@ -786,7 +857,11 @@ class DisruptionService:
             unplaced_text = None
             if placement:
                 messages = cls._queue_notice_messages(appt, old_doctor_name, clinic, kind=kind)
-                messages_queued_count += len(messages)
+                provider_messages = [m for m in messages if m['channel'] != 'telegram']
+                telegram_messages = [m for m in messages if m['channel'] == 'telegram']
+                messages_queued_count += len(provider_messages)
+                telegram_queued_count += len(telegram_messages)
+                telegram_items.extend(telegram_messages)
                 if placement == 'next_day_or_later':
                     next_day_count += 1
                 else:
@@ -933,6 +1008,10 @@ class DisruptionService:
             'next_day_count': next_day_count,
             'unplaced_count': unplaced_count,
             'messages_queued_count': messages_queued_count,
+            'telegram_queued_count': telegram_queued_count,
+            # Django sends this leg itself, after the transaction commits; the
+            # view pops it and fills in the real sent/failed counts.
+            'telegram_items': telegram_items,
             'distribution': {
                 'colleague_ids': sorted(allowed_ids) if allowed_ids is not None else None,
                 'colleague_caps': caps,

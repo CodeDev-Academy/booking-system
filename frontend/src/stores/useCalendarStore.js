@@ -1606,6 +1606,19 @@ export const useCalendarStore = create(
             ? `${report.messages_queued_count} notices queued — delivery follows via the messaging workflows.`
             : 'No notices queued.';
 
+        // Leave lifecycle / Step 4 — Telegram is sent by Django itself, so the
+        // banner reports it exactly: sent, failed, or not attempted.
+        const telegramParts = [];
+        if (report.telegram_sent_count) {
+          telegramParts.push(`${report.telegram_sent_count} Telegram sent`);
+        }
+        if (report.telegram_failed_count) {
+          telegramParts.push(`${report.telegram_failed_count} Telegram failed`);
+        }
+        const telegram = telegramParts.length
+          ? ` Telegram: ${telegramParts.join(', ')}.`
+          : '';
+
         return {
           blocks,
           disruptionModal: {
@@ -1619,7 +1632,7 @@ export const useCalendarStore = create(
             tone: unplacedResults.length === 0 ? 'success' : 'amber',
             text: `${report.doctor_name || doctorName}'s leave auto-resolved: ${placementSummary}. ${
               unplacedResults.length ? `${unplacedResults.length} need manual transfer. ` : ''
-            }${delivery}`,
+            }${delivery}${telegram}`,
           },
         };
       });

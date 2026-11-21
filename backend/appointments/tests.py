@@ -7748,6 +7748,169 @@ class DisruptionNoticeKindTests(APITestCase):
         self.assertIn('sudden emergency', messages[0]['message'].lower())
 
 
+class DisruptionTelegramNoticeTests(APITestCase):
+    """
+    Leave lifecycle / Step 4 — the disruption notice reaches Telegram.
+
+    SMS and WhatsApp are the only notice channels today, so with both providers
+    switched off a moved patient is never told. Telegram works, and the
+    appointment may already carry a chat id (web handoff or bot intake).
+
+    Django sends this leg itself (like the slot card), queues the row with the
+    same claim-ref discipline as SMS/WhatsApp, and logs the real outcome. A
+    simulated send (no bot token) is a FAILED row, never a quiet success.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.staff = StaffUser.objects.create(
+            full_name='Telegram Desk', email='tg.desk@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.staff.set_password('TgPass123!')
+        self.staff.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'tg.desk@clinic.com', 'password': 'TgPass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+        self.doctor = Doctor.objects.create(
+            name='Dr. Tg Away', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6, 7],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+            max_daily_appointments=20,
+        )
+        self.colleague = Doctor.objects.create(
+            name='Dr. Tg Covers', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6, 7],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+            max_daily_appointments=20,
+        )
+        self.service = Service.objects.create(
+            name='Telegram Service', duration_minutes=30, buffer_minutes=0,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.service)
+        DoctorService.objects.create(doctor=self.colleague, service=self.service)
+
+        self.booking = BookingRequest.objects.create(
+            patient_name='Tg Ada',
+            patient_phone='+2348030001300',
+            service=self.service,
+            status='awaiting_review',
+            channel='telegram',
+            patient_notes='Booked on the website. telegram_chat_id:555001',
+        )
+
+        today = timezone.localdate()
+        start = timezone.make_aware(
+            datetime.datetime.combine(today, datetime.time(10, 0))
+        )
+        self.appointment = Appointment.objects.create(
+            appointment_code='AP-TG1', patient_name='Tg Ada',
+            patient_phone='+2348030001300', doctor=self.doctor,
+            service=self.service, booking_request=self.booking,
+            start_datetime=start,
+            end_datetime=start + datetime.timedelta(minutes=30),
+            status='confirmed',
+        )
+        self.start = timezone.make_aware(
+            datetime.datetime.combine(today, datetime.time(0, 0))
+        )
+        self.end = timezone.make_aware(
+            datetime.datetime.combine(today, datetime.time(23, 59))
+        )
+
+    def _url(self):
+        return f'/api/v1/disruptions/{self.doctor.id}/auto-resolve/'
+
+    def _plan(self):
+        return self.client.post(self._url(), {
+            'reason': 'Emergency Leave',
+            'leave_start': self.start.isoformat(),
+            'leave_end': self.end.isoformat(),
+        }, format='json')
+
+    def test_a_telegram_patient_gets_a_telegram_notice(self):
+        with patch.object(
+            TelegramService, 'send_message', return_value={'ok': True}
+        ) as send:
+            res = self._plan()
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(res.data['telegram_queued_count'], 1, res.data)
+        self.assertEqual(res.data['telegram_sent_count'], 1, res.data)
+        self.assertEqual(send.call_count, 1)
+
+        row = InteractionLog.objects.get(
+            channel='telegram',
+            external_ref__startswith='disrupt-AP-TG1-',
+        )
+        self.assertEqual(row.status, 'sent')
+        self.assertEqual(row.provider, 'telegram')
+
+        chat_id, text = send.call_args[0][0], send.call_args[0][1]
+        self.assertEqual(str(chat_id), '555001')
+        self.assertIn('Dr. Tg Covers', text)
+        self.assertIn('AP-TG1', text)
+
+    def test_a_patient_without_a_chat_id_gets_no_telegram_row(self):
+        self.booking.patient_notes = 'No Telegram here.'
+        self.booking.save(update_fields=['patient_notes'])
+
+        with patch.object(TelegramService, 'send_message', return_value={'ok': True}) as send:
+            res = self._plan()
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(res.data['telegram_queued_count'], 0, res.data)
+        self.assertFalse(InteractionLog.objects.filter(channel='telegram').exists())
+        self.assertFalse(send.called)
+        # SMS and WhatsApp are still queued as before.
+        self.assertEqual(res.data['messages_queued_count'], 2, res.data)
+
+    def test_no_bot_token_is_a_failed_row_not_a_lie(self):
+        # call_api reports `simulated` when no token is configured.
+        with patch.object(
+            TelegramService, 'send_message',
+            return_value={'ok': True, 'simulated': True},
+        ):
+            res = self._plan()
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(res.data['telegram_failed_count'], 1, res.data)
+        row = InteractionLog.objects.get(
+            channel='telegram', external_ref__startswith='disrupt-AP-TG1-',
+        )
+        self.assertEqual(row.status, 'failed')
+        self.assertIn('not configured', (row.error_detail or '').lower())
+
+    def test_the_same_placement_is_never_sent_twice(self):
+        first = DisruptionService._queue_notice_messages(
+            self.appointment, 'Dr. Tg Away', self.clinic,
+        )
+        second = DisruptionService._queue_notice_messages(
+            self.appointment, 'Dr. Tg Away', self.clinic,
+        )
+
+        self.assertEqual(len([m for m in first if m['channel'] == 'telegram']), 1)
+        self.assertEqual([m for m in second if m['channel'] == 'telegram'], [])
+
+    def test_n8n_never_receives_the_telegram_leg(self):
+        with patch.dict(os.environ, {
+            'N8N_DISRUPTION_WEBHOOK_URL': 'http://n8n.test/webhook/disruption-alerts',
+        }), patch.object(TelegramService, 'send_message', return_value={'ok': True}), \
+                patch('appointments.views_appointment.fire_and_forget_webhook') as push, \
+                self.captureOnCommitCallbacks(execute=True):
+            res = self._plan()
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertTrue(push.called)
+        payload = push.call_args[0][1]
+        channels = {item['channel'] for item in payload['items']}
+        self.assertNotIn('telegram', channels, channels)
+        self.assertEqual(channels, {'sms', 'whatsapp'}, channels)
+
+
 class SeedClinicHygieneTests(TestCase):
     """
     Wave 1 / Step 1.5 — the seed ships clean.

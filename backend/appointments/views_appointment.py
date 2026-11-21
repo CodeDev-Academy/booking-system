@@ -393,6 +393,10 @@ class DisruptionPreviewView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # A preview never sends anything: the Telegram items are a dry-run
+        # artefact (their rows were rolled back), so they do not belong in the
+        # response. The counts still describe what an approval would do.
+        report.pop('telegram_items', None)
         report['delivery_pushed'] = False
         return Response(report, status=status.HTTP_200_OK)
 
@@ -472,7 +476,25 @@ class DisruptionAutoResolveView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        items = [message for result in report['results'] for message in result['messages']]
+        # Leave lifecycle / Step 4 — Telegram is sent by Django itself, because
+        # the bot token lives here (same pattern as the slot card). It is sent
+        # synchronously so the response can report what actually happened; the
+        # provider legs stay fire-and-forget through n8n.
+        telegram_items = report.pop('telegram_items', [])
+        items = [
+            message
+            for result in report['results']
+            for message in result['messages']
+            if message.get('channel') != 'telegram'
+        ]
+
+        telegram_delivery = DisruptionService.deliver_telegram_notices(
+            telegram_items, performed_by=request.user.email,
+        )
+        report['telegram_queued_count'] = len(telegram_items)
+        report['telegram_sent_count'] = telegram_delivery['sent']
+        report['telegram_failed_count'] = telegram_delivery['failed']
+
         report['delivery_pushed'] = False
 
         def _post_commit_push():
