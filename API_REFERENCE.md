@@ -356,7 +356,12 @@ writes nothing.
 
 Django owns every rule and every sentence here: n8n workflow `08` only delivers.
 Notices are queued for `sms` and `whatsapp` (one row per patient per channel,
-`claim_ref`-guarded so a placement is announced once).
+`claim_ref`-guarded so a placement is announced once). A **third** notice is
+queued for `telegram` when the patient's booking request carries a
+`telegram_chat_id` marker: Django sends that leg itself (the bot token lives in
+Django, like the slot card) and records `sent`/`failed` on the row. With no bot
+token the row is `failed` with *"Telegram is not configured (no bot token)."* —
+never a silent success. n8n receives only the two provider legs.
 
 ### `POST /api/v1/disruptions/{doctor_id}/preview/`
 Dry run of the leave plan: the real resolver runs inside a rolled-back
@@ -383,6 +388,11 @@ zero-double-booking lock, service qualification and sterilization buffers.
 `kind` is `emergency` (default) or `planned`, and it decides the patient's
 sentence: *"due to a sudden emergency"* vs *"because of planned leave"*.
 Patients a plan cannot place are reported as **stranded** with Django's reason.
+
+The response adds the real Telegram outcome:
+`telegram_queued_count`, `telegram_sent_count`, `telegram_failed_count`
+(Django sends this leg synchronously, so the numbers are measured, not hoped
+for). `messages_queued_count` stays the sms/whatsapp count.
 
 ### `POST /api/v1/clinic/doctors/{id}/end-leave/`
 **"The doctor is back today."** Removes TODAY only from every leave covering it:

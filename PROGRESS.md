@@ -2850,6 +2850,31 @@ Still open in this area: the **Telegram notice leg** (the blocked P0 — waits o
 the bot token and a public URL), the **voice leg** for disruptions (waits on
 VoiceBip), and the dead `markDoctorEmergencyLeave` shortcut.
 
+### Telegram notice leg (same day)
+
+The one gap that mattered: a moved patient was never told, because notices were
+SMS + WhatsApp only and both providers are off. Telegram is live, so the plan
+now queues a third notice whenever the patient's request carries a
+`telegram_chat_id`:
+
+- same claim-ref discipline (one per placement, "Correction:" when a delivered
+  placement changes, stale undelivered rows expired);
+- Django sends it itself (the bot token lives here, like the slot card) and
+  records `sent`/`failed` on the InteractionLog row;
+- a `simulated` answer with **no token** is a FAILED row whose reason reads
+  "Telegram is not configured (no bot token)" — the screen can never imply a
+  delivery that did not happen;
+- n8n still receives only the sms/whatsapp legs, so workflow 08 needs no change;
+- the banner reports the real counts (`sent` / `failed`).
+
+Live on this machine (no token): 17/17 checks, the plan moves the patient and
+the Telegram row is recorded as failed with the readable reason. Add
+`TELEGRAM_BOT_TOKEN` (and a public webhook URL) and the same code sends for
+real; the success path is already pinned by unit tests with a mocked send.
+
+Still open after this: the **voice leg** for disruptions (waits on VoiceBip) and
+the dead `markDoctorEmergencyLeave` shortcut.
+
 
 ## Next up - Phase 5 (partner handover)
 

@@ -279,6 +279,8 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
 - **Template File**: `n8n/workflows/08_disruption_notifier.json`
 - **Purpose**: Delivers the notices Django queues when a receptionist uses the one-click emergency-leave resolver on the Schedule Grid (doctor absent -> every impacted patient moved in priority order: same-time colleague -> earliest same-day slot -> next day). **Django decides everything** - who moves, to which doctor, and the exact words; `08` only delivers them over WhatsApp + SMS. Same graph shape as `05` (verify -> parse -> adapter -> route -> send -> log), with its own webhook and its own approved template.
 
+  **Telegram is not in this workflow.** When the patient's booking request carries a `telegram_chat_id` marker, Django queues a third notice and sends it itself (the bot token lives in Django, like the slot card), recording `sent`/`failed` on the InteractionLog row. `08` therefore receives only the sms/whatsapp items — one provider adapter, two provider legs, no third branch to maintain.
+
 #### Node Pipeline & Data Flow:
 ```
 [Webhook: Disruption Alerts Webhook from Django]  POST /webhook/disruption-alerts
