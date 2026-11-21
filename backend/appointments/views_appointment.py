@@ -413,6 +413,15 @@ class DisruptionAutoResolveView(APIView):
     def post(self, request, doctor_id):
         reason = request.data.get('reason') or 'Emergency Leave'
 
+        # Leave lifecycle / Step 3 — why the doctor is away decides the
+        # patient's sentence: an annual leave is not "a sudden emergency".
+        kind = str(request.data.get('kind') or 'emergency').strip().lower()
+        if kind not in ('emergency', 'planned'):
+            return Response(
+                {'error': 'INVALID_KIND', 'detail': 'kind must be "emergency" or "planned".'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         def parse_dt(value, field):
             if not value:
                 return None
@@ -450,6 +459,7 @@ class DisruptionAutoResolveView(APIView):
                 performed_by=request.user.email,
                 colleague_ids=colleague_ids,
                 colleague_caps=colleague_caps,
+                kind=kind,
             )
         except Doctor.DoesNotExist:
             return Response(

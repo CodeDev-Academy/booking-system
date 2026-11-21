@@ -310,14 +310,23 @@ class DisruptionService:
     LAST_PLAN_WINDOW = datetime.timedelta(hours=24)
 
     @classmethod
-    def disruption_notice_message(cls, appointment, old_doctor_name, clinic):
+    def disruption_notice_message(cls, appointment, old_doctor_name, clinic, kind='emergency'):
         """SMS-safe emergency-move copy. States the ACTUAL new date and time
-        (never "tomorrow"), both doctors, and the reference code."""
+        (never "tomorrow"), both doctors, and the reference code.
+
+        Leave lifecycle / Step 3: `kind='planned'` says "planned leave" — an
+        annual leave recorded weeks ahead is not "a sudden emergency".
+        """
         local_start = timezone.localtime(appointment.start_datetime)
         date_str = local_start.strftime('%a %d %b')
         time_str = local_start.strftime('%I:%M %p').lstrip('0')
+        cause = (
+            'because of planned leave'
+            if kind == 'planned'
+            else 'due to a sudden emergency'
+        )
         return (
-            f"Hello {appointment.patient_name}, due to a sudden emergency, your "
+            f"Hello {appointment.patient_name}, {cause}, your "
             f"{appointment.service.name} appointment with {old_doctor_name} has been moved. "
             f"You are now booked with {appointment.doctor.name} on {date_str} at {time_str} "
             f"at {clinic.clinic_name}. We apologise for the change. "
@@ -537,7 +546,7 @@ class DisruptionService:
         return old_doctor_name
 
     @classmethod
-    def _queue_notice_messages(cls, appointment, old_doctor_name, clinic):
+    def _queue_notice_messages(cls, appointment, old_doctor_name, clinic, kind='emergency'):
         """
         Queue the WhatsApp + SMS notice for the patient's CURRENT placement.
 
@@ -555,7 +564,9 @@ class DisruptionService:
         created; an empty list means there is nothing new to send.
         """
         signature = cls._placement_signature(appointment)
-        words = cls.disruption_notice_message(appointment, old_doctor_name, clinic)
+        words = cls.disruption_notice_message(
+            appointment, old_doctor_name, clinic, kind=kind
+        )
         correction_words = cls.disruption_correction_message(
             appointment, old_doctor_name, clinic
         )
@@ -609,7 +620,11 @@ class DisruptionService:
                     'summary': (
                         'Disruption correction notice queued for delivery'
                         if delivered else
-                        'Emergency disruption reassignment notice queued for delivery'
+                        (
+                            'Planned leave reassignment notice queued for delivery'
+                            if kind == 'planned' else
+                            'Emergency disruption reassignment notice queued for delivery'
+                        )
                     ),
                 },
             )
@@ -622,7 +637,7 @@ class DisruptionService:
     def auto_resolve_disruption(cls, doctor_id, leave_start_dt=None, leave_end_dt=None,
                                 reason="Emergency Leave", performed_by="receptionist",
                                 max_lookahead_days=3, colleague_ids=None,
-                                colleague_caps=None):
+                                colleague_caps=None, kind='emergency'):
         """
         One-click emergency-leave resolution: marks the doctor on leave, then
         for EVERY impacted appointment tries, in order — a qualified colleague
@@ -770,7 +785,7 @@ class DisruptionService:
             unplaced_reason = None
             unplaced_text = None
             if placement:
-                messages = cls._queue_notice_messages(appt, old_doctor_name, clinic)
+                messages = cls._queue_notice_messages(appt, old_doctor_name, clinic, kind=kind)
                 messages_queued_count += len(messages)
                 if placement == 'next_day_or_later':
                     next_day_count += 1

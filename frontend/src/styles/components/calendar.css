@@ -2633,3 +2633,143 @@
     max-width: 100%;
   }
 }
+
+/* --------------------------------------------------------------------------
+   Leave lifecycle / Step 2 — the planned-leave form.
+   Reuses the calendar modal shell; these rules only dress the body.
+   -------------------------------------------------------------------------- */
+
+.leave-planner-surface {
+  max-width: 620px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.leave-planner-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.leave-planner-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--surface-2, #f6f3ee);
+  border: 1px solid var(--line, #dfd9cf);
+  color: var(--text-2, #334155);
+  font-size: 12px;
+}
+
+.leave-planner-status.is-away {
+  background: rgba(225, 29, 72, 0.06);
+  border-color: rgba(225, 29, 72, 0.22);
+}
+
+.leave-planner-endtoday {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 6px 10px;
+}
+
+.leave-planner-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.leave-period {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line, #dfd9cf);
+  background: var(--surface-1, #ffffff);
+  min-width: 0;
+}
+
+.leave-period-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.leave-period-type {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text, #0f172a);
+}
+
+.leave-period-dates {
+  font-size: 11px;
+  color: var(--text-2, #334155);
+}
+
+.leave-period-reason {
+  font-size: 11px;
+  color: var(--text-3, #64748b);
+  overflow-wrap: anywhere;
+}
+
+.leave-planner-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--line-strong, #c8c1b4);
+  background: var(--surface-2, #f6f3ee);
+}
+
+.leave-planner-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.leave-planner-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-3, #64748b);
+  min-width: 0;
+}
+
+.leave-planner-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: rgba(225, 29, 72, 0.08);
+  border: 1px solid rgba(225, 29, 72, 0.25);
+  color: var(--rose-text, #b91c1c);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.leave-planner-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-3, #64748b);
+}
+
+@media (min-width: 640px) {
+  .leave-planner-grid {
+    grid-template-columns: 1.1fr 1fr 1fr;
+  }
+}

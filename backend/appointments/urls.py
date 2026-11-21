@@ -49,6 +49,9 @@ from .views_clinic import (
     ClinicSettingsImportView,
     StaffDirectoryView,
     DoctorDutyStatusView,
+    DoctorEndLeaveView,
+    DoctorLeaveListCreateView,
+    DoctorLeaveDetailView,
     CalendarScheduleView,
     ClinicServiceListCreateView,
     ClinicServiceDetailView,
@@ -179,6 +182,12 @@ urlpatterns = [
     path('clinic/services/<str:id>/', ClinicServiceDetailView.as_view(), name='clinic-services-detail'),
     path('clinic/staff-directory/', StaffDirectoryView.as_view(), name='clinic-staff-directory'),
     path('clinic/doctors/<str:id>/duty-status/', DoctorDutyStatusView.as_view(), name='clinic-doctor-duty-status'),
+    # Leave lifecycle / Step 1: "the doctor is back today" — removes today from
+    # every leave that covers it, and returns the real duty flag.
+    path('clinic/doctors/<str:id>/end-leave/', DoctorEndLeaveView.as_view(), name='clinic-doctor-end-leave'),
+    # Leave lifecycle / Step 2: plan, list, edit and delete leave periods.
+    path('clinic/doctors/<str:id>/leaves/', DoctorLeaveListCreateView.as_view(), name='clinic-doctor-leaves'),
+    path('clinic/doctors/<str:id>/leaves/<uuid:leave_id>/', DoctorLeaveDetailView.as_view(), name='clinic-doctor-leave-detail'),
     path('doctors/workload/', DoctorWorkloadView.as_view(), name='doctors-workload'),
     path('clinic/doctors/workload/', DoctorWorkloadView.as_view(), name='clinic-doctors-workload'),
     path('calendar/schedule/', CalendarScheduleView.as_view(), name='calendar-schedule'),

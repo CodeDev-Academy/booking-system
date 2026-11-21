@@ -7321,6 +7321,433 @@ class TelegramLinkHandoffTests(APITestCase):
         self.assertTrue(markup and markup.get('inline_keyboard'))
 
 
+class EndLeaveTests(APITestCase):
+    """
+    Leave lifecycle / Step 1 — "the doctor is back" must actually work.
+
+    Before this, the only way back was the 1-click duty switch, which
+    deliberately removes only the row IT created. After a plan, the dated
+    emergency row survived, `sync_leave_flag` re-derived "on leave", and the
+    doctor stayed unbookable while the screen said on duty (verified).
+
+    `POST /clinic/doctors/{id}/end-leave/` removes ONLY today from every leave
+    that covers it, never more: a past day stays history, and a future leave
+    keeps its remaining days.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.staff = StaffUser.objects.create(
+            full_name='Leave Desk', email='leave.desk@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.staff.set_password('LeavePass123!')
+        self.staff.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'leave.desk@clinic.com', 'password': 'LeavePass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+        self.doctor = Doctor.objects.create(
+            name='Dr. End Leave', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6, 7],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+            max_daily_appointments=20,
+        )
+        self.colleague = Doctor.objects.create(
+            name='Dr. Covers', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6, 7],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+            max_daily_appointments=20,
+        )
+        self.service = Service.objects.create(
+            name='End Leave Service', category='General',
+            duration_minutes=30, buffer_minutes=0,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.service)
+        DoctorService.objects.create(doctor=self.colleague, service=self.service)
+
+    def _url(self):
+        return f'/api/v1/clinic/doctors/{self.doctor.id}/end-leave/'
+
+    def _day_window(self, day):
+        return (
+            timezone.make_aware(datetime.datetime.combine(day, datetime.time(0, 0))),
+            timezone.make_aware(datetime.datetime.combine(day, datetime.time(23, 59))),
+        )
+
+    def _plan(self, start, end):
+        return DisruptionService.auto_resolve_disruption(
+            self.doctor.id, leave_start_dt=start, leave_end_dt=end,
+            reason='Emergency Leave', performed_by='receptionist',
+        )
+
+    def test_ending_todays_plan_leave_restores_duty(self):
+        today = timezone.localdate()
+        self._plan(*self._day_window(today))
+
+        res = self.client.post(self._url(), {}, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertFalse(res.data['doctor']['is_on_leave'], res.data['doctor'])
+        self.doctor.refresh_from_db()
+        self.assertFalse(self.doctor.is_on_leave)
+        self.assertFalse(self.doctor.is_on_leave_on(today))
+        self.assertEqual(len(res.data['ended']), 1)
+        # The row started today and ended today, so nothing dated is left.
+        self.assertFalse(DoctorLeave.objects.filter(doctor=self.doctor).exists())
+
+    def test_a_leave_that_started_earlier_keeps_its_past_days(self):
+        today = timezone.localdate()
+        leave = DoctorLeave.objects.create(
+            doctor=self.doctor,
+            start_date=today - datetime.timedelta(days=3),
+            end_date=today + datetime.timedelta(days=2),
+            leave_type='sick', reason='Flu',
+        )
+
+        res = self.client.post(self._url(), {}, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        leave.refresh_from_db()
+        self.assertEqual(leave.start_date, today - datetime.timedelta(days=3))
+        self.assertEqual(leave.end_date, today - datetime.timedelta(days=1))
+        self.doctor.refresh_from_db()
+        self.assertFalse(self.doctor.is_on_leave_on(today))
+        # The future part of the leave is gone too — it only had today left.
+        self.assertEqual(res.data['ended'][0]['action'], 'trimmed_end')
+
+    def test_a_leave_starting_today_keeps_its_remaining_days(self):
+        today = timezone.localdate()
+        leave = DoctorLeave.objects.create(
+            doctor=self.doctor,
+            start_date=today,
+            end_date=today + datetime.timedelta(days=5),
+            leave_type='annual', reason='Annual leave',
+        )
+
+        res = self.client.post(self._url(), {}, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        leave.refresh_from_db()
+        self.assertFalse(leave.covers(today), 'today must be free')
+        self.assertTrue(leave.covers(today + datetime.timedelta(days=1)))
+        self.assertEqual(leave.start_date, today + datetime.timedelta(days=1))
+        self.assertEqual(res.data['ended'][0]['action'], 'trimmed_start')
+
+    def test_moved_patients_stay_where_they_were_told(self):
+        today = timezone.localdate()
+        start = timezone.make_aware(
+            datetime.datetime.combine(today, datetime.time(10, 0))
+        )
+        appointment = Appointment.objects.create(
+            appointment_code='AP-END1', patient_name='End Leave Ada',
+            patient_phone='+2348030001700', doctor=self.doctor,
+            service=self.service, start_datetime=start,
+            end_datetime=start + datetime.timedelta(minutes=30),
+            status='confirmed',
+        )
+
+        report = self._plan(*self._day_window(today))
+        outcome = next(
+            r for r in report['results'] if r['appointment_code'] == 'AP-END1'
+        )
+        self.assertEqual(outcome['outcome'], 'reassigned', outcome)
+
+        res = self.client.post(self._url(), {}, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        appointment.refresh_from_db()
+        self.assertEqual(appointment.doctor_id, self.colleague.id)
+        self.doctor.refresh_from_db()
+        self.assertFalse(self.doctor.is_on_leave_on(today))
+
+    def test_nothing_to_end_is_idempotent(self):
+        res = self.client.post(self._url(), {}, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(res.data['ended'], [])
+        self.assertFalse(res.data['doctor']['is_on_leave'])
+
+    def test_the_off_duty_switch_is_cleared_too(self):
+        self.doctor.is_on_leave = True
+        self.doctor.save(update_fields=['is_on_leave'])
+
+        res = self.client.post(self._url(), {}, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.doctor.refresh_from_db()
+        self.assertFalse(self.doctor.is_on_leave)
+
+    def test_it_requires_a_staff_session(self):
+        from rest_framework.test import APIClient
+
+        # A fresh client: the login above also set an HttpOnly session cookie,
+        # which this client must not have.
+        res = APIClient().post(self._url(), {}, format='json')
+
+        self.assertIn(res.status_code, (401, 403))
+
+
+class DoctorLeaveCrudTests(APITestCase):
+    """
+    Leave lifecycle / Step 2 — leave can be planned, listed, edited and
+    deleted without pretending it is an emergency plan.
+
+    The one rule that keeps the disruption safety net intact: a plain leave
+    record is only for windows with no bookings. If patients are already
+    booked inside the window, the answer is the existing plan (which moves
+    them, tells them, and can be undone) — not a silent leave that leaves
+    them stranded.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.staff = StaffUser.objects.create(
+            full_name='Planner', email='planner@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.staff.set_password('PlannerPass123!')
+        self.staff.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'planner@clinic.com', 'password': 'PlannerPass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+        self.doctor = Doctor.objects.create(
+            name='Dr. Plan Leave', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6, 7],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+        )
+        self.service = Service.objects.create(
+            name='Plan Leave Service', duration_minutes=30, buffer_minutes=0,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.service)
+
+        self.start = timezone.localdate() + datetime.timedelta(days=20)
+        self.end = self.start + datetime.timedelta(days=4)
+
+    def _list_url(self):
+        return f'/api/v1/clinic/doctors/{self.doctor.id}/leaves/'
+
+    def _detail_url(self, leave_id):
+        return f'/api/v1/clinic/doctors/{self.doctor.id}/leaves/{leave_id}/'
+
+    def _payload(self, **overrides):
+        body = {
+            'start_date': self.start.isoformat(),
+            'end_date': self.end.isoformat(),
+            'leave_type': 'annual',
+            'reason': 'Annual leave',
+        }
+        body.update(overrides)
+        return body
+
+    def test_a_quiet_window_can_be_planned(self):
+        res = self.client.post(self._list_url(), self._payload(), format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        leave = DoctorLeave.objects.get(id=res.data['id'])
+        self.assertEqual(leave.start_date, self.start)
+        self.assertEqual(leave.leave_type, 'annual')
+        # A future leave must not mark the doctor off duty today.
+        self.doctor.refresh_from_db()
+        self.assertFalse(self.doctor.is_on_leave)
+
+    def test_a_window_with_bookings_is_refused_and_points_at_the_plan(self):
+        booked_day = self.start + datetime.timedelta(days=1)
+        start = timezone.make_aware(
+            datetime.datetime.combine(booked_day, datetime.time(10, 0))
+        )
+        Appointment.objects.create(
+            appointment_code='AP-PLAN1', patient_name='Plan Ada',
+            patient_phone='+2348030001600', doctor=self.doctor,
+            service=self.service, start_datetime=start,
+            end_datetime=start + datetime.timedelta(minutes=30),
+            status='confirmed',
+        )
+
+        res = self.client.post(self._list_url(), self._payload(), format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT, res.data)
+        self.assertEqual(res.data['error'], 'LEAVE_OVERLAPS_BOOKINGS')
+        self.assertEqual(res.data['appointment_count'], 1)
+        self.assertIn('plan', str(res.data['detail']).lower())
+        self.assertFalse(DoctorLeave.objects.filter(doctor=self.doctor).exists())
+
+    def test_an_overlapping_leave_is_refused_by_name(self):
+        existing = DoctorLeave.objects.create(
+            doctor=self.doctor,
+            start_date=self.start,
+            end_date=self.end,
+            leave_type='training', reason='Conference',
+        )
+
+        res = self.client.post(self._list_url(), self._payload(), format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT, res.data)
+        self.assertEqual(res.data['error'], 'LEAVE_OVERLAPS_EXISTING')
+        self.assertEqual(res.data['existing']['id'], str(existing.id))
+        self.assertEqual(DoctorLeave.objects.filter(doctor=self.doctor).count(), 1)
+
+    def test_end_before_start_is_refused(self):
+        res = self.client.post(
+            self._list_url(),
+            self._payload(end_date=(self.start - datetime.timedelta(days=2)).isoformat()),
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
+
+    def test_the_list_reports_periods_and_today(self):
+        DoctorLeave.objects.create(
+            doctor=self.doctor, start_date=self.start, end_date=self.end,
+            leave_type='annual', reason='Annual leave',
+        )
+
+        res = self.client.get(self._list_url())
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(len(res.data['leaves']), 1)
+        self.assertEqual(res.data['leaves'][0]['leave_type'], 'annual')
+        self.assertFalse(res.data['leaves'][0]['covers_today'])
+
+    def test_deleting_a_leave_restores_duty_today(self):
+        today = timezone.localdate()
+        leave = DoctorLeave.objects.create(
+            doctor=self.doctor, start_date=today, end_date=today,
+            leave_type='sick', reason='Migraine',
+        )
+        self.doctor.is_on_leave = True
+        self.doctor.save(update_fields=['is_on_leave'])
+
+        res = self.client.delete(self._detail_url(leave.id))
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertFalse(DoctorLeave.objects.filter(id=leave.id).exists())
+        self.doctor.refresh_from_db()
+        self.assertFalse(self.doctor.is_on_leave)
+
+    def test_editing_may_shorten_but_not_cover_a_booking(self):
+        leave = DoctorLeave.objects.create(
+            doctor=self.doctor, start_date=self.start,
+            end_date=self.start + datetime.timedelta(days=30),
+            leave_type='annual', reason='Annual leave',
+        )
+        booked_day = self.start + datetime.timedelta(days=10)
+        start = timezone.make_aware(
+            datetime.datetime.combine(booked_day, datetime.time(11, 0))
+        )
+        Appointment.objects.create(
+            appointment_code='AP-PLAN2', patient_name='Edit Ada',
+            patient_phone='+2348030001601', doctor=self.doctor,
+            service=self.service, start_datetime=start,
+            end_datetime=start + datetime.timedelta(minutes=30),
+            status='confirmed',
+        )
+
+        # Shortening away from the booking is fine.
+        res = self.client.patch(
+            self._detail_url(leave.id),
+            {'end_date': (booked_day - datetime.timedelta(days=1)).isoformat()},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        leave.refresh_from_db()
+        self.assertEqual(leave.end_date, booked_day - datetime.timedelta(days=1))
+
+        # Extending back over it is refused.
+        res = self.client.patch(
+            self._detail_url(leave.id),
+            {'end_date': (booked_day + datetime.timedelta(days=2)).isoformat()},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT, res.data)
+        self.assertEqual(res.data['error'], 'LEAVE_OVERLAPS_BOOKINGS')
+
+    def test_it_requires_a_staff_session(self):
+        from rest_framework.test import APIClient
+
+        res = APIClient().get(self._list_url())
+
+        self.assertIn(res.status_code, (401, 403))
+
+
+class DisruptionNoticeKindTests(APITestCase):
+    """
+    Leave lifecycle / Step 3 — the patient's sentence must match why the
+    doctor is away.
+
+    An annual leave recorded weeks ahead is not "a sudden emergency", and the
+    receptionist now says which one it is when approving the plan.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.doctor = Doctor.objects.create(
+            name='Dr. Kind Away', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6, 7],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+            max_daily_appointments=20,
+        )
+        self.colleague = Doctor.objects.create(
+            name='Dr. Kind Covers', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6, 7],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+            max_daily_appointments=20,
+        )
+        self.service = Service.objects.create(
+            name='Kind Service', duration_minutes=30, buffer_minutes=0,
+        )
+        DoctorService.objects.create(doctor=self.doctor, service=self.service)
+        DoctorService.objects.create(doctor=self.colleague, service=self.service)
+
+        today = timezone.localdate()
+        self.start = timezone.make_aware(
+            datetime.datetime.combine(today, datetime.time(0, 0))
+        )
+        self.end = timezone.make_aware(
+            datetime.datetime.combine(today, datetime.time(23, 59))
+        )
+        appointment_start = timezone.make_aware(
+            datetime.datetime.combine(today, datetime.time(10, 0))
+        )
+        Appointment.objects.create(
+            appointment_code='AP-KIND1', patient_name='Kind Ada',
+            patient_phone='+2348030001500', doctor=self.doctor,
+            service=self.service, start_datetime=appointment_start,
+            end_datetime=appointment_start + datetime.timedelta(minutes=30),
+            status='confirmed',
+        )
+
+    def _resolve(self, kind):
+        return DisruptionService.auto_resolve_disruption(
+            self.doctor.id, leave_start_dt=self.start, leave_end_dt=self.end,
+            reason='Leave', performed_by='receptionist', kind=kind,
+        )
+
+    def test_planned_leave_is_not_announced_as_an_emergency(self):
+        report = self._resolve('planned')
+        messages = [m for result in report['results'] for m in result['messages']]
+
+        self.assertTrue(messages, report)
+        text = messages[0]['message']
+        self.assertIn('planned leave', text.lower())
+        self.assertNotIn('sudden emergency', text.lower())
+        log = InteractionLog.objects.get(external_ref=messages[0]['claim_ref'])
+        self.assertIn('Planned leave', log.summary)
+
+    def test_an_emergency_keeps_its_wording(self):
+        report = self._resolve('emergency')
+        messages = [m for result in report['results'] for m in result['messages']]
+
+        self.assertTrue(messages, report)
+        self.assertIn('sudden emergency', messages[0]['message'].lower())
+
+
 class SeedClinicHygieneTests(TestCase):
     """
     Wave 1 / Step 1.5 — the seed ships clean.

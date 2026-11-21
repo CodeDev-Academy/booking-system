@@ -44,6 +44,7 @@ export const EmergencyDisruptionModal = ({
   onAutoResolve,
   onRestoreDuty,
   onSetLeaveWindow,
+  onSetLeaveKind,
   onPreviewPlan,
   onSetDistributionMode,
   onToggleColleague,
@@ -60,6 +61,7 @@ export const EmergencyDisruptionModal = ({
     doctorId,
     affectedAppointments = [],
     leaveWindow,
+    leaveKind = 'emergency',
     preview,
     previewError,
     previewLoading,
@@ -178,7 +180,8 @@ export const EmergencyDisruptionModal = ({
               <span>Doctor Absence</span>
             </span>
             <h2 className="modal-title" style={{ color: 'var(--danger-text)' }}>
-              {currentDoc?.name || 'Doctor'} Unscheduled Leave
+              {currentDoc?.name || 'Doctor'}{' '}
+              {leaveKind === 'planned' ? 'Planned Leave' : 'Unscheduled Leave'}
             </h2>
           </div>
           <button
@@ -265,6 +268,26 @@ export const EmergencyDisruptionModal = ({
                 </button>
               );
             })}
+          </div>
+
+          {/* Leave lifecycle / Step 3 — the patient's sentence must match why
+              the doctor is away. An annual leave is not "a sudden emergency". */}
+          <div className="leave-window-chips" role="radiogroup" aria-label="Reason for the absence">
+            {[
+              { id: 'emergency', label: 'Sudden absence' },
+              { id: 'planned', label: 'Planned leave' },
+            ].map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                role="radio"
+                aria-checked={(leaveKind || 'emergency') === option.id}
+                className={`chip-toggle${(leaveKind || 'emergency') === option.id ? ' is-active' : ''}`}
+                onClick={() => onSetLeaveKind?.(option.id)}
+              >
+                {option.label}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -692,7 +715,7 @@ export const EmergencyDisruptionModal = ({
             style={{ color: 'var(--success-text)' }}
           >
             <UserCheck size={14} />
-            <span>Restore {currentDoc?.name || 'Doctor'} to On Duty</span>
+            <span>End {currentDoc?.name || 'Doctor'}&apos;s leave today</span>
           </button>
 
           <button type="button" className="btn-base btn-primary" onClick={onClose}>

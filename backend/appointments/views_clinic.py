@@ -1,4 +1,7 @@
 import json
+import datetime
+from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.http import JsonResponse, HttpResponse
@@ -16,6 +19,7 @@ from .serializers_clinic import (
     DoctorDirectorySerializer,
     StaffDirectoryUserSerializer,
     CalendarScheduleQuerySerializer,
+    DoctorLeaveWriteSerializer,
 )
 
 
@@ -304,6 +308,381 @@ class DoctorDutyStatusView(APIView):
 
     def post(self, request, id):
         return self.patch(request, id)
+
+
+class DoctorEndLeaveView(APIView):
+    """
+    POST /api/v1/clinic/doctors/{id}/end-leave/
+
+    Leave lifecycle / Step 1 — "the doctor is back today", and only today.
+
+    The duty switch deliberately removes only the open-ended row it created, so
+    after an emergency plan the dated leave row survived and the doctor stayed
+    unbookable while the screen said "on duty" (verified: is_on_leave stayed
+    True). This endpoint removes TODAY from every leave that covers it, never
+    more:
+
+      - a leave that started earlier keeps its past days (end moves to yesterday);
+      - a leave that starts today keeps its remaining future days (start moves to
+        tomorrow);
+      - a one-day leave for today simply goes.
+
+    Patients already moved to a colleague STAY there — the move was
+    communicated, and putting them back on a leave day would be worse. Ending
+    the leave only makes the doctor bookable again.
+    """
+    permission_classes = [IsStaffAuthenticated]
+
+    def post(self, request, id):
+        try:
+            doctor = Doctor.objects.get(id=id)
+        except (Doctor.DoesNotExist, ValueError):
+            return Response(
+                {'error': 'DOCTOR_NOT_FOUND', 'detail': 'No doctor matches this id.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        today = timezone.localdate()
+        yesterday = today - datetime.timedelta(days=1)
+        tomorrow = today + datetime.timedelta(days=1)
+        ended = []
+
+        with transaction.atomic():
+            for leave in list(doctor.leaves.all()):
+                if not leave.covers(today):
+                    continue
+
+                leave_id = leave.id
+                before = {
+                    'start_date': leave.start_date.isoformat(),
+                    'end_date': leave.end_date.isoformat() if leave.end_date else None,
+                    'leave_type': leave.leave_type,
+                    'reason': leave.reason,
+                }
+
+                if leave.start_date == today:
+                    if leave.end_date is None or leave.end_date == today:
+                        leave.delete()
+                        action = 'deleted'
+                    else:
+                        leave.start_date = tomorrow
+                        leave.save(update_fields=['start_date'])
+                        action = 'trimmed_start'
+                else:
+                    leave.end_date = yesterday
+                    leave.save(update_fields=['end_date'])
+                    action = 'trimmed_end'
+
+                AuditLog.objects.create(
+                    entity_name='DoctorLeave',
+                    entity_id=leave_id,
+                    action='DOCTOR_LEAVE_ENDED',
+                    performed_by=request.user.email,
+                    changes={**before, 'action': action, 'ended_day': today.isoformat()},
+                    ip_address=request.META.get('REMOTE_ADDR'),
+                )
+                ended.append({
+                    'id': str(leave_id),
+                    'action': action,
+                    'leave_type': before['leave_type'],
+                    'previous_start_date': before['start_date'],
+                    'previous_end_date': before['end_date'],
+                })
+
+            # Re-derive the flag from what is actually left: a finished leave
+            # stops marking the doctor off duty, and the legacy open-ended
+            # switch (no rows at all) is cleared here too.
+            should = any(period.covers(today) for period in doctor.leaves.all())
+            if doctor.is_on_leave != should:
+                doctor.is_on_leave = should
+                doctor.save(update_fields=['is_on_leave'])
+
+        message = (
+            f'{doctor.name} is back on duty today.'
+            if ended
+            else f'{doctor.name} is already on duty today.'
+        )
+
+        return Response({
+            'doctor': DoctorDirectorySerializer(doctor).data,
+            'ended': ended,
+            'message': message,
+        }, status=status.HTTP_200_OK)
+
+
+class DoctorLeaveListCreateView(APIView):
+    """
+    GET  /api/v1/clinic/doctors/{id}/leaves/   — the periods, and which covers today
+    POST /api/v1/clinic/doctors/{id}/leaves/   — plan a leave window
+
+    Leave lifecycle / Step 2. A plain leave record is only for windows with no
+    bookings: if patients are already booked inside it, the answer is the
+    disruption plan (which moves them, tells them, and can be undone). Saving
+    the leave anyway would leave those patients stranded with nobody told.
+    """
+    permission_classes = [IsStaffAuthenticated]
+
+    @staticmethod
+    def _doctor(id):
+        try:
+            return Doctor.objects.get(id=id)
+        except (Doctor.DoesNotExist, ValueError):
+            return None
+
+    @staticmethod
+    def _leave_dict(leave, today):
+        return {
+            'id': str(leave.id),
+            'start_date': leave.start_date.isoformat(),
+            'end_date': leave.end_date.isoformat() if leave.end_date else None,
+            'leave_type': leave.leave_type,
+            'reason': leave.reason,
+            'covers_today': leave.covers(today),
+        }
+
+    @staticmethod
+    def _overlap(doctor, start, end, exclude_id=None):
+        horizon = end or datetime.date.max
+        qs = doctor.leaves.filter(start_date__lte=horizon).filter(
+            Q(end_date__isnull=True) | Q(end_date__gte=start)
+        )
+        if exclude_id:
+            qs = qs.exclude(id=exclude_id)
+        return qs.order_by('start_date').first()
+
+    @staticmethod
+    def _bookings_inside(doctor, start, end):
+        qs = Appointment.objects.filter(
+            doctor=doctor,
+            status__in=['confirmed', 'held'],
+            start_datetime__date__gte=start,
+        )
+        if end is not None:
+            qs = qs.filter(start_datetime__date__lte=end)
+        return qs
+
+    def get(self, request, id):
+        doctor = self._doctor(id)
+        if not doctor:
+            return Response(
+                {'error': 'DOCTOR_NOT_FOUND', 'detail': 'No doctor matches this id.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        today = timezone.localdate()
+        leaves = doctor.leaves.all().order_by('start_date')
+        return Response({
+            'doctor': {
+                'id': str(doctor.id),
+                'name': doctor.name,
+                'is_on_leave': doctor.is_on_leave_on(today),
+            },
+            'leaves': [self._leave_dict(leave, today) for leave in leaves],
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request, id):
+        doctor = self._doctor(id)
+        if not doctor:
+            return Response(
+                {'error': 'DOCTOR_NOT_FOUND', 'detail': 'No doctor matches this id.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = DoctorLeaveWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        start = data['start_date']
+        end = data.get('end_date')
+
+        existing = self._overlap(doctor, start, end)
+        if existing:
+            existing_end = (
+                existing.end_date.strftime('%d %b')
+                if existing.end_date else 'further notice'
+            )
+            return Response({
+                'error': 'LEAVE_OVERLAPS_EXISTING',
+                'detail': (
+                    f"{doctor.name} already has {existing.leave_type} leave from "
+                    f"{existing.start_date.strftime('%d %b')} to {existing_end}. "
+                    'Edit that period instead.'
+                ),
+                'existing': self._leave_dict(existing, timezone.localdate()),
+            }, status=status.HTTP_409_CONFLICT)
+
+        booked = self._bookings_inside(doctor, start, end).count()
+        if booked:
+            return Response({
+                'error': 'LEAVE_OVERLAPS_BOOKINGS',
+                'detail': (
+                    f'{booked} patient(s) are already booked in this window. '
+                    'Use the leave plan (unscheduled leave) so they are moved and '
+                    'told — a plain leave would leave them stranded.'
+                ),
+                'appointment_count': booked,
+            }, status=status.HTTP_409_CONFLICT)
+
+        leave = DoctorLeave.objects.create(
+            doctor=doctor,
+            start_date=start,
+            end_date=end,
+            leave_type=data['leave_type'],
+            reason=data.get('reason', ''),
+            created_by=request.user.email,
+        )
+        doctor.sync_leave_flag()
+
+        AuditLog.objects.create(
+            entity_name='DoctorLeave',
+            entity_id=leave.id,
+            action='DOCTOR_LEAVE_PLANNED',
+            performed_by=request.user.email,
+            changes={
+                'start_date': start.isoformat(),
+                'end_date': end.isoformat() if end else None,
+                'leave_type': leave.leave_type,
+            },
+            ip_address=request.META.get('REMOTE_ADDR'),
+        )
+
+        return Response(
+            self._leave_dict(leave, timezone.localdate()),
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class DoctorLeaveDetailView(APIView):
+    """
+    PATCH  /api/v1/clinic/doctors/{id}/leaves/{leave_id}/ — edit or shorten
+    DELETE /api/v1/clinic/doctors/{id}/leaves/{leave_id}/ — remove entirely
+
+    Editing cannot extend a leave over a patient who is already booked — that
+    is the same silent-stranding mistake as creating one there.
+    """
+    permission_classes = [IsStaffAuthenticated]
+
+    @staticmethod
+    def _leave(id, leave_id):
+        try:
+            return DoctorLeave.objects.select_related('doctor').get(
+                id=leave_id, doctor_id=id,
+            )
+        except (DoctorLeave.DoesNotExist, ValueError, TypeError):
+            return None
+
+    def patch(self, request, id, leave_id):
+        leave = self._leave(id, leave_id)
+        if not leave:
+            return Response(
+                {'error': 'LEAVE_NOT_FOUND', 'detail': 'No leave period matches this id.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = DoctorLeaveWriteSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        start = data.get('start_date', leave.start_date)
+        end = data['end_date'] if 'end_date' in data else leave.end_date
+        if end is not None and end < start:
+            return Response(
+                {'error': 'INVALID_WINDOW', 'detail': 'The last day cannot be before the first day.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        existing = DoctorLeaveListCreateView._overlap(
+            leave.doctor, start, end, exclude_id=leave.id,
+        )
+        if existing:
+            return Response({
+                'error': 'LEAVE_OVERLAPS_EXISTING',
+                'detail': 'This window overlaps another leave period.',
+                'existing': DoctorLeaveListCreateView._leave_dict(
+                    existing, timezone.localdate()
+                ),
+            }, status=status.HTTP_409_CONFLICT)
+
+        booked = DoctorLeaveListCreateView._bookings_inside(
+            leave.doctor, start, end,
+        ).count()
+        if booked:
+            return Response({
+                'error': 'LEAVE_OVERLAPS_BOOKINGS',
+                'detail': (
+                    f'{booked} patient(s) are booked in this window. Move them with '
+                    'the leave plan instead of extending the leave over them.'
+                ),
+                'appointment_count': booked,
+            }, status=status.HTTP_409_CONFLICT)
+
+        leave.start_date = start
+        leave.end_date = end
+        if 'leave_type' in data:
+            leave.leave_type = data['leave_type']
+        if 'reason' in data:
+            leave.reason = data['reason']
+        leave.save(update_fields=['start_date', 'end_date', 'leave_type', 'reason'])
+        leave.doctor.sync_leave_flag()
+
+        AuditLog.objects.create(
+            entity_name='DoctorLeave',
+            entity_id=leave.id,
+            action='DOCTOR_LEAVE_UPDATED',
+            performed_by=request.user.email,
+            changes={
+                'start_date': start.isoformat(),
+                'end_date': end.isoformat() if end else None,
+                'leave_type': leave.leave_type,
+            },
+            ip_address=request.META.get('REMOTE_ADDR'),
+        )
+
+        return Response(
+            DoctorLeaveListCreateView._leave_dict(leave, timezone.localdate()),
+            status=status.HTTP_200_OK,
+        )
+
+    def delete(self, request, id, leave_id):
+        leave = self._leave(id, leave_id)
+        if not leave:
+            return Response(
+                {'error': 'LEAVE_NOT_FOUND', 'detail': 'No leave period matches this id.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        doctor = leave.doctor
+        snapshot = {
+            'start_date': leave.start_date.isoformat(),
+            'end_date': leave.end_date.isoformat() if leave.end_date else None,
+            'leave_type': leave.leave_type,
+        }
+        entity_id = leave.id
+        leave.delete()
+        # With no periods left, the legacy open-ended flag must not keep the
+        # doctor off duty — sync_leave_flag deliberately preserves it, because
+        # that flag IS the whole record when there are no rows.
+        if doctor.leaves.exists():
+            doctor.sync_leave_flag()
+        elif doctor.is_on_leave:
+            doctor.is_on_leave = False
+            doctor.save(update_fields=['is_on_leave'])
+
+        AuditLog.objects.create(
+            entity_name='DoctorLeave',
+            entity_id=entity_id,
+            action='DOCTOR_LEAVE_DELETED',
+            performed_by=request.user.email,
+            changes=snapshot,
+            ip_address=request.META.get('REMOTE_ADDR'),
+        )
+
+        return Response({
+            'deleted': str(entity_id),
+            'doctor': {
+                'id': str(doctor.id),
+                'name': doctor.name,
+                'is_on_leave': doctor.is_on_leave_on(timezone.localdate()),
+            },
+        }, status=status.HTTP_200_OK)
 
 
 class CalendarScheduleView(APIView):

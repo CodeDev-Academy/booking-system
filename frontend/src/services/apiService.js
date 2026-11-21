@@ -646,6 +646,41 @@ export const apiService = {
     });
   },
 
+  // Leave lifecycle / Step 1: "the doctor is back today". Removes ONLY today
+  // from every leave covering it and returns the doctor's REAL duty flag, so
+  // the screen can stop guessing.
+  async endDoctorLeave(doctorId) {
+    return request(`/clinic/doctors/${doctorId}/end-leave/`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  },
+
+  // Leave lifecycle / Step 2: planned leave, its own record.
+  async fetchDoctorLeaves(doctorId) {
+    return request(`/clinic/doctors/${doctorId}/leaves/`);
+  },
+
+  async createDoctorLeave(doctorId, payload) {
+    return request(`/clinic/doctors/${doctorId}/leaves/`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async updateDoctorLeave(doctorId, leaveId, payload) {
+    return request(`/clinic/doctors/${doctorId}/leaves/${leaveId}/`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async deleteDoctorLeave(doctorId, leaveId) {
+    return request(`/clinic/doctors/${doctorId}/leaves/${leaveId}/`, {
+      method: 'DELETE',
+    });
+  },
+
   async fetchDoctorWorkload() {
     return request('/doctors/workload/');
   },

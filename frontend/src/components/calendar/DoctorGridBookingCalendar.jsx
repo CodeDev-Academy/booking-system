@@ -39,6 +39,7 @@ import { useCalendarStore } from '../../stores/useCalendarStore';
 import { useStaffStore } from '../../stores/useStaffStore';
 import { useAuthStore } from '../../stores/useAuthStore';
 import { EmergencyDisruptionModal } from './EmergencyDisruptionModal';
+import { LeavePlannerModal } from './LeavePlannerModal';
 import { StrandedPatientsPanel } from './StrandedPatientsPanel';
 import { DoubleBookingAlert, DoubleBookingCountChip } from './DoubleBookingAlert';
 import { useDoubleBookingAlert } from '../../hooks/useDoubleBookingAlert';
@@ -236,12 +237,24 @@ export const DoctorGridBookingCalendar = ({
   const reassignToColleague = useCalendarStore((state) => state.reassignToColleague);
   const autoResolveDisruption = useCalendarStore((state) => state.autoResolveDisruption);
   const setLeaveWindow = useCalendarStore((state) => state.setLeaveWindow);
+  const setLeaveKind = useCalendarStore((state) => state.setLeaveKind);
   const previewDisruptionPlan = useCalendarStore((state) => state.previewDisruptionPlan);
   const setDistributionMode = useCalendarStore((state) => state.setDistributionMode);
   const toggleColleagueChoice = useCalendarStore((state) => state.toggleColleagueChoice);
   const chooseSingleColleague = useCalendarStore((state) => state.chooseSingleColleague);
   const setColleagueCap = useCalendarStore((state) => state.setColleagueCap);
   const restoreDoctorDuty = useCalendarStore((state) => state.restoreDoctorDuty);
+
+  // Leave lifecycle / Step 2 — planned leave has its own form, apart from the
+  // emergency cockpit (a quiet future window needs no patient moves).
+  const leavePlanner = useCalendarStore((state) => state.leavePlanner);
+  const openLeavePlanner = useCalendarStore((state) => state.openLeavePlanner);
+  const closeLeavePlanner = useCalendarStore((state) => state.closeLeavePlanner);
+  const addDoctorLeave = useCalendarStore((state) => state.addDoctorLeave);
+  const removeDoctorLeave = useCalendarStore((state) => state.removeDoctorLeave);
+  const endTodayLeaveFromPlanner = useCalendarStore(
+    (state) => state.endTodayLeaveFromPlanner
+  );
 
   // Step 3 — stranded queue + undo of the last distribution.
   const stranded = useCalendarStore((state) => state.stranded);
@@ -915,7 +928,27 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
                 title="Report sudden absence — auto-reassign every affected patient and notify them (WhatsApp + SMS)"
               >
                 <AlertTriangle size={14} />
-                <span>{currentDoctor?.isEmergencyLeave ? 'Manage Leave' : 'Sick / Leave'}</span>
+                <span>{currentDoctor?.isEmergencyLeave ? 'Manage Leave' : 'Sudden absence'}</span>
+              </button>
+
+              {/* Leave lifecycle / Step 2 — planned dates that do not need an
+                  emergency plan (and must not pretend to be one). */}
+              <button
+                type="button"
+                className="dossier-action-btn"
+                onClick={() => openLeavePlanner(selectedDoctorId)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: '#ffffff',
+                  border: '1px solid var(--line-strong, #c8c1b4)',
+                  color: '#334155',
+                }}
+                title="Plan or correct annual, sick or training leave — no patient moves"
+              >
+                <CalendarDays size={14} />
+                <span>Plan leave</span>
               </button>
 
               <button
@@ -1439,6 +1472,7 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
           onReassign={reassignToColleague}
           onAutoResolve={autoResolveDisruption}
           onSetLeaveWindow={setLeaveWindow}
+          onSetLeaveKind={setLeaveKind}
           onPreviewPlan={previewDisruptionPlan}
           onSetDistributionMode={setDistributionMode}
           onToggleColleague={toggleColleagueChoice}
@@ -1447,6 +1481,16 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
           onRestoreDuty={restoreDoctorDuty}
         />
       )}
+
+      {/* Leave lifecycle / Step 2 — plan or correct a leave period. */}
+      <LeavePlannerModal
+        isOpen={leavePlanner?.isOpen}
+        planner={leavePlanner}
+        onClose={closeLeavePlanner}
+        onAdd={addDoctorLeave}
+        onRemove={removeDoctorLeave}
+        onEndToday={endTodayLeaveFromPlanner}
+      />
 
       {/* Step 3 — the stranded queue Django reports, grouped by day with the
           plain reason each patient could not be placed. */}

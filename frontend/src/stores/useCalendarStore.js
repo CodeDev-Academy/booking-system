@@ -135,6 +135,21 @@ export const useCalendarStore = create(
   // derives "on leave" for the day it is showing from these raw ranges.
   leavePeriods: {},
 
+  // Leave lifecycle / Step 2 — the planned-leave form. Kept apart from the
+  // emergency cockpit on purpose: a quiet future window needs no patient moves.
+  leavePlanner: {
+    isOpen: false,
+    doctorId: null,
+    backendDoctorId: null,
+    doctorName: '',
+    leaves: [],
+    doctorIsOnLeave: false,
+    loading: false,
+    saving: false,
+    error: null,
+    demo: false,
+  },
+
   setDateOffset: (offset) => set({ currentDateOffset: offset }),
   nextDay: () => set((state) => ({ currentDateOffset: state.currentDateOffset + 1 })),
   prevDay: () => set((state) => ({ currentDateOffset: Math.max(0, state.currentDateOffset - 1) })),
@@ -407,6 +422,7 @@ export const useCalendarStore = create(
         dayStart,
         affectedAppointments: affected,
         leaveWindow: { startDay: dayStart, endDay: dayStart },
+        leaveKind: 'emergency',
         preview: null,
         previewLoading: false,
         previewError: null,
@@ -796,6 +812,7 @@ export const useCalendarStore = create(
         dayStart: null,
         affectedAppointments: [],
         leaveWindow: null,
+        leaveKind: 'emergency',
         preview: null,
         previewLoading: false,
         previewError: null,
@@ -804,6 +821,16 @@ export const useCalendarStore = create(
         colleagueCaps: {},
       },
     }),
+
+  // Leave lifecycle / Step 3 — why the doctor is away decides the patient's
+  // sentence. "Planned leave" must never be announced as a sudden emergency.
+  setLeaveKind: (kind) =>
+    set((state) => ({
+      disruptionModal: {
+        ...state.disruptionModal,
+        leaveKind: kind === 'planned' ? 'planned' : 'emergency',
+      },
+    })),
 
   markDoctorEmergencyLeave: (doctorId, reason = 'Sudden Medical Emergency') => {
     set((state) => ({
@@ -822,37 +849,246 @@ export const useCalendarStore = create(
     soundService.playAlert();
   },
 
-  restoreDoctorDuty: (doctorId) => {
-    set((state) => ({
-      doctors: state.doctors.map((d) =>
-        d.id === doctorId
-          ? { ...d, isOnDuty: true, isEmergencyLeave: false, emergencyReason: null }
-          : d
-      ),
-      disruptionModal: {
-        isOpen: false,
-        doctorId: null,
-        dayStart: null,
-        affectedAppointments: [],
-        leaveWindow: null,
-        preview: null,
-        previewLoading: false,
-        previewError: null,
-        distributionMode: 'auto',
-        chosenColleagueIds: [],
-        colleagueCaps: {},
-      },
-      toast: {
-        tone: 'success',
-        text: `${getDoctor(doctorId)?.name || 'Doctor'} marked back On Duty.`,
-      },
-    }));
-    if (!useAppModeStore.getState().isDemoMode) {
-      apiService
-        .updateDoctorDutyStatus(doctorId, { duty_mode: 'on_duty' })
-        .catch(() => {});
+  restoreDoctorDuty: async (doctorId) => {
+    const doctorName = getDoctor(doctorId)?.name || 'Doctor';
+    const closedModal = {
+      isOpen: false,
+      doctorId: null,
+      dayStart: null,
+      affectedAppointments: [],
+      leaveWindow: null,
+      preview: null,
+      previewLoading: false,
+      previewError: null,
+      distributionMode: 'auto',
+      chosenColleagueIds: [],
+      colleagueCaps: {},
+    };
+
+    // Demo mode has no backend: flip locally and say so.
+    if (useAppModeStore.getState().isDemoMode) {
+      set((state) => ({
+        doctors: state.doctors.map((d) =>
+          d.id === doctorId
+            ? { ...d, isOnDuty: true, isEmergencyLeave: false, emergencyReason: null }
+            : d
+        ),
+        disruptionModal: closedModal,
+        toast: { tone: 'success', text: `${doctorName} marked back On Duty.` },
+      }));
+      soundService.playChime();
+      return { success: true };
     }
-    soundService.playChime();
+
+    // Live: the server decides. The old code flipped the flag locally and
+    // ignored the answer — after a plan the dated leave survived, so the
+    // screen said "on duty" while every booking was still refused.
+    try {
+      const backendDoctor = await resolveBackendDoctor(doctorName);
+      const res = await apiService.endDoctorLeave(backendDoctor.id);
+      const stillOnLeave = Boolean(res?.doctor?.is_on_leave);
+
+      set((state) => ({
+        doctors: state.doctors.map((d) =>
+          d.id === doctorId
+            ? {
+                ...d,
+                isOnDuty: !stillOnLeave,
+                isEmergencyLeave: stillOnLeave,
+                emergencyReason: stillOnLeave ? d.emergencyReason : null,
+              }
+            : d
+        ),
+        disruptionModal: closedModal,
+        toast: {
+          tone: stillOnLeave ? 'warning' : 'success',
+          text:
+            res?.message
+            || (stillOnLeave
+              ? `${doctorName} is still on leave today.`
+              : `${doctorName} is back on duty today.`),
+        },
+      }));
+      if (!stillOnLeave) soundService.playChime();
+      // Re-read the roster so the calendar shows the real leave periods.
+      await get().syncFromBackend();
+      return { success: true, stillOnLeave };
+    } catch (err) {
+      set({
+        toast: {
+          tone: 'error',
+          text: err?.message || `Could not end ${doctorName}'s leave.`,
+        },
+      });
+      return { success: false, message: err?.message };
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // Leave lifecycle / Step 2 — planned leave, its own form.
+  // ---------------------------------------------------------------------------
+  openLeavePlanner: async (doctorId) => {
+    const doctorName = getDoctor(doctorId)?.name || 'Doctor';
+    set({
+      leavePlanner: {
+        isOpen: true,
+        doctorId,
+        backendDoctorId: null,
+        doctorName,
+        leaves: [],
+        doctorIsOnLeave: false,
+        loading: !useAppModeStore.getState().isDemoMode,
+        saving: false,
+        error: null,
+        demo: false,
+      },
+    });
+
+    // The pitch simulator has no backend; the form is read-only there.
+    if (useAppModeStore.getState().isDemoMode) {
+      set((state) => ({
+        leavePlanner: { ...state.leavePlanner, loading: false, demo: true },
+      }));
+      return;
+    }
+
+    try {
+      const backendDoctor = await resolveBackendDoctor(doctorName);
+      const data = await apiService.fetchDoctorLeaves(backendDoctor.id);
+      set((state) => ({
+        leavePlanner: {
+          ...state.leavePlanner,
+          backendDoctorId: backendDoctor.id,
+          leaves: data?.leaves || [],
+          doctorIsOnLeave: Boolean(data?.doctor?.is_on_leave),
+          loading: false,
+          saving: false,
+          error: null,
+        },
+      }));
+    } catch (err) {
+      set((state) => ({
+        leavePlanner: {
+          ...state.leavePlanner,
+          loading: false,
+          saving: false,
+          error: err?.message || 'Could not load the leave periods.',
+        },
+      }));
+    }
+  },
+
+  closeLeavePlanner: () =>
+    set((state) => ({ leavePlanner: { ...state.leavePlanner, isOpen: false, error: null } })),
+
+  addDoctorLeave: async ({ startDate, endDate, leaveType = 'annual', reason = '' }) => {
+    const planner = get().leavePlanner;
+    if (planner.demo) {
+      set((state) => ({
+        leavePlanner: {
+          ...state.leavePlanner,
+          error: 'Planned leave needs the live clinic backend.',
+        },
+      }));
+      return { success: false };
+    }
+    if (!planner.backendDoctorId) {
+      set((state) => ({
+        leavePlanner: { ...state.leavePlanner, error: 'This doctor is not loaded yet.' },
+      }));
+      return { success: false };
+    }
+
+    set((state) => ({ leavePlanner: { ...state.leavePlanner, saving: true, error: null } }));
+    try {
+      await apiService.createDoctorLeave(planner.backendDoctorId, {
+        start_date: startDate,
+        end_date: endDate || null,
+        leave_type: leaveType,
+        reason,
+      });
+      await get().openLeavePlanner(planner.doctorId);
+      await get().syncFromBackend();
+      set({
+        toast: { tone: 'success', text: `Leave planned for ${planner.doctorName}.` },
+      });
+      return { success: true };
+    } catch (err) {
+      // Django's sentence is the truth (overlapping leave, or patients already
+      // booked in the window). Never soften it here.
+      set((state) => ({
+        leavePlanner: {
+          ...state.leavePlanner,
+          saving: false,
+          error: err?.message || 'Could not save this leave.',
+        },
+      }));
+      return { success: false, message: err?.message };
+    }
+  },
+
+  removeDoctorLeave: async (leaveId) => {
+    const planner = get().leavePlanner;
+    if (planner.demo || !planner.backendDoctorId) {
+      set((state) => ({
+        leavePlanner: { ...state.leavePlanner, error: 'Removing leave needs the live clinic backend.' },
+      }));
+      return { success: false };
+    }
+
+    set((state) => ({ leavePlanner: { ...state.leavePlanner, saving: true, error: null } }));
+    try {
+      const res = await apiService.deleteDoctorLeave(planner.backendDoctorId, leaveId);
+      await get().openLeavePlanner(planner.doctorId);
+      await get().syncFromBackend();
+      set({
+        toast: {
+          tone: 'success',
+          text: res?.doctor?.is_on_leave
+            ? `${planner.doctorName} still has leave covering today.`
+            : `Leave removed for ${planner.doctorName}.`,
+        },
+      });
+      return { success: true };
+    } catch (err) {
+      set((state) => ({
+        leavePlanner: {
+          ...state.leavePlanner,
+          saving: false,
+          error: err?.message || 'Could not remove this leave.',
+        },
+      }));
+      return { success: false, message: err?.message };
+    }
+  },
+
+  endTodayLeaveFromPlanner: async () => {
+    const planner = get().leavePlanner;
+    if (planner.demo || !planner.backendDoctorId) return { success: false };
+
+    set((state) => ({ leavePlanner: { ...state.leavePlanner, saving: true, error: null } }));
+    try {
+      const res = await apiService.endDoctorLeave(planner.backendDoctorId);
+      const stillOnLeave = Boolean(res?.doctor?.is_on_leave);
+      await get().openLeavePlanner(planner.doctorId);
+      await get().syncFromBackend();
+      set({
+        toast: {
+          tone: stillOnLeave ? 'warning' : 'success',
+          text: res?.message || `Leave updated for ${planner.doctorName}.`,
+        },
+      });
+      return { success: true, stillOnLeave };
+    } catch (err) {
+      set((state) => ({
+        leavePlanner: {
+          ...state.leavePlanner,
+          saving: false,
+          error: err?.message || 'Could not end today\'s leave.',
+        },
+      }));
+      return { success: false, message: err?.message };
+    }
   },
 
   syncFromBackend: async () => {
@@ -1311,7 +1547,12 @@ export const useCalendarStore = create(
       const distribution = await get()._distributionPayload();
       const report = await apiService.autoResolveDisruption(
         backendDoctor.id,
-        { reason, ...leaveWindowPayload(dayStart, dayEnd), ...distribution }
+        {
+          reason,
+          kind: get().disruptionModal.leaveKind || 'emergency',
+          ...leaveWindowPayload(dayStart, dayEnd),
+          ...distribution,
+        }
       );
 
       // Map backend doctor names ("Dr. Amina Bello") to local doctor ids.
