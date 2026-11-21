@@ -423,6 +423,9 @@ export const useTriageQueue = () => {
       gender: r.gender || '',
       dateOfBirth: r.dateOfBirth || r.date_of_birth || null,
       isEmergency: Boolean(r.isEmergency || r.is_emergency),
+      // Zero-partner route / Step 5: the intake form asks "reason for visit".
+      // We asked, so reception must see it — patient-provided, not clinical.
+      symptoms: r.symptoms || r.patient_notes || '',
       dossier,
       serviceId: r.serviceId,
       isCustomService,

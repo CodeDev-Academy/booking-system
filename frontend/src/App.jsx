@@ -10,6 +10,11 @@ const StaffView = lazy(() => import('./views/StaffView').then((m) => ({ default:
 const SettingsView = lazy(() => import('./views/SettingsView').then((m) => ({ default: m.SettingsView })));
 const SimulatorView = lazy(() => import('./views/SimulatorView').then((m) => ({ default: m.SimulatorView })));
 const LoginView = lazy(() => import('./views/LoginView').then((m) => ({ default: m.LoginView })));
+// Zero-partner route / Step 5: the patient's front door. Deliberately OUTSIDE
+// the authenticated Shell — a patient never has a staff account.
+const PublicBookingView = lazy(() =>
+  import('./views/PublicBookingView').then((m) => ({ default: m.PublicBookingView }))
+);
 
 const RouteLoadingFallback = () => (
   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '300px', color: 'var(--text-3)', fontSize: '13px' }}>
@@ -28,6 +33,7 @@ function App() {
       <Suspense fallback={<RouteLoadingFallback />}>
         <Routes>
           <Route path="/login" element={<LoginView />} />
+          <Route path="/book" element={<PublicBookingView />} />
           <Route path="/" element={<Shell />}>
             <Route index element={<Navigate to="/queue" replace />} />
             <Route path="queue" element={<QueueView />} />

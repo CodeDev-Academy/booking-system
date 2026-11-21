@@ -294,6 +294,12 @@ export const apiService = {
     return request(`/booking-requests/${query ? `?${query}` : ''}`);
   },
 
+  // Zero-partner route / Step 4: the public page's data. Open on purpose —
+  // narrow payload, no prices, no roster, no secrets.
+  async fetchPublicBookingInfo() {
+    return request('/public/booking-info/');
+  },
+
   async createBookingRequest(payload) {
     return request('/booking-requests/', {
       method: 'POST',

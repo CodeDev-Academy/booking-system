@@ -5,6 +5,7 @@ import datetime
 import ipaddress
 import logging
 from django.utils import timezone
+from django.conf import settings
 from django.core.cache import cache
 from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
@@ -226,6 +227,16 @@ class BookingRequestListCreateView(APIView):
             'created_at': booking.created_at.isoformat(),
         })
 
+        # Zero-partner route / Step 2: the patient's front door to Telegram. The
+        # token (not the guessable request code) decides which chat may bind to
+        # this request. None when the bot username is not configured — the page
+        # then shows the honest "front desk will call you" fallback.
+        bot_username = getattr(settings, 'TELEGRAM_BOT_USERNAME', '')
+        telegram_link = (
+            f"https://t.me/{bot_username}?start={booking.telegram_link_token}"
+            if bot_username and booking.telegram_link_token else None
+        )
+
         return Response({
             "id": str(booking.id),
             "request_id": booking.request_code,
@@ -240,6 +251,7 @@ class BookingRequestListCreateView(APIView):
             "date_of_birth": str(booking.date_of_birth) if booking.date_of_birth else None,
             "gender": booking.gender,
             "is_emergency": booking.is_emergency,
+            "telegram_link": telegram_link,
             "created_at": booking.created_at.isoformat(),
         }, status=status.HTTP_201_CREATED)
 

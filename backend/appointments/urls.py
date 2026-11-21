@@ -63,6 +63,7 @@ from .views_realtime import (
 )
 from .views_patient_reply import PatientReplyWebhookView
 from .views_interactions import InteractionListCreateView
+from .views_public import PublicBookingInfoView
 from .views_analytics import (
     AnalyticsSummaryView,
 )
@@ -203,6 +204,10 @@ urlpatterns = [
     # phone -> open request resolution and intent interpretation live in Django.
     path('webhooks/patient-reply/', PatientReplyWebhookView.as_view(), name='webhook-patient-reply'),
     path('telegram/webhook/', InboundWebhookView.as_view(), name='telegram-webhook-alias'),
+
+    # Zero-partner route / Step 1: the public booking page renders without a
+    # staff login. Narrow read-only payload — no prices, no roster, no secrets.
+    path('public/booking-info/', PublicBookingInfoView.as_view(), name='public-booking-info'),
 
     # Task 3.6: Analytics KPI Summary API & CSV Exports
     path('analytics/summary/', AnalyticsSummaryView.as_view(), name='analytics-summary'),

@@ -34,6 +34,7 @@ from .services.disruption_service import (
 )
 from .services.conflict_service import ConflictService
 from .services.sweep_service import SweepService
+from .services.telegram_service import TelegramService
 
 
 def next_legal_slot(hour, minute=0):
@@ -7044,6 +7045,280 @@ class LowSweepTests(APITestCase):
         message = response.data['telegram_payload']['message']
         self.assertIn('Low Sweep Clinic', message)
         self.assertNotIn('Cedarcare', message)
+
+
+class PublicBookingInfoTests(APITestCase):
+    """
+    Zero-partner route / Step 1 — the public booking page needs clinic data
+    without a staff login.
+
+    The existing services endpoint requires staff auth, and loosening it would
+    expose the whole catalogue — including `price` — to the public. This view is
+    deliberately narrow: the clinic name, the REAL hold minutes, active services
+    WITHOUT prices, active doctors, opening hours and the bot username. No
+    secret, no patient data, no staff data.
+    """
+
+    URL = '/api/v1/public/booking-info/'
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.clinic_name = 'Public Test Clinic'
+        self.clinic.offer_expiry_minutes = 45
+        self.clinic.open_time = datetime.time(8, 30)
+        self.clinic.close_time = datetime.time(17, 30)
+        self.clinic.working_days = [1, 2, 3, 4, 5]
+        self.clinic.save()
+
+        self.active_service = Service.objects.create(
+            name='Public Consultation', category='General',
+            duration_minutes=30, price=25000, is_active=True,
+        )
+        self.hidden_service = Service.objects.create(
+            name='Retired Service', category='General',
+            duration_minutes=30, price=1000, is_active=False,
+        )
+        self.active_doctor = Doctor.objects.create(
+            name='Dr. Public', specialty='Dentistry', is_active=True,
+            working_days=[1, 2, 3, 4, 5],
+            shift_start=datetime.time(9, 0), shift_end=datetime.time(17, 0),
+        )
+        self.hidden_doctor = Doctor.objects.create(
+            name='Dr. Inactive', specialty='Dentistry', is_active=False,
+        )
+
+    def test_it_answers_without_a_login(self):
+        res = self.client.get(self.URL)
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        names = [s['name'] for s in res.data['services']]
+        self.assertIn('Public Consultation', names)
+        self.assertNotIn('Retired Service', names)
+
+    def test_it_exposes_no_price(self):
+        res = self.client.get(self.URL)
+        blob = str(res.data).lower()
+
+        self.assertNotIn('price', blob)
+        self.assertNotIn('25000', blob)
+
+    def test_the_wording_comes_from_the_clinic_settings(self):
+        from django.conf import settings as django_settings
+
+        res = self.client.get(self.URL)
+
+        self.assertEqual(res.data['clinic_name'], 'Public Test Clinic')
+        self.assertEqual(res.data['offer_hold_minutes'], 45)
+        self.assertIn('45', res.data['notice'])
+        self.assertEqual(res.data['timezone'], django_settings.TIME_ZONE)
+        self.assertEqual(res.data['hours']['open_time'], '08:30')
+        self.assertEqual(res.data['hours']['close_time'], '17:30')
+        self.assertEqual(res.data['telegram_bot_username'], django_settings.TELEGRAM_BOT_USERNAME)
+
+    def test_only_active_doctors_are_listed(self):
+        res = self.client.get(self.URL)
+        names = [d['name'] for d in res.data['doctors']]
+
+        self.assertIn('Dr. Public', names)
+        self.assertNotIn('Dr. Inactive', names)
+
+    def test_it_never_leaks_a_secret(self):
+        self.clinic.custom_config = {
+            'telegram_bot_token': 'super-secret-token',
+            'webhook_secret': 'leak-me',
+        }
+        self.clinic.save()
+
+        res = self.client.get(self.URL)
+        blob = str(res.data)
+
+        self.assertNotIn('super-secret-token', blob)
+        self.assertNotIn('leak-me', blob)
+        self.assertNotIn('telegram_bot_token', blob)
+
+
+class WebBookingTelegramLinkTests(APITestCase):
+    """
+    Zero-partner route / Step 2 — every request gets its own unguessable link
+    token, and the public 201 hands the patient a Telegram start link.
+
+    The request code (`REQ-2026-0042`) is sequential and guessable, so it can
+    never be the key that binds a chat to someone else's booking. The token is
+    random, single-purpose, and never appears in staff list payloads.
+    """
+
+    URL = '/api/v1/booking-requests/'
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.service = Service.objects.create(
+            name='Link Service', category='General',
+            duration_minutes=30, is_active=True,
+        )
+
+    def _payload(self, name='Link Test Patient', phone='08030001234'):
+        start = timezone.localdate() + datetime.timedelta(days=4)
+        end = start + datetime.timedelta(days=3)
+        return {
+            'patient_name': name,
+            'patient_phone': phone,
+            'service_id': str(self.service.id),
+            'preferred_dates': [start.isoformat(), end.isoformat()],
+            'preferred_time_window': 'morning',
+        }
+
+    def test_a_web_booking_returns_a_telegram_link(self):
+        from django.conf import settings as django_settings
+
+        res = self.client.post(self.URL, self._payload(), format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        link = res.data.get('telegram_link')
+        self.assertTrue(link, 'the public response must carry the handoff link')
+        self.assertTrue(
+            link.startswith(f"https://t.me/{django_settings.TELEGRAM_BOT_USERNAME}?start="),
+            link,
+        )
+        token = link.split('?start=', 1)[1]
+        self.assertGreaterEqual(len(token), 16)
+        # Not the guessable request code.
+        self.assertNotEqual(token, res.data['request_code'])
+        self.assertNotIn(res.data['request_code'], token)
+
+    def test_each_request_gets_its_own_token(self):
+        first = self.client.post(self.URL, self._payload('First Patient', '08030001235'), format='json')
+        second = self.client.post(self.URL, self._payload('Second Patient', '08030001236'), format='json')
+
+        first_token = first.data['telegram_link'].split('?start=', 1)[1]
+        second_token = second.data['telegram_link'].split('?start=', 1)[1]
+        self.assertNotEqual(first_token, second_token)
+
+    def test_the_token_never_appears_in_the_staff_queue(self):
+        created = self.client.post(self.URL, self._payload(), format='json')
+        token = created.data['telegram_link'].split('?start=', 1)[1]
+
+        staff = StaffUser.objects.create(
+            full_name='Link Staff', email='link.staff@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        staff.set_password('LinkPass123!')
+        staff.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'link.staff@clinic.com', 'password': 'LinkPass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+        queue = self.client.get('/api/v1/booking-requests/')
+        blob = str(queue.data)
+
+        self.assertEqual(queue.status_code, status.HTTP_200_OK)
+        self.assertNotIn(token, blob)
+        self.assertNotIn('telegram_link_token', blob)
+
+
+class TelegramLinkHandoffTests(APITestCase):
+    """
+    Zero-partner route / Step 3 — the web booking hands the patient to Telegram.
+
+    `/start <token>` is the only thing that can bind a chat to a request, and it
+    is deliberately strict: one chat per request (no hijack), an unknown token
+    is refused, a closed request is refused, and `/start` with no token keeps
+    the existing welcome menu untouched.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.service = Service.objects.create(
+            name='Link Bot Service', category='General', duration_minutes=30,
+        )
+        self.booking = BookingRequest.objects.create(
+            patient_name='Link Bot Patient',
+            patient_phone='+2348030001999',
+            service=self.service,
+            status='awaiting_review',
+            channel='web',
+            patient_notes='Booked on the website.',
+        )
+
+    def _start(self, token, chat_id=555001):
+        payload = {'message': {
+            'message_id': 42,
+            'chat': {'id': chat_id},
+            'from': {'id': chat_id, 'first_name': 'Ada', 'last_name': 'Link'},
+            'text': f'/start {token}',
+        }}
+        with patch.object(TelegramService, 'send_message') as send, \
+                patch.object(TelegramService, 'answer_callback_query'):
+            result = TelegramService.handle_telegram_webhook(payload)
+        return result, send
+
+    def _notes(self):
+        self.booking.refresh_from_db()
+        return self.booking.patient_notes or ''
+
+    def test_a_valid_token_links_the_chat(self):
+        result, send = self._start(self.booking.telegram_link_token)
+
+        self.assertEqual(result['status'], 'linked')
+        self.assertIn('telegram_chat_id:555001', self._notes())
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action='TELEGRAM_LINKED',
+                entity_id=self.booking.id,
+            ).exists()
+        )
+        text = send.call_args[0][1]
+        self.assertIn(self.booking.request_code, text)
+
+    def test_the_same_chat_can_open_the_link_twice(self):
+        self._start(self.booking.telegram_link_token)
+        result, _ = self._start(self.booking.telegram_link_token)
+
+        self.assertEqual(result['status'], 'already_linked')
+        self.assertEqual(self._notes().count('telegram_chat_id:555001'), 1)
+
+    def test_a_second_chat_cannot_steal_the_booking(self):
+        self._start(self.booking.telegram_link_token, chat_id=111111)
+        result, _ = self._start(self.booking.telegram_link_token, chat_id=222222)
+
+        self.assertEqual(result['status'], 'link_rejected_other_chat')
+        notes = self._notes()
+        self.assertIn('telegram_chat_id:111111', notes)
+        self.assertNotIn('telegram_chat_id:222222', notes)
+
+    def test_an_unknown_token_is_refused(self):
+        result, send = self._start('not-a-real-token')
+
+        self.assertEqual(result['status'], 'link_token_unknown')
+        self.assertNotIn('telegram_chat_id', self._notes())
+        self.assertFalse(AuditLog.objects.filter(action='TELEGRAM_LINKED').exists())
+        self.assertTrue(send.called)
+
+    def test_a_closed_request_is_not_linked(self):
+        self.booking.status = 'converted'
+        self.booking.save(update_fields=['status', 'updated_at'])
+
+        result, _ = self._start(self.booking.telegram_link_token)
+
+        self.assertEqual(result['status'], 'link_request_closed')
+        self.assertNotIn('telegram_chat_id', self._notes())
+
+    def test_start_without_a_token_keeps_the_welcome_menu(self):
+        payload = {'message': {
+            'message_id': 43,
+            'chat': {'id': 555009},
+            'from': {'id': 555009, 'first_name': 'New'},
+            'text': '/start',
+        }}
+        with patch.object(TelegramService, 'send_message') as send:
+            result = TelegramService.handle_telegram_webhook(payload)
+
+        self.assertEqual(result['status'], 'welcomed')
+        markup = send.call_args.kwargs.get('reply_markup')
+        self.assertTrue(markup and markup.get('inline_keyboard'))
 
 
 class SeedClinicHygieneTests(TestCase):

@@ -486,6 +486,11 @@ class BookingRequest(models.Model):
     channel = models.CharField(max_length=32, choices=CHANNEL_CHOICES, default='web')
     status = models.CharField(max_length=32, choices=STATUS_CHOICES, default='awaiting_review', db_index=True)
     channel_blocked = models.BooleanField(default=False)
+    # Zero-partner route / Step 2 — the key that binds a patient's Telegram chat
+    # to THIS request. Random by design: request codes are sequential and
+    # guessable, so they can never be a link credential. Never exposed in staff
+    # list payloads.
+    telegram_link_token = models.CharField(max_length=64, unique=True, null=True, blank=True, db_index=True)
     patient_notes = models.TextField(blank=True, default='')
     offer_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -503,7 +508,25 @@ class BookingRequest(models.Model):
     def __str__(self):
         return f"{self.request_code} - {self.patient_name} ({self.get_status_display()})"
 
+    @classmethod
+    def _new_telegram_link_token(cls):
+        """
+        A random, URL-safe token for `t.me/<bot>?start=<token>`.
+
+        Telegram start payloads accept A-Z a-z 0-9 _ and - only, which is
+        exactly what token_urlsafe produces. 16 bytes ≈ 22 characters — far
+        beyond guessing, and the uniqueness check keeps the DB constraint calm.
+        """
+        import secrets
+        for _ in range(6):
+            token = secrets.token_urlsafe(16)
+            if not cls.objects.filter(telegram_link_token=token).exists():
+                return token
+        return secrets.token_urlsafe(24)
+
     def save(self, *args, **kwargs):
+        if not self.telegram_link_token:
+            self.telegram_link_token = self._new_telegram_link_token()
         if not self.request_code:
             from django.db import IntegrityError, transaction
             current_year = timezone.now().year

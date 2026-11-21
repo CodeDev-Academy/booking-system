@@ -1,5 +1,6 @@
 import json
 import html
+import re
 import logging
 import uuid
 import urllib.request
@@ -469,6 +470,19 @@ class TelegramService:
             text = (msg.get('text') or '').strip()
             message_id = msg.get('message_id')
 
+            # Zero-partner route / Step 3 — the WEB → TELEGRAM handoff.
+            # The public booking page hands the patient `t.me/<bot>?start=<token>`
+            # (Step 2). Telegram delivers it here as "/start <token>" (or
+            # "/start@bot <token>" in a group), and THIS is the only code that
+            # binds a chat to a request. A token-less /start keeps the existing
+            # welcome menu below, untouched.
+            if chat_id and text.startswith('/'):
+                command, _, command_arg = text.partition(' ')
+                if command.split('@')[0].lower() == '/start' and command_arg.strip():
+                    return cls._link_telegram_chat(
+                        command_arg.strip(), chat_id, from_user, clinic,
+                    )
+
             # Wave 4 / Step 4.4 — ONE reply engine on every channel. A plain
             # TEXT ("Reply 1", "cancel", ...) from a chat that belongs to a
             # booking request routes through the SAME handle_patient_reply
@@ -510,6 +524,108 @@ class TelegramService:
             return {'status': 'welcomed', 'chat_id': chat_id, 'service_menu_sent': True}
 
         return {'status': 'ignored'}
+
+    # -------------------------------------------------------------------------
+    # Zero-partner route / Step 3 — web booking → Telegram handoff
+    # -------------------------------------------------------------------------
+    @classmethod
+    def _link_telegram_chat(cls, token, chat_id, from_user, clinic):
+        """
+        Bind an incoming chat to the booking request that owns `token`.
+
+        Rules, in order:
+          1. Unknown token → refuse politely. No writes.
+          2. Request no longer waiting (converted / rejected / offer_expired) →
+             tell the truth. No writes.
+          3. Chat already bound to this request → idempotent friendly answer.
+          4. Request bound to ANOTHER chat → refuse. One chat per request, so a
+             forwarded link cannot hijack somebody else's booking.
+          5. Otherwise → write the `telegram_chat_id:<id>` marker (the same
+             marker dispatch and the reply engine already read), audit it, and
+             confirm with the request code.
+
+        Django writes every sentence; the bot only delivers it.
+        """
+        clinic_name = html.escape(clinic.clinic_name)
+        request_obj = BookingRequest.objects.filter(telegram_link_token=token).first()
+
+        if not request_obj:
+            cls.send_message(chat_id, (
+                f"This booking link is not valid any more.\n\n"
+                f"Please start a new request on the {clinic_name} website and we "
+                f"will send you fresh times."
+            ))
+            return {'status': 'link_token_unknown', 'chat_id': chat_id}
+
+        if request_obj.status in ('converted', 'rejected', 'offer_expired'):
+            cls.send_message(chat_id, (
+                f"Request <code>{request_obj.request_code}</code> is no longer "
+                f"waiting for times, so it cannot be linked.\n\n"
+                f"Please ask {clinic_name} for a fresh request."
+            ))
+            return {
+                'status': 'link_request_closed',
+                'chat_id': chat_id,
+                'request_id': request_obj.request_code,
+            }
+
+        notes = request_obj.patient_notes or ''
+        existing = re.search(r'telegram_chat_id:(\d+)', notes)
+
+        if existing:
+            if existing.group(1) == str(chat_id):
+                cls.send_message(chat_id, (
+                    f"This chat is already connected to "
+                    f"<code>{request_obj.request_code}</code>.\n\n"
+                    f"The front desk will send the available times here."
+                ))
+                return {
+                    'status': 'already_linked',
+                    'chat_id': chat_id,
+                    'request_id': request_obj.request_code,
+                }
+
+            cls.send_message(chat_id, (
+                f"This booking link is already connected to a different Telegram "
+                f"chat.\n\n"
+                f"For everyone's safety, please contact {clinic_name} so we can "
+                f"verify the booking and send you a new link."
+            ))
+            return {
+                'status': 'link_rejected_other_chat',
+                'chat_id': chat_id,
+                'request_id': request_obj.request_code,
+            }
+
+        marker = f'telegram_chat_id:{chat_id}'
+        request_obj.patient_notes = f"{notes} {marker}".strip() if notes else marker
+        request_obj.save(update_fields=['patient_notes', 'updated_at'])
+
+        AuditLog.objects.create(
+            entity_name='BookingRequest',
+            entity_id=request_obj.id,
+            action='TELEGRAM_LINKED',
+            performed_by=f"Telegram:{chat_id}",
+            changes={
+                'request_code': request_obj.request_code,
+                'channel': request_obj.channel,
+            },
+        )
+
+        baby = html.escape(request_obj.patient_name.split(' ')[0] or 'there')
+        cls.send_message(chat_id, (
+            f"Connected, <b>{baby}</b>.\n\n"
+            f"Your request <code>{request_obj.request_code}</code> for "
+            f"<b>{html.escape(request_obj.service.name)}</b> is with the front desk.\n\n"
+            f"Available times will arrive here as buttons — tap the one you want, "
+            f"and it is held for you immediately."
+        ))
+
+        return {
+            'status': 'linked',
+            'chat_id': chat_id,
+            'request_id': request_obj.request_code,
+        }
 
     # -------------------------------------------------------------------------
     # Internal Handlers with Concurrency & Expiry Guards (EC-1, EC-2, EC-4)

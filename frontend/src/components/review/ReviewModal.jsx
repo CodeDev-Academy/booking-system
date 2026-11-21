@@ -182,6 +182,48 @@ export const ReviewModal = ({ review, actions }) => {
               </div>
             )}
 
+            {/* Zero-partner route / Step 5: the patient's own intake note.
+                We ask for a "reason for your visit" on /book, so it must be
+                visible here. Labelled as patient-provided, not a clinical note. */}
+            {review.symptoms && (
+              <div
+                className="rv-patient-note"
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '3px',
+                  padding: '8px 10px',
+                  marginBottom: '10px',
+                  borderRadius: '6px',
+                  background: 'var(--surface-2)',
+                  border: '1px solid var(--border)',
+                  minWidth: 0,
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: '10px',
+                    fontWeight: 600,
+                    letterSpacing: '0.04em',
+                    textTransform: 'uppercase',
+                    color: 'var(--text-3)',
+                  }}
+                >
+                  Patient&apos;s note (intake)
+                </span>
+                <span
+                  style={{
+                    fontSize: '11px',
+                    lineHeight: 1.5,
+                    color: 'var(--text-2)',
+                    overflowWrap: 'anywhere',
+                  }}
+                >
+                  {review.symptoms}
+                </span>
+              </div>
+            )}
+
             <PatientDossier
               dossier={review.dossier}
               interactions={review.interactions}
