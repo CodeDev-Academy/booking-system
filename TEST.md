@@ -522,6 +522,44 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
   requests; the board showed today's real lanes; the calendar showed the real roster (Bello,
   Okafor, Babawo) with real visit counts. One real crash found by the smoke test and fixed on the
   spot: LeftRail read the now-removed fake staff default without a guard.
+- [x] `T-759`: **The 30-day session exists** (review finding 11, step 4.1): login always returned a
+  30-day refresh token in its body (and set an HttpOnly cookie), but nothing could redeem it and
+  the frontend threw it away — staff were ejected after 60 minutes and retyped their password every
+  hour. Owner decision: the STORED refresh token. New `POST /api/v1/auth/refresh/` (body token
+  primary, cookie fallback, 401 on malformed/unknown/deactivated — the T-303 kill-switch holds on
+  this path), red-first 4/4; the store keeps `cbs_refresh_token`, a 401 silently renews ONCE and
+  retries, boot renews for returning staff, logout/eject clears it. Frontend harness
+  `test_session_flow.js` 5 red → 7/7. Live: login → refresh → the new access token authenticates
+  `/auth/me/`; a garbage token answers 401.
+- [x] `T-760`: **`telegram_chat_id` is a chat id, not a phone** (review finding 20, step 4.2): the
+  reminders feed handed the workflow the patient's PHONE NUMBER in the `telegram_chat_id` field, so
+  every Telegram reminder sent to "+234..." could only fail. It now reads the real chat id from the
+  request's `telegram_chat_id:<id>` marker, or answers `None` — honestly unreachable, never a phone
+  posing as a chat id. 3 tests red first, then 3/3.
+- [x] `T-761`: **"Ask for info" either delivers or tells the truth** (review finding 19, step 4.3):
+  the view answered `"status": "dispatched"` and audited `PATIENT_INQUIRY_DISPATCHED` while sending
+  nothing. A Telegram booking now gets a REAL send through TelegramService, logged as an
+  InteractionLog row; a booking with no reachable channel answers `recorded_only` with the truth and
+  audits `PATIENT_INQUIRY_RECORDED`; a failed send answers `send_failed` and logs the failure. 3
+  tests red first, then 3/3; the old T-307 test that pinned the lie was corrected.
+- [x] `T-762`: **One reply engine on every channel** (review finding 21, step 4.4): a plain TEXT on
+  Telegram ("Reply 1") got the welcome menu while the same words on SMS selected the slot — two
+  parallel inbound paths with different idempotency keys. Telegram texts now route through the SAME
+  `handle_patient_reply` engine (chat id → request via the marker, inbound InteractionLog row as the
+  idempotency claim, `tgmsg-<message_id>`), and the engine's answer is delivered back on Telegram;
+  unknown chats still get the welcome menu. The shared grammar also accepts "Reply 1, 2, or 3" —
+  the exact words the dispatch copy teaches patients, on both channels. 3 tests red first, then 3/3
+  (a provider retry answers `duplicate_ignored`, the same contract as SMS/WhatsApp). The dead
+  `BookingRequest.custom_config` read (finding 26) was removed in the same step; the CLINIC-level
+  `custom_config` remains the real source for the n8n dispatch URL.
+
+  Wave 4 gates: frontend harnesses **116/116** across 9 files (the Wave 3 eight plus
+  `test_session_flow` 7), `npm run build` clean, Django suite **438/438 OK**. The first full run
+  caught two real mistakes in the wave itself: the dead-branch cleanup left a later `custom_cfg`
+  reference dangling (fixed by restoring the CLINIC-level config — the actual source), and two
+  slot-hold security tests still booked "+7 days", which landed on a Saturday and was correctly
+  refused by the Wave 2 rules (anchored to the shared legal-slot helper). Both fixed before the
+  green run.
 
 ---
 
@@ -574,6 +612,7 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 | 2026-11-20 | Owner + Brain Agent | `Telegram token leak / T-746 closure` | **CLOSED** | The committed bot token was revoked in BotFather: the original and an intermediate token both answer **401 Unauthorized** from the Bot API, verified live. The live token exists only in the environment and `ClinicSetting.custom_config` (seeded via the env-only path); both dead values wiped from the dev DB. Git history now holds only a corpse. |
 | 2026-11-20 | Brain Agent | `Review Wave 2 / T-747-T-750` | **PASSED** | The booking-engine honesty wave, every step red-first. (T-747) `services/slot_rules.py` — ONE `validate_clinic_slot` mirroring the availability generator exactly; `acquire_slot` enforces past / clinic day / doctor day / shift+buffer / lunch / blocked dates / emergency reserve / notice / daily cap, with walk-in and emergency exemptions, and the 409 names the code: 11 violations red, then 14/14. (T-748) reschedule calls the same validator with `exclude_appointment_id`: 4 red, then 6/6. (T-749) `Appointment.STATUS_TRANSITIONS` — the staff endpoint answers 409 `INVALID_TRANSITION` for impossible edges (`completed -> arrived`, `cancelled -> confirmed`, the ghost `rescheduled`); terminal states are terminal: 5 red, then 8/8. (T-750) dispatch re-checks reception's picks under the doctor row lock, expired holds purged first; bad picks skipped with named reasons, none surviving → 409 `ALL_SLOTS_INVALID`, request untouched: 3 red, then 4/4. The first full run failed 21 legacy tests whose fixtures booked `now + N hours` (could land at 03:00 on a Saturday) or used doctors created with NO working days — fixed with the shared `next_legal_slot()` helper and real calendars; one real product defect found in the fallout: the dispatch re-check originally counted expired holds as conflicts, now purged like the booking path. Full suite **422/422 OK** (second run, after the fixes). |
 | 2026-11-20 | Brain Agent | `Review Wave 3 / T-751-T-758` | **PASSED** | The screen-tells-the-truth wave, every step red-first, plus the owner's two decisions: the site runs on the clinic's clock (not the visitor's computer), and Option B — the in-browser demo data is deleted, the pitch look comes from `seed_clinic` on the database. (T-751) `clinicTimeService` + health-published `server_time`/`timezone`; the proof matrix executed the service on fake computers set to New York and Tokyo — still `10:30 AM` in Lagos, a 2h-slow laptop corrected by the server; 13 red → 25/25. (T-752) empty answer replaces queue/calendar/settings; a failed fetch keeps the screen: 6 red → 8/8. (T-753) the Live Visits board fetches today's real appointments and maps them by status; live check showed the real lanes (Mariam waiting, Ibrahim in consultation, Ngozi completed): 4 red → 12/12. (T-754) the details modal and the remote mapping carry the backend UUIDs and real names; the default-to-Bello meta and the `svc-dental` hardcode are gone: 11 red → 11/11. (T-755) live writes ask the backend first and commit the row IT created; refusals surface the server's own sentence (Wave 2's 409s, finally visible): 10 red → 10/10. (T-756) `AdminStaffDetailView` persists `role` (invalid → 400, red-first 2/2); the store maps labels to real roles, drives the doctor duty endpoint, and live rows never hold a password or PIN; both PIN prints (toast + lock screen) removed: 10 red → 11/11. (T-757) Option B: all in-browser seeds deleted, every persisted store version-bumped with a one-time wipe migration (including the persisted demo passwords), resets are honest clears, the rail badges count real rows only, the brand shows the API-synced clinic name: 15 red → 15/15. (T-758) a production build without `VITE_API_URL` refuses to start with one clear message; the dead foreign-server constant is deleted: 2 red → green. Gates: 8 frontend harnesses **109/109**, build clean, Django **425/425 OK**. Live browser proof (logged in, zero console errors on queue / live-visits / calendar): the rail showed the real clinic name, address and signed-in session; the queue showed the 4 real seeded requests; the calendar showed the real roster with real visit counts. The smoke test caught one real crash (LeftRail read the removed fake staff default) — fixed and re-verified on the spot. |
+| 2026-11-21 | Brain Agent | `Review Wave 4 / T-759-T-762` | **PASSED** | The session-and-truth wave. (T-759) the 30-day session finally exists: `POST /api/v1/auth/refresh/` (body token primary per the owner's decision, cookie fallback retained, malformed/unknown/deactivated → 401 so the T-303 kill-switch holds), red-first 4/4; the store keeps `cbs_refresh_token`, a 401 renews ONCE and retries, boot renews for returning staff, logout/eject clears it; `test_session_flow.js` 5 red → 7/7; live login → refresh → `auth/me/` 200, garbage → 401. (T-760) `telegram_chat_id` was the patient PHONE; now the real chat id from the request's marker, or None: 3/3 red-first. (T-761) "Ask for info" said `dispatched` while sending nothing: Telegram bookings get a real send logged as an InteractionLog row, no-channel bookings answer `recorded_only` with the truth, failures answer `send_failed`; audit actions match reality: 3/3 red-first, old T-307 corrected. (T-762) one reply engine: a Telegram TEXT ("Reply 1") used to get the welcome menu while the same words on SMS selected the slot — Telegram texts now route through `handle_patient_reply` with the same idempotency claim (`tgmsg-<id>`, duplicate → `duplicate_ignored`) and the answer is delivered back; the shared grammar now accepts "Reply N", the words the dispatch copy teaches; 3/3 red-first. Finding 26's dead `BookingRequest.custom_config` branch removed; the CLINIC-level config is the real source for the n8n dispatch URL. First full run exposed two mistakes IN the wave — the dead-branch cleanup left a dangling `custom_cfg` (restored as clinic config) and two security-test fixtures booked "+7 days" (a Saturday, correctly refused by Wave 2 rules; anchored to the legal-slot helper). Gates: 9 frontend harnesses **116/116**, build clean, Django **438/438 OK**. |
 
 ---
 

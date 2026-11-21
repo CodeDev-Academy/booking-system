@@ -196,6 +196,15 @@ Allows the receptionist or automated webhook to advance appointment state.
  
 ### `POST /api/v1/auth/login/`
 Authenticates receptionist with email and password, returns user profile, role, and issues 30-day HTTP-Only cookie.
+The response also carries the refresh token in the body (`refresh`), which the frontend stores
+and redeems through the endpoint below.
+
+### `POST /api/v1/auth/refresh/`
+Redeems a valid 30-day refresh token for a fresh 60-minute access token.
+Body: `{"refresh": "<token>"}`; the HttpOnly `clinic_refresh_token` cookie is a fallback for
+same-origin deployments. `200 {"access": "<jwt>"}`; `401 INVALID_REFRESH_TOKEN` for a malformed or
+unknown token, and `401 ACCOUNT_DEACTIVATED` when the account was deactivated (the T-303
+kill-switch holds on this path too — a deactivated staff member cannot renew a session).
 
 ### `POST /api/v1/auth/pin-unlock/`
 Validates 4-digit Quick PIN after 20-minute idle screen lock.
@@ -264,6 +273,17 @@ accepted — this is a machine-to-machine route.
   "provider_message_id": "vb-in-8812"
 }
 ```
+
+**Grammar:** a bare number (`1`–`20`), or the same with the teaching word in front
+(`Reply 1`, `Option 1`) — the dispatch copy says "Reply 1, 2, or 3", so the engine accepts
+what it taught. `cancel` / `stop`, `reschedule` / `change` / `move` / `new time`, and
+anything else becomes `needs_reception`.
+
+**One engine everywhere:** the same `handle_patient_reply` core also runs for Telegram text
+replies (a plain message from a chat whose `telegram_chat_id:<id>` marker resolves a booking);
+Telegram button taps stay a separate, richer flow. The inbound InteractionLog row keyed by
+`external_ref` is the idempotency claim on every channel, so a provider retry answers
+`duplicate_ignored` instead of acting twice.
 
 **Response (`200 OK`):**
 ```json

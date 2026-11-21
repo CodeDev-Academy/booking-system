@@ -2698,6 +2698,45 @@ calendar showed the real roster. The smoke test caught one real crash
 Waves 4-5 of the review remediation remain open (sessions, unified reply
 path, the medium sweep, doc sync).
 
+## Review Wave 4 — sessions and honest messaging (2026-11-21)
+
+The independent review's findings 11, 19, 20, 21 and 26, plus the owner's
+session decision:
+
+1. **The 30-day session exists (T-759).** Login always issued the refresh
+   token (body + HttpOnly cookie) but nothing could redeem it — staff were
+   ejected every 60 minutes. Owner decision: the STORED token. New
+   `POST /api/v1/auth/refresh/` (body primary, cookie fallback, the T-303
+   kill-switch enforced on this path too); the store keeps the token, a 401
+   silently renews once and retries, boot renews for returning staff, and
+   logout/eject clears it. Proven live: login → refresh → the new access
+   token authenticates.
+2. **`telegram_chat_id` is a chat id (T-760).** The reminders feed used to
+   hand n8n the patient's PHONE in that field — a Telegram send that could
+   only fail. It now reads the real chat id marker, or None.
+3. **AskInfo delivers or tells the truth (T-761).** `"dispatched"` while
+   sending nothing is gone: Telegram bookings get a real send (logged), a
+   no-channel booking answers `recorded_only`, failures answer
+   `send_failed`, and the audit action matches reality.
+4. **One reply engine (T-762).** A Telegram TEXT reply used to get the
+   welcome menu while SMS selected the slot. Texts now route through the
+   same `handle_patient_reply` engine, same idempotency claim, answer
+   returned on Telegram; unknown chats keep the welcome. The shared grammar
+   now accepts "Reply N" — the words the dispatch copy teaches.
+5. **Dead branch removed (finding 26).** `BookingRequest.custom_config` is
+   not a field; the CLINIC-level config is the real source for the n8n
+   dispatch URL.
+
+Gates: 9 frontend harnesses 116/116, build clean, Django 438/438 OK. The
+first full run caught two mistakes in the wave itself (a dangling
+`custom_cfg` reference after the cleanup; two security-test fixtures that
+booked "+7 days" — a Saturday — correctly refused by the Wave 2 rules) —
+both fixed before the green run.
+
+Wave 5 remains: the medium sweep (duty/leave semantics, service-delete
+guard, role-label heuristics, export/import mask, attendance N+1, double
+mount, the low items) and the documentation truth pass.
+
 
 ## Next up - Phase 5 (partner handover)
 
