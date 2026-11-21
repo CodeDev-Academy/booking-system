@@ -248,6 +248,49 @@ is refused.
 
 ---
 
+### `GET /api/v1/follow-ups/`
+The **Recalls page**. Returns every recall plus counts:
+
+```json
+{
+  "counts": { "upcoming": 3, "sent": 12, "done": 4, "cancelled": 1 },
+  "items": [
+    {
+      "id": "…",
+      "appointment_code": "AP-1042",
+      "patient_name": "Amina Yusuf",
+      "doctor_name": "Dr. Bello",
+      "service_name": "Dental Consultation",
+      "follow_up_date": "2026-12-05",
+      "send_at": "09:00:00",
+      "patient_message": "Please come back in two weeks.",
+      "status": "upcoming"
+    }
+  ]
+}
+```
+
+`status` is derived: `cancelled` → `done` → `sent` → `upcoming`.
+Filters: `?status=upcoming|sent|done|cancelled`, `?search=` (patient, phone or
+code), `?doctor_id=`. **The clinical note is not in this payload** — this is a
+front-desk screen.
+
+### `PATCH /api/v1/follow-ups/{id}/`
+```json
+{ "cancelled": true }
+{ "is_completed": true }
+{ "follow_up_date": "2026-12-09", "send_at": "14:00", "patient_message": "…" }
+```
+
+- **Cancel** keeps the recall on record (`cancelled_at`, `cancelled_by`) and the
+  sweep ignores it. `{"cancelled": false}` restores it (only before sending).
+- **Mark done** is allowed at any time.
+- **Edit** (date, time, message) is allowed only **before** the recall is sent:
+  `409 ALREADY_SENT` afterwards, `409 CANCELLED` when it was cancelled. The
+  message keeps the same 300-character limit.
+
+---
+
 ## 4. Staff Authentication & Admin Governance
  
 ### `POST /api/v1/auth/login/`

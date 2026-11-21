@@ -2899,6 +2899,30 @@ Gates: 13 harnesses 171/171, build clean, Django 497/497 OK, live proof 12/12.
 Still open: delivery needs the Telegram token (or SMS/WhatsApp when connected);
 a "Recalls" list with cancel/mark-done is the natural next step.
 
+## Recalls List — nothing disappears (2026-11-21)
+
+**The gap.** A saved recall could only be seen in the Django admin. The front
+desk had no way to check what was scheduled, stop one, or correct a typo.
+
+1. **`GET /api/v1/follow-ups/`** — every recall with counts for **upcoming**,
+   **sent**, **done** and **cancelled**; search by patient, phone or code. The
+   payload deliberately carries **no clinical note** (front-desk screen).
+2. **`PATCH /api/v1/follow-ups/{id}/`** — cancel (kept on record with
+   `cancelled_at`/`cancelled_by`, never sent), mark done, or edit the date, time
+   and message **only before it is sent**. Sent → `409 ALREADY_SENT`;
+   cancelled → `409 CANCELLED`.
+3. **`/recalls` page** in the left rail: four groups, inline edit, and every
+   note-only recall labelled "Note only — no message will be sent".
+4. The sweep ignores cancelled recalls (`cancelled_at__isnull=True`).
+
+Owner choices applied: cancelled recalls are **kept**, and **any staff** may
+edit or cancel.
+
+Gates: 14 harnesses 184/184, build clean, Django 506/506 OK, live proof 19/19.
+
+Still open: delivery needs the Telegram token (or SMS/WhatsApp when connected).
+
+
 
 ## Next up - Phase 5 (partner handover)
 
