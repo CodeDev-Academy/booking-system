@@ -14,7 +14,10 @@
 
 ```env
 # n8n instance environment
-DJANGO_API_BASE_URL=https://your-clinic-backend.up.railway.app
+# CANONICAL (matches .env.example and every shipped workflow): the base URL
+# INCLUDES /api/v1 — workflows append bare paths like '/booking-requests/' or
+# '/webhooks/expiry-sweep/' to it. A base without /api/v1 makes every call 404.
+DJANGO_API_BASE_URL=https://your-clinic-backend.up.railway.app/api/v1
 DJANGO_WEBHOOK_SECRET=<MUST equal the backend's WEBHOOK_SECRET env value>
 N8N_DISPATCH_WEBHOOK_URL=https://<your-n8n>/webhook/dispatch-offers
 

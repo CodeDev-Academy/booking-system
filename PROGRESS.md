@@ -278,12 +278,12 @@
         - Django Backend Suite: **83/83 Passed (100%)** in 233.2s.
         - Frontend Production Build: **0 errors** across 2,010 modules.
     - [x] **Full Live Production Transition (`isDemoMode: false`) & n8n Standalone Ownership**:
-      - **Permanent Live Production Enforcement**: Removed all offline demo mode toggles and switchers. Locked `isDemoMode: false` across all stores (`useQueueStore`, `useCalendarStore`, `useVisitsStore`, `useSettingsStore`, `useStaffStore`, `useAuthStore`), views (`SettingsView`, `CalendarView`, `StaffView`), and layout (`Shell`). All receptionist and patient interactions execute live against Django REST API endpoints.
+      - **Permanent Live Production Enforcement**: Removed all offline demo mode toggles and switchers. Locked `isDemoMode: false` across all stores (`useQueueStore`, `useCalendarStore`, `useVisitsStore`, `useSettingsStore`, `useStaffStore`, `useAuthStore`), views (`SettingsView`, `CalendarView`, `StaffView`), and layout (`Shell`). All receptionist and patient interactions execute live against Django REST API endpoints. *(Honest note added 2026-11-21: at the time this was written the stores still SEEDED demo rows in the browser; the claim became literally true only with Wave 3 / Option B, which deleted the in-browser demo data entirely — the pitch look now comes from `seed_clinic` on the database.)*
       - **Live Neon PostgreSQL Verification**: Verified live connection to AWS Neon PostgreSQL (`neondb` on AWS us-east-2). All 22 database migrations verified applied (`[X]`). Configured direct IP resolution (`hostaddr=52.14.39.200`) in `DATABASE_URL` to eliminate Windows DNS `getaddrinfo` latency. Verified live domain records (7 staff users, 3 doctors, 5 services, 10 booking requests, 6 appointments).
       - **PostgreSQL Atomic Concurrency Hardening**: Resolved PostgreSQL `FOR UPDATE cannot be applied to the nullable side of an outer join` exception in `SweepService` by adding explicit `select_for_update(of=('self',))` table-targeted row locking.
       - **Standalone n8n Automation Engine Alignment**: Standardized all 5 workflow JSON templates in `n8n/`. Verified that standing 60s background cron (`02_hold_and_offer_expiry_cron.json`) pings `POST /api/v1/webhooks/expiry-sweep/` with `X-Webhook-Secret` and receives HTTP 200 OK with live release payload (`expired_offers`, `pre_expiry_nudges`, `expired_holds`).
       - **Production Bento Redesign (`SystemDeploymentBento.jsx`)**: Replaced offline demo mode cards with a 3-pillar production status dashboard (Django REST API, Neon PostgreSQL, n8n Automation Engine) and a 1-click **Force Sync Fresh Data from Backend** trigger.
-      - **End-to-End Test Suite Verification in Live Mode**: Playwright E2E suite executed in 100% live mode with real JWT authentication: **8/8 tests passed in 34.1s**. Backend Django test suite: **83/83 tests passed**. Production frontend build: **0 errors**.
+      - **End-to-End Test Suite Verification in Live Mode**: Playwright E2E suite executed in 100% live mode with real JWT authentication: **8/8 tests passed in 34.1s**. Backend Django test suite: **83/83 tests passed**. Production frontend build: **0 errors**. *(Historical run, 2026-10-31. Current state: the Django suite is 438/438 and the E2E spec is runnable but not part of an automated run — see TEST.md §1.)*
     - [x] **Web Intake Form Architecture & Custom Date Range Engine Integration**:
       - **Dual Ingestion Architecture Codified**: Formulated the production connection pathways:
         1. *Unified Ingestion Gateway via n8n Webhook Node*: Web form posts to `POST https://n8n.yourdomain.com/webhook/intake-patient-request` for centralized channel parity, validation, and forwarding to Django.
@@ -2736,6 +2736,45 @@ both fixed before the green run.
 Wave 5 remains: the medium sweep (duty/leave semantics, service-delete
 guard, role-label heuristics, export/import mask, attendance N+1, double
 mount, the low items) and the documentation truth pass.
+
+## Review Wave 5 — the medium sweep and the truth pass (2026-11-21)
+
+The last wave closes the review's Medium and Low findings and reconciles the
+documentation with the shipped system. Every behavioural item was red-first:
+
+1. **"Back on duty" keeps real leave (T-763).** It deletes only the row the
+   switch created; a legitimate "leave until further notice" survives.
+2. **A used service cannot be deleted (T-764).** `ProtectedError` used to
+   surface as a raw 500; it is a 409 naming the count and the alternative.
+3. **Role labels from the data (T-765).** No more "any Sarah is Lead
+   Receptionist"; the real role and the stored shift are returned.
+4. **Export → import keeps secrets (T-766).** The importer recognises the
+   mask sentinel and keeps the current value instead of overwriting it.
+5. **Attendance CSV, one query (T-767).** A single aggregate replaces four
+   counts per doctor.
+6. **One API mount (T-768).** The bare `/api/` prefix is gone; nothing used
+   it.
+7. **The low findings (T-769).** Date-aware Telegram confirmations; the
+   conflict lookback uses the real maximum buffer; `Doctor.working_days`
+   defaults to Mon–Fri (migration `0008`); the configured clinic name in
+   the dispatch copy; **the live Telegram intake no longer fabricates a
+   dialable `+23480<chat tail>` phone** (a stranger's line in the worst
+   case — it now stores no phone and the availability reports Telegram-only);
+   the dead handler that also fabricated a phone deleted; import cleanup.
+8. **Docs match the system (T-770).** TEST.md's summary table now states the
+   real counts (Django 455, frontend 116, 11 n8n files) and marks the
+   Playwright spec as runnable-but-not-automated; the n8n build sheet base
+   URL matches `.env.example`; the frontend env example no longer claims a
+   Vite proxy; PROGRESS's historical claims are annotated.
+
+Gates: 9 frontend harnesses 116/116, build clean, 11 n8n harnesses green,
+Django 455/455 OK. The suite caught one self-inflicted breakage during the
+wave (a no-op edit joined two model field lines, swallowing
+`lunch_break_start`) — fixed immediately.
+
+With Wave 5 the review remediation is complete. Still open by nature:
+partner credentials (5.2), staging deploy (5.3), CI, and Postgres/MySQL
+verification.
 
 
 ## Next up - Phase 5 (partner handover)

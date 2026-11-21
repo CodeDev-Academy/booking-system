@@ -7,19 +7,23 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 
 ## 1. Test Suite Status Overview
 
-| Test Suite / Category | Target Area | Tooling | Total Tests | Status | Pass Rate |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Phase 1: Relational Schema & Models** | 11 Domain Models, Constraints, Relationships | `unittest` / Django Test Runner | 4 | ✅ Passed | 100% (4/4) |
-| **Phase 2: Availability & Services** | 4-Factor Scoring, Overlaps, Buffers, Leave | Django Test Runner | 4 | ✅ Passed | 100% (4/4) |
-| **Phase 2: Concurrency & Atomic Hold** | `select_for_update()`, Race Conditions | Django Atomic Runner | 2 | ✅ Passed | 100% (2/2) |
-| **Phase 2: 60s Cron Sweeper** | Expiry State Transitions, Auto-Release | Django Test Runner | 2 | ✅ Passed | 100% (2/2) |
-| **Phase 3: REST API & Auth** | 44 Endpoints, JWT, Quick-PIN, Deactivation, Sweeper Webhook | DRF `APITestCase` | 83 | ✅ Passed | 100% (83/83) |
-| **Phase 3: Realtime SSE Stream** | SSE Events Broadcast & Reconnection | Integration Test | 2 | ✅ Passed | 100% (2/2) |
-| **Phase 4: Frontend Receptionist Hub** | UI Components, State Hooks, Modals | Headless Hooks & Bento UI | 8 | ✅ Passed | 100% (8/8) |
-| **Phase 4.5: Playwright E2E Suite** | Full End-to-End User Journeys (Queue, Calendar, Simulator, Live Visits, Staff, Settings, Auth) in 100% Live Production Mode (`isDemoMode: false`) | Playwright (Google Chrome Engine) | 8 | ✅ Passed | 100% (8/8 in 34.1s) |
-| **Phase 5: Messaging & n8n** | Standing 60s Expiry Cron Sweeper (`POST /api/v1/webhooks/expiry-sweep/`), Intake Normalizer | n8n Webhook Engine & Django Sweeper | 5 | ✅ Verified | 100% (5/5) |
-| **Phase 5: Workflow D — Dispatch Reliability** | Provider adapter, voice guard, live sends, InteractionLog, provider callbacks, dispatch auth | n8n live executions + Django `InteractionLogAPITests` / `AsyncDispatchWebhookTests` | 21 | ✅ Verified | 100% (21/21) |
-| **Phase 6: White-Label & Production** | Agency Configs, Live Neon PostgreSQL, Migration Checks | Live Health Checks & E2E Runs | 4 | ✅ Verified | 100% (4/4) |
+The table below is the **current** state (2026-11-21). The per-case boxes in
+section 2 are historical records — several earlier boxes stay unticked because
+that matrix was written per-session, not maintained; the counts here come from
+the runners themselves.
+
+| Test Suite / Category | Target Area | Tooling | Total Tests | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **Django application suite** | Models, availability, holds, disruption/leave, booking queue, live visits, auth & sessions, staff, settings, webhooks, analytics, exports | Django Test Runner (`python manage.py test appointments`) | **438** | ✅ **438/438 OK** (~4.5 min) |
+| **Frontend contract harnesses** | Booking payloads, calendar truth, clinic clock (3-timezone matrix), no demo seeds, no ghost rows, session flow, staff truth, truthful screens, visits sync | Node (`frontend/tests/*.js`) | **116** | ✅ **116/116** (9 files) |
+| **n8n node harnesses** | Workflows 01–08: adapter, callback auth, disruption notifier, log nodes, format, reminders, reply handler, simulator ids, sweeper, voice guard | Node (`n8n/tests/*.js`) | **11 files** | ✅ all green |
+| **Frontend production build** | `vite build` (module graph, asset emit) | Vite | — | ✅ clean |
+| **Playwright E2E spec** | Full user journeys across queue / calendar / simulator / visits / staff / settings / auth | Playwright (`frontend/e2e/clinic-e2e.spec.js`) | 8 scenarios | ⚠️ spec exists and is runnable (`npm run test:e2e`), but it is **not** part of any automated run here — no CI, and it was last executed manually in live mode |
+| **Postgres / MySQL** | Engine portability via Django ORM | — | — | ⚠️ not verified (SQLite only; no Docker) |
+
+**Live n8n instance**: workflows 01–08 imported and active against the local
+instance, with real simulator runs recorded for `08` and `01` (see the
+execution log). Production staging (Railway/Vercel) is not deployed yet.
 
 ---
 
@@ -560,6 +564,61 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
   slot-hold security tests still booked "+7 days", which landed on a Saturday and was correctly
   refused by the Wave 2 rules (anchored to the shared legal-slot helper). Both fixed before the
   green run.
+- [x] `T-763`: **"Back on duty" cleans up its own row only** (review finding 15, step 5.1): the
+  switch opened an open-ended leave row when a doctor went off duty and deleted EVERY row with
+  `end_date IS NULL` on return — including a legitimate "leave until further notice", silently
+  cutting a real absence short. It now removes only the row carrying its own reason marker; dated
+  plans were never touched. 3 tests red first, then 3/3.
+- [x] `T-764`: **A used service cannot be deleted, and says so** (review finding 16, step 5.2):
+  `?permanent=true` raised `ProtectedError` from the Appointment FK and the client saw a raw 500.
+  Now 409 `SERVICE_IN_USE` with the appointment count and the honest alternative (deactivate); an
+  unused service still deletes. 2 tests red first (the error was the proof), then 2/2.
+- [x] `T-765`: **Role labels come from the data, not the name** (review finding 17, step 5.3):
+  `get_role_label` turned any "sarah" into "Lead Receptionist" and `get_shift` guessed hours from
+  emails, so a NEW receptionist called Sarah inherited someone else's title and shift. The API now
+  returns the real role display and the stored shift (empty when unset). 2 tests red first, then
+  2/2; the old login-payload test that pinned the heuristic was corrected.
+- [x] `T-766`: **Export → import keeps the secrets** (review finding 22, step 5.4): a receptionist's
+  export masks every sensitive custom_config value; the importer wrote the payload back verbatim,
+  so a round-trip replaced the real bot token with the mask. The importer now recognises the shared
+  sentinel and keeps the CURRENT value (a genuinely new value is still written). 2 tests red first
+  (one reproduced the real receptionist-export → admin-import path), then 2/2.
+- [x] `T-767`: **The attendance CSV is one query, not four per doctor** (review finding 23, step
+  5.5): a single aggregate replaces the per-doctor count loop. The test compares the query count
+  for one doctor against four — 6 vs 6 now, it was 6 vs 18 — and pins the CSV numbers. 2 tests red
+  first, then 2/2.
+- [x] `T-768`: **One API mount** (review finding 24, step 5.6): every endpoint was served at
+  `/api/v1/` AND `/api/`, hiding URL mistakes. The bare mount is gone (verified first that nothing
+  in the app, the n8n workflows or the tests used it); `/api/health/` now answers 404 while
+  `/api/v1/health/` works. 2 tests red first, then 2/2.
+- [x] `T-769`: **The low findings, honestly** (review `Low` list, step 5.7): (a) the Telegram
+  arrival confirmation said "See you tomorrow" for a visit next week — it now names the real day and
+  time; (b) `find_slot_conflict` looked back a hardcoded 60 minutes, so a prior service with a
+  120-minute buffer was never fetched and the overlap went undetected — the lookback now uses the
+  real maximum buffer; (c) `Doctor.working_days` defaulted to `[]`, making a doctor created without
+  days silently never bookable — the default is now Mon–Fri (migration
+  `0008_doctor_working_days_default`); (d) the dispatch message hardcoded "Cedarcare Specialist
+  Clinic" instead of the configured clinic name; (e) the Telegram intake FABRICATED a dialable
+  `+23480<chat-id tail>` phone for a patient who never shared one — a real stranger's line in the
+  worst case — it now stores no phone, and the channel availability already treats a phoneless
+  booking as Telegram-only; (f) the dead `_handle_service_booking` handler (the other place that
+  fabricated a phone) was deleted; (g) unused analytics imports removed; (h) `unlockPin` no longer
+  sends an `email` the view ignores (the PIN unlocks the session's own account). 4 red-first tests
+  for (a)–(d), then 4/4; the rest are verified by the affected suites.
+- [x] `T-770`: **The documentation matches the system** (review Batch 5, step 5.8): TEST.md's
+  summary table claimed 4+4+2+2+83+2+8+8+5+21+4 tests and "100% live E2E" — it now states the REAL
+  current counts (Django 438, frontend harnesses 116, 11 n8n files), and marks the Playwright spec
+  honestly as runnable but not part of an automated run, with Postgres/MySQL unverified. The n8n
+  build sheet's base URL now matches `.env.example` (includes `/api/v1`, the canonical contract the
+  workflows were built against). `frontend/.env.example` no longer claims a Vite proxy that does
+  not exist. PROGRESS's historical phase entry gained honest notes: the "all interactions execute
+  live" claim only became literally true with Wave 3 / Option B, and its 83/83 + 8/8 numbers are
+  marked historical.
+
+  Wave 5 gates: frontend harnesses **116/116**, `npm run build` clean, all **11** n8n harnesses
+  green, Django suite **455/455 OK**. One self-inflicted breakage caught and fixed during the wave:
+  a no-op edit joined two model field lines (the `lunch_break_start` definition was swallowed by a
+  comment), which the suite exposed immediately as a NOT NULL failure.
 
 ---
 
@@ -613,6 +672,7 @@ It tracks the exact validation status, test suites, edge-case scenarios, securit
 | 2026-11-20 | Brain Agent | `Review Wave 2 / T-747-T-750` | **PASSED** | The booking-engine honesty wave, every step red-first. (T-747) `services/slot_rules.py` — ONE `validate_clinic_slot` mirroring the availability generator exactly; `acquire_slot` enforces past / clinic day / doctor day / shift+buffer / lunch / blocked dates / emergency reserve / notice / daily cap, with walk-in and emergency exemptions, and the 409 names the code: 11 violations red, then 14/14. (T-748) reschedule calls the same validator with `exclude_appointment_id`: 4 red, then 6/6. (T-749) `Appointment.STATUS_TRANSITIONS` — the staff endpoint answers 409 `INVALID_TRANSITION` for impossible edges (`completed -> arrived`, `cancelled -> confirmed`, the ghost `rescheduled`); terminal states are terminal: 5 red, then 8/8. (T-750) dispatch re-checks reception's picks under the doctor row lock, expired holds purged first; bad picks skipped with named reasons, none surviving → 409 `ALL_SLOTS_INVALID`, request untouched: 3 red, then 4/4. The first full run failed 21 legacy tests whose fixtures booked `now + N hours` (could land at 03:00 on a Saturday) or used doctors created with NO working days — fixed with the shared `next_legal_slot()` helper and real calendars; one real product defect found in the fallout: the dispatch re-check originally counted expired holds as conflicts, now purged like the booking path. Full suite **422/422 OK** (second run, after the fixes). |
 | 2026-11-20 | Brain Agent | `Review Wave 3 / T-751-T-758` | **PASSED** | The screen-tells-the-truth wave, every step red-first, plus the owner's two decisions: the site runs on the clinic's clock (not the visitor's computer), and Option B — the in-browser demo data is deleted, the pitch look comes from `seed_clinic` on the database. (T-751) `clinicTimeService` + health-published `server_time`/`timezone`; the proof matrix executed the service on fake computers set to New York and Tokyo — still `10:30 AM` in Lagos, a 2h-slow laptop corrected by the server; 13 red → 25/25. (T-752) empty answer replaces queue/calendar/settings; a failed fetch keeps the screen: 6 red → 8/8. (T-753) the Live Visits board fetches today's real appointments and maps them by status; live check showed the real lanes (Mariam waiting, Ibrahim in consultation, Ngozi completed): 4 red → 12/12. (T-754) the details modal and the remote mapping carry the backend UUIDs and real names; the default-to-Bello meta and the `svc-dental` hardcode are gone: 11 red → 11/11. (T-755) live writes ask the backend first and commit the row IT created; refusals surface the server's own sentence (Wave 2's 409s, finally visible): 10 red → 10/10. (T-756) `AdminStaffDetailView` persists `role` (invalid → 400, red-first 2/2); the store maps labels to real roles, drives the doctor duty endpoint, and live rows never hold a password or PIN; both PIN prints (toast + lock screen) removed: 10 red → 11/11. (T-757) Option B: all in-browser seeds deleted, every persisted store version-bumped with a one-time wipe migration (including the persisted demo passwords), resets are honest clears, the rail badges count real rows only, the brand shows the API-synced clinic name: 15 red → 15/15. (T-758) a production build without `VITE_API_URL` refuses to start with one clear message; the dead foreign-server constant is deleted: 2 red → green. Gates: 8 frontend harnesses **109/109**, build clean, Django **425/425 OK**. Live browser proof (logged in, zero console errors on queue / live-visits / calendar): the rail showed the real clinic name, address and signed-in session; the queue showed the 4 real seeded requests; the calendar showed the real roster with real visit counts. The smoke test caught one real crash (LeftRail read the removed fake staff default) — fixed and re-verified on the spot. |
 | 2026-11-21 | Brain Agent | `Review Wave 4 / T-759-T-762` | **PASSED** | The session-and-truth wave. (T-759) the 30-day session finally exists: `POST /api/v1/auth/refresh/` (body token primary per the owner's decision, cookie fallback retained, malformed/unknown/deactivated → 401 so the T-303 kill-switch holds), red-first 4/4; the store keeps `cbs_refresh_token`, a 401 renews ONCE and retries, boot renews for returning staff, logout/eject clears it; `test_session_flow.js` 5 red → 7/7; live login → refresh → `auth/me/` 200, garbage → 401. (T-760) `telegram_chat_id` was the patient PHONE; now the real chat id from the request's marker, or None: 3/3 red-first. (T-761) "Ask for info" said `dispatched` while sending nothing: Telegram bookings get a real send logged as an InteractionLog row, no-channel bookings answer `recorded_only` with the truth, failures answer `send_failed`; audit actions match reality: 3/3 red-first, old T-307 corrected. (T-762) one reply engine: a Telegram TEXT ("Reply 1") used to get the welcome menu while the same words on SMS selected the slot — Telegram texts now route through `handle_patient_reply` with the same idempotency claim (`tgmsg-<id>`, duplicate → `duplicate_ignored`) and the answer is delivered back; the shared grammar now accepts "Reply N", the words the dispatch copy teaches; 3/3 red-first. Finding 26's dead `BookingRequest.custom_config` branch removed; the CLINIC-level config is the real source for the n8n dispatch URL. First full run exposed two mistakes IN the wave — the dead-branch cleanup left a dangling `custom_cfg` (restored as clinic config) and two security-test fixtures booked "+7 days" (a Saturday, correctly refused by Wave 2 rules; anchored to the legal-slot helper). Gates: 9 frontend harnesses **116/116**, build clean, Django **438/438 OK**. |
+| 2026-11-21 | Brain Agent | `Review Wave 5 / T-763-T-770` | **PASSED** | The medium sweep and the docs truth pass. (T-763) "back on duty" now removes only the switch's own leave row — a legitimate open-ended leave survives: 3/3 red-first. (T-764) a used service answers 409 `SERVICE_IN_USE` instead of a raw 500 from `ProtectedError`; an unused one still deletes: 2/2. (T-765) role labels and shifts come from the data, not from names/emails ("any new Sarah" no longer becomes Lead Receptionist): 2/2, old pinned test corrected. (T-766) export → import keeps the real secret (the importer recognises the mask sentinel and keeps the current value): reproduced via a receptionist export → admin import, 2/2. (T-767) the attendance CSV is one aggregate (6 vs 6 queries for 1 vs 4 doctors; it was 6 vs 18) and the numbers are pinned: 2/2. (T-768) one API mount; the bare `/api/` prefix is gone after verifying nothing used it: 2/2. (T-769) the low findings: date-aware Telegram confirmation, the real max-buffer lookback (a 120-minute buffer can no longer be missed), `working_days` defaults to Mon–Fri (migration 0008), the configured clinic name in dispatch copy, no more FABRICATED `+23480<chat tail>` phone in the live Telegram intake (a stranger's line in the worst case), the dead `_handle_service_booking` deleted, unused imports removed, `unlockPin` payload cleaned: 4/4 red-first for the behavioural ones. (T-770) TEST.md's stale summary table replaced with the real counts and an honest E2E/Postgres status; the n8n build sheet base URL aligned with `.env.example` (`/api/v1` included); `frontend/.env.example` no longer mentions a Vite proxy that does not exist; PROGRESS's historical phase entry annotated. Gates: 9 frontend harnesses **116/116**, build clean, all **11** n8n harnesses green, Django **455/455 OK**. A self-inflicted breakage was caught by the suite and fixed: a no-op edit joined two model field lines, swallowing `lunch_break_start`. |
 
 ---
 
