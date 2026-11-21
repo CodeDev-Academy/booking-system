@@ -277,6 +277,7 @@ class ReminderService:
         due_tasks = FollowUpTask.objects.filter(
             is_completed=False,
             reminder_sent=False,
+            cancelled_at__isnull=True,
             follow_up_date__lte=timezone.localdate(),
         ).exclude(
             # Rule B: an empty message sends nothing. The recall is a note.

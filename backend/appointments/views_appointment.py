@@ -4,6 +4,7 @@ import re
 import uuid
 import datetime
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
@@ -26,6 +27,8 @@ from .serializers_appointment import (
     SlotHoldRequestSerializer,
     AppointmentStatusUpdateSerializer,
     FollowUpTaskCreateSerializer,
+    FollowUpTaskListSerializer,
+    FollowUpTaskUpdateSerializer,
     AppointmentDetailSerializer,
     FollowUpTaskDetailSerializer,
 )
@@ -278,6 +281,128 @@ class FollowUpTaskCreateView(APIView):
         )
 
         return Response(FollowUpTaskDetailSerializer(task).data, status=status.HTTP_201_CREATED)
+
+
+class FollowUpTaskListView(APIView):
+    """
+    GET /api/v1/follow-ups/
+
+    Recalls list — every planned recall, grouped by status on the client:
+    `upcoming` (not sent, not done, not cancelled), `sent`, `done`, `cancelled`.
+    Search matches patient name, phone or appointment code. The clinical note is
+    deliberately absent from the payload: this is a front-desk screen.
+    """
+    permission_classes = [IsStaffAuthenticated]
+
+    def get(self, request):
+        qs = FollowUpTask.objects.select_related(
+            'appointment', 'appointment__doctor', 'appointment__service',
+        ).order_by('follow_up_date', 'send_at')
+
+        search = (request.query_params.get('search') or '').strip()
+        if search:
+            qs = qs.filter(
+                Q(appointment__patient_name__icontains=search)
+                | Q(appointment__appointment_code__icontains=search)
+                | Q(appointment__patient_phone__icontains=search)
+            )
+
+        doctor_id = (request.query_params.get('doctor_id') or '').strip()
+        if doctor_id:
+            qs = qs.filter(appointment__doctor_id=doctor_id)
+
+        items = FollowUpTaskListSerializer(qs, many=True).data
+
+        counts = {'upcoming': 0, 'sent': 0, 'done': 0, 'cancelled': 0}
+        for item in items:
+            counts[item['status']] = counts.get(item['status'], 0) + 1
+
+        wanted = (request.query_params.get('status') or '').strip()
+        if wanted in counts:
+            items = [item for item in items if item['status'] == wanted]
+
+        return Response({'counts': counts, 'items': items}, status=status.HTTP_200_OK)
+
+
+class FollowUpTaskDetailView(APIView):
+    """
+    PATCH /api/v1/follow-ups/{id}/
+
+    `cancelled`, `is_completed`, and — only BEFORE it is sent — the date, time
+    and patient message. A sent recall can still be marked done, but it can
+    never be edited or cancelled: you cannot unsend a message.
+    """
+    permission_classes = [IsStaffAuthenticated]
+
+    def patch(self, request, id):
+        task = FollowUpTask.objects.filter(id=id).first()
+        if not task:
+            return Response(
+                {'error': 'FOLLOW_UP_NOT_FOUND', 'detail': 'No recall matches this id.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = FollowUpTaskUpdateSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        editable = [key for key in ('follow_up_date', 'send_at', 'patient_message') if key in data]
+        if editable:
+            if task.reminder_sent:
+                return Response({
+                    'error': 'ALREADY_SENT',
+                    'detail': 'This recall was already sent, so it cannot be changed.',
+                }, status=status.HTTP_409_CONFLICT)
+            if task.cancelled_at:
+                return Response({
+                    'error': 'CANCELLED',
+                    'detail': 'This recall was cancelled. Create a new one instead.',
+                }, status=status.HTTP_409_CONFLICT)
+
+        changes = {}
+
+        if 'cancelled' in data:
+            if data['cancelled'] and task.reminder_sent:
+                return Response({
+                    'error': 'ALREADY_SENT',
+                    'detail': 'This recall was already sent, so it cannot be cancelled.',
+                }, status=status.HTTP_409_CONFLICT)
+            if data['cancelled']:
+                task.cancelled_at = task.cancelled_at or timezone.now()
+                task.cancelled_by = task.cancelled_by or request.user.email
+            else:
+                task.cancelled_at = None
+                task.cancelled_by = ''
+            task.save(update_fields=['cancelled_at', 'cancelled_by'])
+            changes['cancelled'] = bool(data['cancelled'])
+            action = 'FOLLOW_UP_TASK_CANCELLED' if data['cancelled'] else 'FOLLOW_UP_TASK_RESTORED'
+        else:
+            action = 'FOLLOW_UP_TASK_UPDATED'
+
+        if 'is_completed' in data:
+            task.is_completed = bool(data['is_completed'])
+            task.save(update_fields=['is_completed'])
+            changes['is_completed'] = task.is_completed
+            action = 'FOLLOW_UP_TASK_COMPLETED' if task.is_completed else 'FOLLOW_UP_TASK_REOPENED'
+
+        if editable:
+            fields = []
+            for key in editable:
+                setattr(task, key, data[key])
+                fields.append(key)
+            task.save(update_fields=fields)
+            changes['edited'] = editable
+
+        AuditLog.objects.create(
+            entity_name='FollowUpTask',
+            entity_id=task.id,
+            action=action,
+            performed_by=request.user.email,
+            changes=changes,
+            ip_address=request.META.get('REMOTE_ADDR'),
+        )
+
+        return Response(FollowUpTaskListSerializer(task).data, status=status.HTTP_200_OK)
 
 
 class ReassignLeaveView(APIView):

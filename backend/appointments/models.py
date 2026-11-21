@@ -685,6 +685,9 @@ class FollowUpTask(models.Model):
     reminder_sent = models.BooleanField(default=False)
     is_completed = models.BooleanField(default=False)
     reminder_sent_at = models.DateTimeField(null=True, blank=True)
+    # Recalls list: a cancelled recall stays on record but is never sent.
+    cancelled_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    cancelled_by = models.CharField(max_length=255, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

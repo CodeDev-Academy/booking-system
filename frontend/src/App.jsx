@@ -6,6 +6,7 @@ import { Shell } from './components/layout/Shell';
 const QueueView = lazy(() => import('./views/QueueView').then((m) => ({ default: m.QueueView })));
 const CalendarView = lazy(() => import('./views/CalendarView').then((m) => ({ default: m.CalendarView })));
 const LiveVisitsView = lazy(() => import('./views/LiveVisitsView').then((m) => ({ default: m.LiveVisitsView })));
+const RecallsView = lazy(() => import('./views/RecallsView').then((m) => ({ default: m.RecallsView })));
 const StaffView = lazy(() => import('./views/StaffView').then((m) => ({ default: m.StaffView })));
 const SettingsView = lazy(() => import('./views/SettingsView').then((m) => ({ default: m.SettingsView })));
 const SimulatorView = lazy(() => import('./views/SimulatorView').then((m) => ({ default: m.SimulatorView })));
@@ -39,6 +40,7 @@ function App() {
             <Route path="queue" element={<QueueView />} />
             <Route path="calendar" element={<CalendarView />} />
             <Route path="live-visits" element={<LiveVisitsView />} />
+            <Route path="recalls" element={<RecallsView />} />
             <Route path="admin/staff" element={<StaffView />} />
             <Route path="admin/settings" element={<SettingsView />} />
             <Route path="simulator" element={<SimulatorView />} />

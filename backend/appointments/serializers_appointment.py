@@ -178,6 +178,63 @@ class FollowUpTaskCreateSerializer(serializers.Serializer):
         return value
 
 
+class FollowUpTaskListSerializer(serializers.ModelSerializer):
+    """One recall row for the Recalls page. The clinical note is deliberately
+    absent: the list is a front-desk screen, and the note stays private."""
+    appointment_code = serializers.CharField(source='appointment.appointment_code', read_only=True)
+    patient_name = serializers.CharField(source='appointment.patient_name', read_only=True)
+    patient_phone = serializers.CharField(source='appointment.patient_phone', read_only=True)
+    doctor_name = serializers.CharField(source='appointment.doctor.name', read_only=True)
+    service_name = serializers.CharField(source='appointment.service.name', read_only=True)
+    status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FollowUpTask
+        fields = [
+            'id',
+            'appointment',
+            'appointment_code',
+            'patient_name',
+            'patient_phone',
+            'doctor_name',
+            'service_name',
+            'follow_up_date',
+            'send_at',
+            'patient_message',
+            'reminder_sent',
+            'reminder_sent_at',
+            'is_completed',
+            'cancelled_at',
+            'status',
+            'created_at',
+        ]
+
+    def get_status(self, obj):
+        if obj.cancelled_at:
+            return 'cancelled'
+        if obj.is_completed:
+            return 'done'
+        if obj.reminder_sent:
+            return 'sent'
+        return 'upcoming'
+
+
+class FollowUpTaskUpdateSerializer(serializers.Serializer):
+    """Partial update for the Recalls page."""
+    cancelled = serializers.BooleanField(required=False)
+    is_completed = serializers.BooleanField(required=False)
+    follow_up_date = serializers.DateField(required=False)
+    send_at = serializers.TimeField(required=False)
+    patient_message = serializers.CharField(
+        max_length=300, required=False, allow_blank=True,
+    )
+
+    def validate_follow_up_date(self, value):
+        if value < timezone.localdate():
+            raise serializers.ValidationError('The recall date cannot be in the past.')
+        return value
+
+
 class AppointmentDetailSerializer(serializers.ModelSerializer):
     """
     Serializes appointments with treating doctor, service details, and wall-clock timestamps.

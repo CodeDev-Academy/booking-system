@@ -211,7 +211,7 @@ export const FollowUpRecallModal = ({
               color: 'var(--text-2)',
             }}
           >
-            <Clock size={14} color={message ? 'var(--green)' : 'var(--amber)'} style={{ flexShrink: 0 }} />
+            <Clock size={14} color={message ? 'var(--success)' : 'var(--amber)'} style={{ flexShrink: 0 }} />
             <span>
               {message ? (
                 <>

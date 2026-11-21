@@ -1,0 +1,280 @@
+/* ==========================================================================
+   recalls.css — the Recalls page (/recalls)
+   Light, calm, hairline borders; status is the only colour.
+   ========================================================================== */
+
+.recalls-page {
+  min-width: 0;
+}
+
+.recalls-subtitle {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.5;
+  max-width: 60ch;
+}
+
+.recalls-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text-3);
+  min-width: 0;
+}
+
+.recalls-search input {
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  min-width: 180px;
+  width: 100%;
+}
+
+.recalls-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.45;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.recalls-notice.is-success {
+  background: var(--success-soft);
+  border-color: var(--success-border);
+  color: var(--success-text);
+}
+
+.recalls-notice.is-error {
+  background: var(--rose-soft);
+  border-color: var(--rose-border);
+  color: var(--rose);
+}
+
+.recalls-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 14px 0 12px;
+}
+
+.recalls-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-1);
+  color: var(--text-2);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.recalls-tab.is-active {
+  border-color: var(--amber-border);
+  background: var(--amber-soft);
+  color: var(--ember-text);
+  font-weight: 600;
+}
+
+.recalls-tab-count {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.recalls-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.recall-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.recall-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.recall-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.recall-patient {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.recall-status {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.recall-status.is-upcoming {
+  border-color: var(--amber-border);
+  background: var(--amber-soft);
+  color: var(--ember-text);
+}
+
+.recall-status.is-sent {
+  border-color: var(--success-border);
+  background: var(--success-soft);
+  color: var(--success-text);
+}
+
+.recall-status.is-done {
+  border-color: rgba(8, 145, 178, 0.25);
+  background: var(--color-primary-cyan-soft);
+  color: var(--color-primary-cyan-hover);
+}
+
+.recall-status.is-cancelled {
+  border-color: var(--rose-border);
+  background: var(--rose-soft);
+  color: var(--rose);
+}
+
+.recall-code {
+  font-size: 11px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.recall-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  min-width: 0;
+}
+
+.recall-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--line-strong);
+}
+
+.recall-message {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--radius-xs);
+  padding: 8px 10px;
+  overflow-wrap: anywhere;
+}
+
+.recall-message.is-note-only {
+  color: var(--text-3);
+  font-style: italic;
+}
+
+.recall-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.recall-danger {
+  color: var(--rose);
+  border-color: var(--rose-border);
+}
+
+.recall-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  min-width: 0;
+}
+
+.recall-edit-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.recall-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-3);
+  min-width: 0;
+}
+
+.recall-counter {
+  margin-left: 8px;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.recalls-hint,
+.recalls-empty {
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.recalls-empty {
+  padding: 26px 16px;
+  text-align: center;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+@media (min-width: 640px) {
+  .recall-edit-row {
+    grid-template-columns: 1fr 1fr;
+  }
+}

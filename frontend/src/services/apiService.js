@@ -449,6 +449,24 @@ export const apiService = {
     });
   },
 
+  // Recalls list (step 1): every planned recall + counts, searchable.
+  async fetchFollowUps(params = {}) {
+    const qs = new URLSearchParams();
+    if (params.status) qs.append('status', params.status);
+    if (params.search) qs.append('search', params.search);
+    if (params.doctorId) qs.append('doctor_id', params.doctorId);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request(`/follow-ups/${suffix}`);
+  },
+
+  // Cancel, mark done, or edit before it is sent. Django decides what is legal.
+  async updateFollowUp(id, payload) {
+    return request(`/follow-ups/${id}/`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  },
+
   async reassignDoctorLeave(appointmentId, targetDoctorId, reason = '') {
     return request(`/appointments/${appointmentId}/reassign-leave/`, {
       method: 'POST',

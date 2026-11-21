@@ -8090,6 +8090,199 @@ class FollowUpMessageRuleTests(APITestCase):
         self.assertIn('book_svc_', json.dumps(item.get('reply_markup') or {}))
 
 
+class FollowUpListTests(APITestCase):
+    """
+    Recalls list / steps 1-3 — every recall is visible, and the front desk can
+    stop or finish one.
+
+    Rules:
+      - Upcoming = not sent, not done, not cancelled.
+      - Cancel and mark-done are honoured by the sweep.
+      - Date, time and message may be edited ONLY before it is sent.
+      - A sent recall can never be cancelled or edited (you cannot unsend).
+      - Clinical notes stay out of the list payload.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.enable_24h_reminder = False
+        self.clinic.enable_2h_reminder = False
+        self.clinic.save()
+
+        self.staff = StaffUser.objects.create(
+            full_name='Recall Desk', email='recall.desk@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.staff.set_password('RecallPass123!')
+        self.staff.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'recall.desk@clinic.com', 'password': 'RecallPass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+        self.service = Service.objects.create(
+            name='Recall List Service', duration_minutes=30, buffer_minutes=0,
+        )
+        self.doctor = Doctor.objects.create(
+            name='Dr. Recall List', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6, 7],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+        )
+        self.booking = BookingRequest.objects.create(
+            patient_name='Recall Pat', patient_phone='+2348030001001',
+            service=self.service, status='converted', channel='web',
+        )
+        start = timezone.now() - datetime.timedelta(hours=3)
+        self.appointment = Appointment.objects.create(
+            appointment_code='AP-RL1', patient_name='Recall Pat',
+            patient_phone='+2348030001001', doctor=self.doctor,
+            service=self.service, booking_request=self.booking,
+            start_datetime=start, end_datetime=start + datetime.timedelta(minutes=30),
+            status='completed',
+        )
+        InteractionLog.objects.create(
+            provider='voicebip', channel='sms', direction='outbound', status='sent',
+            patient_name='Recall Pat', patient_phone='+2348030001001',
+            booking_request=self.booking, external_ref='prior-sms-RL1',
+            summary='Prior outbound interaction',
+        )
+
+    def _task(self, message='Please come back.', days=3, done=False, sent=False,
+              cancelled=False, patient='Recall Pat'):
+        now = timezone.now()
+        task = FollowUpTask.objects.create(
+            appointment=self.appointment, doctor=self.doctor,
+            follow_up_date=timezone.localdate() + datetime.timedelta(days=days),
+            send_at=datetime.time(9, 0),
+            notes='PRIVATE clinical note.',
+            patient_message=message,
+            reminder_sent=sent,
+            is_completed=done,
+        )
+        if cancelled:
+            task.cancelled_at = now
+            task.cancelled_by = 'recall.desk@clinic.com'
+            task.save(update_fields=['cancelled_at', 'cancelled_by'])
+        return task
+
+    def _sweep(self):
+        return self.client.post(
+            '/api/v1/webhooks/reminder-sweep/',
+            {'triggered_by': 'n8n_cron'}, format='json',
+            HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026',
+        )
+
+    def test_the_list_groups_every_recall(self):
+        upcoming = self._task()
+        sent = self._task(message='Sent one.', sent=True)
+        done = self._task(message='Done one.', done=True)
+        cancelled = self._task(message='Cancelled one.', cancelled=True)
+
+        res = self.client.get('/api/v1/follow-ups/')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(res.data['counts']['upcoming'], 1)
+        self.assertEqual(res.data['counts']['sent'], 1)
+        self.assertEqual(res.data['counts']['done'], 1)
+        self.assertEqual(res.data['counts']['cancelled'], 1)
+        ids = {item['id'] for item in res.data['items']}
+        self.assertEqual(ids, {str(upcoming.id), str(sent.id), str(done.id), str(cancelled.id)})
+
+    def test_search_finds_the_patient(self):
+        self._task()
+
+        hit = self.client.get('/api/v1/follow-ups/', {'search': 'recall'})
+        miss = self.client.get('/api/v1/follow-ups/', {'search': 'zzzz'})
+
+        self.assertEqual(len(hit.data['items']), 1)
+        self.assertEqual(len(miss.data['items']), 0)
+
+    def test_the_list_never_carries_the_clinical_note(self):
+        self._task()
+
+        res = self.client.get('/api/v1/follow-ups/')
+
+        self.assertNotIn('PRIVATE clinical note', str(res.data))
+        self.assertNotIn('"notes"', str(res.data))
+
+    def test_cancel_stops_the_sweep(self):
+        task = self._task(message='This should never leave.', days=0)
+
+        res = self.client.patch(
+            f'/api/v1/follow-ups/{task.id}/', {'cancelled': True}, format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        task.refresh_from_db()
+        self.assertIsNotNone(task.cancelled_at)
+        self.assertEqual(task.cancelled_by, 'recall.desk@clinic.com')
+        self.assertEqual(res.data['status'], 'cancelled')
+        sweep = self._sweep()
+        self.assertEqual(sweep.data['followup_count'], 0, sweep.data)
+
+    def test_mark_done_stops_the_sweep(self):
+        task = self._task(message='Already came back.', days=0)
+
+        res = self.client.patch(
+            f'/api/v1/follow-ups/{task.id}/', {'is_completed': True}, format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        task.refresh_from_db()
+        self.assertTrue(task.is_completed)
+        self.assertEqual(res.data['status'], 'done')
+        sweep = self._sweep()
+        self.assertEqual(sweep.data['followup_count'], 0, sweep.data)
+
+    def test_an_upcoming_recall_can_be_edited_and_the_sweep_uses_the_new_words(self):
+        task = self._task(message='Old words.', days=0)
+
+        res = self.client.patch(f'/api/v1/follow-ups/{task.id}/', {
+            'patient_message': 'New words for the patient.',
+            'send_at': '00:01',
+        }, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        task.refresh_from_db()
+        self.assertEqual(task.patient_message, 'New words for the patient.')
+        sweep = self._sweep()
+        messages = [item['message'] for item in sweep.data['followup_items']]
+        self.assertIn('New words for the patient.', messages)
+
+    def test_a_sent_recall_cannot_be_edited_or_cancelled(self):
+        task = self._task(message='Already sent.', sent=True)
+
+        edit = self.client.patch(
+            f'/api/v1/follow-ups/{task.id}/', {'patient_message': 'Changed.'}, format='json',
+        )
+        cancel = self.client.patch(
+            f'/api/v1/follow-ups/{task.id}/', {'cancelled': True}, format='json',
+        )
+
+        self.assertEqual(edit.status_code, status.HTTP_409_CONFLICT, edit.data)
+        self.assertEqual(edit.data['error'], 'ALREADY_SENT')
+        self.assertEqual(cancel.status_code, status.HTTP_409_CONFLICT, cancel.data)
+
+    def test_a_cancelled_recall_cannot_be_edited(self):
+        task = self._task(cancelled=True)
+
+        res = self.client.patch(
+            f'/api/v1/follow-ups/{task.id}/', {'patient_message': 'Late change.'}, format='json',
+        )
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT, res.data)
+        self.assertEqual(res.data['error'], 'CANCELLED')
+
+    def test_the_list_requires_a_staff_session(self):
+        from rest_framework.test import APIClient
+
+        res = APIClient().get('/api/v1/follow-ups/')
+
+        self.assertIn(res.status_code, (401, 403))
+
+
 class SeedClinicHygieneTests(TestCase):
     """
     Wave 1 / Step 1.5 — the seed ships clean.

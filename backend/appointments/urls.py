@@ -26,6 +26,8 @@ from .views_appointment import (
     SlotHoldView,
     AppointmentStatusUpdateView,
     FollowUpTaskCreateView,
+    FollowUpTaskListView,
+    FollowUpTaskDetailView,
     ReassignLeaveView,
     DisruptionAutoResolveView,
     DisruptionPreviewView,
@@ -161,6 +163,9 @@ urlpatterns = [
     path('appointments/<str:id>/status/', AppointmentStatusUpdateView.as_view(), name='appointment-status-update'),
     path('appointments/<str:id>/reschedule/', RescheduleAppointmentView.as_view(), name='appointment-reschedule'),
     path('appointments/<str:id>/follow-up/', FollowUpTaskCreateView.as_view(), name='appointment-follow-up'),
+    # Recalls list: every planned recall, plus cancel / mark-done / edit.
+    path('follow-ups/', FollowUpTaskListView.as_view(), name='follow-ups-list'),
+    path('follow-ups/<uuid:id>/', FollowUpTaskDetailView.as_view(), name='follow-up-detail'),
     path('appointments/<str:id>/reassign-leave/', ReassignLeaveView.as_view(), name='appointment-reassign-leave'),
     path('disruptions/<uuid:doctor_id>/preview/', DisruptionPreviewView.as_view(), name='disruption-preview'),
     path('disruptions/<uuid:doctor_id>/auto-resolve/', DisruptionAutoResolveView.as_view(), name='disruption-auto-resolve'),

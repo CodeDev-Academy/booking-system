@@ -10,6 +10,7 @@ import {
   ChevronLeft,
   Bell,
   BellOff,
+  CalendarClock,
   Lock,
   Sparkles,
   LogOut,
@@ -155,6 +156,16 @@ export const LeftRail = ({ strandedCount = 0 }) => {
             <span className="nav-count-badge tabular-nums">
               {queueCounts.todaySchedule}
             </span>
+          </NavLink>
+
+          <NavLink
+            to="/recalls"
+            onClick={handleNavClick}
+            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+            title="Every follow-up recall, including the ones not sent yet"
+          >
+            <CalendarClock size={18} className="nav-icon" />
+            <span className="nav-label">Recalls</span>
           </NavLink>
         </div>
 
