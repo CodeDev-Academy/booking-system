@@ -352,7 +352,61 @@ writes nothing.
 
 ---
 
-## 6. Master Clinical Calendar & Dynamic Settings
+## 6. Doctor Leave & Disruptions
+
+Django owns every rule and every sentence here: n8n workflow `08` only delivers.
+Notices are queued for `sms` and `whatsapp` (one row per patient per channel,
+`claim_ref`-guarded so a placement is announced once).
+
+### `POST /api/v1/disruptions/{doctor_id}/preview/`
+Dry run of the leave plan: the real resolver runs inside a rolled-back
+transaction, so the returned placements, counts and per-doctor distribution are
+exactly what an approval would do. Nothing is saved, nothing is sent.
+
+### `POST /api/v1/disruptions/{doctor_id}/auto-resolve/`
+The one-click plan. Records the leave, then for every affected appointment
+tries a qualified colleague at the **same time**, then a free slot **that day**
+(earliest first), then the **next days** (3-day lookahead) — under the
+zero-double-booking lock, service qualification and sterilization buffers.
+
+```json
+{
+  "reason": "Planned leave",
+  "kind": "planned",
+  "leave_start": "2026-12-12T00:00:00+01:00",
+  "leave_end": "2026-12-16T23:59:00+01:00",
+  "colleague_ids": ["<uuid>"],
+  "colleague_caps": { "<uuid>": 3 }
+}
+```
+
+`kind` is `emergency` (default) or `planned`, and it decides the patient's
+sentence: *"due to a sudden emergency"* vs *"because of planned leave"*.
+Patients a plan cannot place are reported as **stranded** with Django's reason.
+
+### `POST /api/v1/clinic/doctors/{id}/end-leave/`
+**"The doctor is back today."** Removes TODAY only from every leave covering it:
+a leave that started earlier keeps its past days (end → yesterday), a leave
+starting today keeps its remaining future days (start → tomorrow), a one-day
+leave is deleted. Patients already moved to a colleague **stay** there — the
+move was communicated. Returns `{doctor, ended, message}`; `doctor.is_on_leave`
+is the real flag, and the receptionist screen uses it instead of guessing.
+
+### `GET|POST /api/v1/clinic/doctors/{id}/leaves/`
+List (`leaves` + `doctor.is_on_leave`) or plan a period:
+`{start_date, end_date|null, leave_type, reason}`. `end_date: null` means "until
+further notice". A plain leave is only for windows with **no bookings**:
+`409 LEAVE_OVERLAPS_BOOKINGS` (with `appointment_count`) points at the plan
+instead, and `409 LEAVE_OVERLAPS_EXISTING` names the period already there.
+
+### `PATCH|DELETE /api/v1/clinic/doctors/{id}/leaves/{leave_id}/`
+Edit or shorten a period (the same overlap rules apply; extending over a
+booked patient is refused), or delete it. Deleting the last period restores the
+doctor's duty flag.
+
+---
+
+## 7. Master Clinical Calendar & Dynamic Settings
 
 ### `GET /api/v1/calendar/schedule/`
 Aggregates all 4 schedule layers (doctor shifts, confirmed appointments, active temporary holds, and open free slots) in a single optimized query.
@@ -377,7 +431,7 @@ Uploads a `client-config.json` to immediately re-brand and configure a new clini
 
 ---
 
-## 7. Analytics & Reporting
+## 8. Analytics & Reporting
 
 ### `GET /api/v1/analytics/summary/`
 Returns real-time clinical and operational KPIs for the Receptionist Dashboard and Admin Bento grid.
@@ -433,7 +487,7 @@ Streams clean RFC 4180 CSV summary of doctor attendance and completion rates.
 
 ---
 
-## 8. Interaction Logs (Phase 2 / Task 2.1)
+## 9. Interaction Logs (Phase 2 / Task 2.1)
 
 Authoritative record of every patient-facing communication (VoiceBip call,
 WhatsApp, SMS, Telegram) — the Hybrid AI OS spec §6 "Interactions" data area.

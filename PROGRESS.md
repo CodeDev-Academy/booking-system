@@ -2819,6 +2819,37 @@ configured username, so no new configuration is required for the link itself.
 VoiceBip/Meta remain upgrades that switch on by configuration once the partner
 credentials arrive — the web intake contract does not change.
 
+## Leave Lifecycle — the doctor can come back (2026-11-21)
+
+**The defect, verified before anything was built.** After an emergency plan,
+"Restore to On Duty" did nothing useful: the plan's dated leave row survived the
+duty switch (which deliberately removes only the row it created), the flag was
+re-derived from that row, and the doctor stayed unbookable while the screen said
+"on duty". Meanwhile leave could only be *created* — as a side effect of a plan
+or the off-duty switch — and never listed, edited or ended.
+
+1. **End leave today (T-776).** `POST /clinic/doctors/{id}/end-leave/` removes
+   today only: past days stay history, a leave starting today keeps its
+   remaining days, a one-day leave goes. Patients already moved to a colleague
+   stay there — the move was communicated; ending the leave only frees the
+   doctor. The screen now reads the server's answer instead of flipping a local
+   flag.
+2. **Planned leave has its own record (T-777).** `GET/POST/PATCH/DELETE
+   /clinic/doctors/{id}/leaves/` plus a "Plan leave" modal. The honest rule: a
+   plain leave covers only windows with no bookings; if patients are inside it,
+   Django answers 409 with the count and points at the plan, because a silent
+   leave would strand them.
+3. **The right reason (T-778).** The cockpit asks Sudden absence vs Planned
+   leave; Django writes "because of planned leave" instead of "due to a sudden
+   emergency".
+
+Gates: 11 frontend harnesses 153/153, build clean, Django 486/486 OK, live proof
+21/21 with every row cleaned up.
+
+Still open in this area: the **Telegram notice leg** (the blocked P0 — waits on
+the bot token and a public URL), the **voice leg** for disruptions (waits on
+VoiceBip), and the dead `markDoctorEmergencyLeave` shortcut.
+
 
 ## Next up - Phase 5 (partner handover)
 
