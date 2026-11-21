@@ -106,8 +106,13 @@ export const useTriageQueue = () => {
         return fb - fa; // most recent failure first
       });
     return {
-      new: awaiting.filter((r) => !r.reRequested).sort(byAge),
-      rerequested: awaiting.filter((r) => r.reRequested).sort(byAge),
+      // One request has ONE home. A delivery failure is moved out of the
+      // working tabs and into Needs Attention - otherwise a failed dispatch
+      // appeared in "New Requests" too, and "New" stopped meaning "never
+      // dispatched". A successful resend clears `attention_open` on the
+      // backend, so the request returns here by itself.
+      new: awaiting.filter((r) => !r.reRequested && !r.attentionOpen).sort(byAge),
+      rerequested: awaiting.filter((r) => r.reRequested && !r.attentionOpen).sort(byAge),
       needs_attention: needsAttention,
       expired: requests.filter((r) => r.status === 'offer_expired').sort(byAge),
     };
