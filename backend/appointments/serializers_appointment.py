@@ -165,6 +165,11 @@ class FollowUpTaskCreateSerializer(serializers.Serializer):
     """
     follow_up_date = serializers.DateField()
     notes = serializers.CharField(max_length=500)
+    # Empty means "do not send" — the recall stays a private clinic note.
+    patient_message = serializers.CharField(
+        max_length=300, required=False, allow_blank=True, default='',
+    )
+    send_at = serializers.TimeField(required=False, default=datetime.time(9, 0))
 
     def validate_follow_up_date(self, value):
         today = timezone.now().date()
@@ -241,6 +246,8 @@ class FollowUpTaskDetailSerializer(serializers.ModelSerializer):
             'doctor_name',
             'follow_up_date',
             'notes',
+            'patient_message',
+            'send_at',
             'reminder_sent',
             'is_completed',
             'created_at',

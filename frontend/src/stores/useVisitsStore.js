@@ -366,6 +366,20 @@ export const useVisitsStore = create(
     const visit = get().visits.find((v) => v.id === visitId);
     if (!visit) return;
 
+    const patientMessage = String(followUpData?.patientMessage || '').trim();
+    const sendAt = followUpData?.sendAt || '09:00';
+    const followUpDate =
+      followUpData?.targetDate
+      || followUpData?.date
+      || new Date(clinicNow() + 14 * 86400000).toISOString().split('T')[0];
+
+    // The banner must tell the truth: an empty message sends nothing.
+    const recallLine = !followUpData
+      ? 'Checkout finalized.'
+      : patientMessage
+        ? `Message scheduled for ${followUpDate} at ${sendAt}.`
+        : 'Recall saved as a private note — no message will be sent.';
+
     set((state) => ({
       visits: state.visits.map((v) =>
         v.id === visitId
@@ -380,7 +394,7 @@ export const useVisitsStore = create(
       followUpModal: { isOpen: false, visitId: null },
       toast: {
         tone: 'success',
-        text: `Visit completed for ${visit.patientName}. ${followUpData ? `Recall scheduled: ${followUpData.preset}` : 'Checkout finalized.'}`,
+        text: `Visit completed for ${visit.patientName}. ${recallLine}`,
       },
     }));
 
@@ -396,13 +410,14 @@ export const useVisitsStore = create(
         });
 
         if (followUpData) {
-          const followUpDate =
-            followUpData.date ||
-            new Date(clinicNow() + 14 * 86400000).toISOString().split('T')[0];
+          // The chosen date from the modal, not a guessed +14 days.
           apiService
             .createFollowUp(visit.appointmentId, {
               follow_up_date: followUpDate,
               notes: followUpData.notes || followUpData.preset || 'Routine recall follow-up',
+              // Rule B: empty means Django sends nothing; it stays a note.
+              patient_message: patientMessage,
+              send_at: sendAt,
             })
             .catch((err) => {
               console.warn('Backend create follow-up failed:', err);

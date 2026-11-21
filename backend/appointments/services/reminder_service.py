@@ -80,18 +80,6 @@ def two_hour_message(appointment, clinic):
     )
 
 
-def followup_message(task, clinic):
-    """SMS-safe recall copy for a doctor-directed follow-up task. Clinical
-    notes are never quoted to the patient."""
-    appointment = task.appointment
-    due_str = task.follow_up_date.strftime('%a %d %b')
-    return (
-        f"Hello {appointment.patient_name}, Dr. {appointment.doctor.name} would like "
-        f"to see you for a {appointment.service.name} follow-up due on {due_str}. "
-        f"Please call {clinic.phone} to book your visit. Ref {appointment.appointment_code}."
-    )
-
-
 def mirrored_channels_for_appointment(appointment):
     """
     The apps this patient was actually reached on, from the outbound log rows
@@ -204,7 +192,8 @@ def _build_followup_item(task, channel, clinic):
         item['telegram_chat_id'] = chat_id
         item['reply_markup'] = reply_markup
     else:
-        item['message'] = followup_message(task, clinic)
+        # Rule B: the ONLY words sent are the ones reception typed.
+        item['message'] = task.patient_message
     return item
 
 
@@ -289,11 +278,19 @@ class ReminderService:
             is_completed=False,
             reminder_sent=False,
             follow_up_date__lte=timezone.localdate(),
+        ).exclude(
+            # Rule B: an empty message sends nothing. The recall is a note.
+            patient_message='',
         ).select_related(
             'appointment', 'appointment__doctor', 'appointment__service',
             'appointment__booking_request',
         ).order_by('follow_up_date', 'id')
         for task in due_tasks:
+            due_at = timezone.make_aware(
+                datetime.datetime.combine(task.follow_up_date, task.send_at)
+            )
+            if due_at > now:
+                continue  # not yet the chosen time today
             followup_items.extend(_emit_followup(task, clinic, now))
 
         return {

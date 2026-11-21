@@ -260,6 +260,8 @@ class FollowUpTaskCreateView(APIView):
             doctor=appointment.doctor,
             follow_up_date=serializer.validated_data['follow_up_date'],
             notes=serializer.validated_data['notes'],
+            patient_message=serializer.validated_data.get('patient_message', ''),
+            send_at=serializer.validated_data.get('send_at', datetime.time(9, 0)),
         )
 
         AuditLog.objects.create(

@@ -1,5 +1,6 @@
 import os
 import uuid
+import json
 import datetime
 from unittest.mock import patch
 from django.test import TestCase, override_settings
@@ -3928,12 +3929,16 @@ class ReminderMessagingTests(APITestCase):
             status=status,
         )
 
-    def make_follow_up(self, appointment, days_ahead=0, is_completed=False, reminder_sent=False):
+    def make_follow_up(self, appointment, days_ahead=0, is_completed=False, reminder_sent=False,
+                       patient_message='Please come back for your review.',
+                       send_at=datetime.time(0, 0)):
         return FollowUpTask.objects.create(
             appointment=appointment,
             doctor=self.doctor,
             follow_up_date=timezone.localdate() + datetime.timedelta(days=days_ahead),
             notes='Suture check',
+            patient_message=patient_message,
+            send_at=send_at,
             reminder_sent=reminder_sent,
             is_completed=is_completed,
         )
@@ -4132,7 +4137,8 @@ class ReminderMessagingTests(APITestCase):
         self.assertEqual(item['kind'], 'followup')
         self.assertEqual(item['channel'], 'whatsapp')
         self.assertEqual(item['claim_ref'], f"followup-{task.id}-whatsapp")
-        self.assertIn('Reminder Consultation', item['message'])
+        # Rule B: the words are the ones reception typed — no generic template.
+        self.assertEqual(item['message'], task.patient_message)
 
         task.refresh_from_db()
         self.assertTrue(task.reminder_sent)
@@ -7909,6 +7915,179 @@ class DisruptionTelegramNoticeTests(APITestCase):
         channels = {item['channel'] for item in payload['items']}
         self.assertNotIn('telegram', channels, channels)
         self.assertEqual(channels, {'sms', 'whatsapp'}, channels)
+
+
+class FollowUpMessageRuleTests(APITestCase):
+    """
+    Follow-up upgrade / rule B — the message box starts EMPTY, and an empty box
+    means NOTHING is sent.
+
+    The owner's decision, in plain words: if reception has nothing to say, the
+    recall stays a private clinic note. It is only sent when someone types the
+    words the patient should receive, at the date AND time chosen.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.save()
+
+        self.staff = StaffUser.objects.create(
+            full_name='Recall Desk', email='recall.desk@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.staff.set_password('RecallPass123!')
+        self.staff.save()
+        login = self.client.post('/api/v1/auth/login/', {
+            'email': 'recall.desk@clinic.com', 'password': 'RecallPass123!',
+        }, format='json')
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+        self.service = Service.objects.create(
+            name='Recall Service', category='General',
+            duration_minutes=30, buffer_minutes=0,
+        )
+        self.doctor = Doctor.objects.create(
+            name='Dr. Recall', specialty='General Practice',
+            working_days=[1, 2, 3, 4, 5, 6, 7],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+        )
+        self.booking = BookingRequest.objects.create(
+            patient_name='Recall Ada', patient_phone='+2348030001100',
+            service=self.service, status='converted', channel='web',
+            patient_notes='Booked on the website. telegram_chat_id:888001',
+        )
+        start = timezone.now() - datetime.timedelta(hours=3)
+        self.appointment = Appointment.objects.create(
+            appointment_code='AP-RECALL1', patient_name='Recall Ada',
+            patient_phone='+2348030001100', doctor=self.doctor,
+            service=self.service, booking_request=self.booking,
+            start_datetime=start,
+            end_datetime=start + datetime.timedelta(minutes=30),
+            status='completed',
+        )
+        # The patient was reached on SMS before, so the recall mirrors SMS.
+        InteractionLog.objects.create(
+            provider='voicebip', channel='sms', direction='outbound',
+            status='sent', patient_name='Recall Ada',
+            patient_phone='+2348030001100', booking_request=self.booking,
+            external_ref='prior-sms-AP-RECALL1', summary='Prior outbound interaction',
+        )
+
+    def _task(self, message='', due_at=None):
+        """A recall due at `due_at` (default: today 09:00)."""
+        due_at = due_at or timezone.make_aware(
+            datetime.datetime.combine(timezone.localdate(), datetime.time(9, 0))
+        )
+        return FollowUpTask.objects.create(
+            appointment=self.appointment,
+            doctor=self.doctor,
+            follow_up_date=timezone.localtime(due_at).date(),
+            send_at=timezone.localtime(due_at).time().replace(microsecond=0),
+            notes='Private clinical note about sutures.',
+            patient_message=message,
+        )
+
+    def _sweep(self):
+        return self.client.post(
+            '/api/v1/webhooks/reminder-sweep/',
+            {'triggered_by': 'n8n_cron'}, format='json',
+            HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026',
+        )
+
+    def _followup_rows(self):
+        return InteractionLog.objects.filter(external_ref__startswith='followup-')
+
+    def test_an_empty_message_sends_nothing(self):
+        task = self._task(message='')
+
+        res = self._sweep()
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(res.data['followup_count'], 0, res.data)
+        self.assertFalse(self._followup_rows().exists())
+        task.refresh_from_db()
+        self.assertFalse(task.reminder_sent, 'an unsent note stays retryable when a message is added')
+
+    def test_a_typed_message_is_sent_when_due(self):
+        due_at = timezone.now() - datetime.timedelta(minutes=1)
+        text = 'Please come back in two weeks and bring your X-ray.'
+        task = self._task(message=text, due_at=due_at)
+
+        res = self._sweep()
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertGreaterEqual(res.data['followup_count'], 1, res.data)
+        items = res.data['followup_items']
+        self.assertTrue(all(item['message'] == text for item in items), items)
+        task.refresh_from_db()
+        self.assertTrue(task.reminder_sent)
+
+    def test_a_message_is_not_sent_before_its_time(self):
+        due_at = timezone.now() + datetime.timedelta(hours=1)
+        task = self._task(message='See you this afternoon.', due_at=due_at)
+
+        res = self._sweep()
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(res.data['followup_count'], 0, res.data)
+        task.refresh_from_db()
+        self.assertFalse(task.reminder_sent)
+
+    def test_the_clinical_note_is_never_sent(self):
+        due_at = timezone.now() - datetime.timedelta(minutes=1)
+        self._task(message='Please book your review.', due_at=due_at)
+
+        res = self._sweep()
+
+        blob = ' '.join(item['message'] for item in res.data['followup_items'])
+        self.assertIn('Please book your review.', blob)
+        self.assertNotIn('Private clinical note', blob)
+
+    def test_the_api_stores_the_message_and_the_time(self):
+        tomorrow = (timezone.localdate() + datetime.timedelta(days=1)).isoformat()
+
+        res = self.client.post(f'/api/v1/appointments/{self.appointment.id}/follow-up/', {
+            'follow_up_date': tomorrow,
+            'notes': 'Clinical note for the doctor.',
+            'patient_message': 'Please come back in two weeks.',
+            'send_at': '14:30',
+        }, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(res.data['patient_message'], 'Please come back in two weeks.')
+        self.assertEqual(res.data['send_at'], '14:30:00')
+
+        too_long = self.client.post(
+            f'/api/v1/appointments/{self.appointment.id}/follow-up/',
+            {
+                'follow_up_date': tomorrow,
+                'notes': 'Note.',
+                'patient_message': 'x' * 301,
+            }, format='json',
+        )
+        self.assertEqual(too_long.status_code, status.HTTP_400_BAD_REQUEST, too_long.data)
+
+    def test_telegram_uses_the_typed_message_with_a_book_button(self):
+        InteractionLog.objects.create(
+            provider='telegram', channel='telegram', direction='outbound',
+            status='sent', patient_name='Recall Ada',
+            patient_phone='+2348030001100', booking_request=self.booking,
+            external_ref='prior-telegram-AP-RECALL1', summary='Prior outbound interaction',
+        )
+        due_at = timezone.now() - datetime.timedelta(minutes=1)
+        self._task(message='Please come back in two weeks.', due_at=due_at)
+
+        res = self._sweep()
+
+        telegram_items = [
+            item for item in res.data['followup_items'] if item['channel'] == 'telegram'
+        ]
+        self.assertTrue(telegram_items, res.data['followup_items'])
+        item = telegram_items[0]
+        self.assertIn('Please come back in two weeks.', item['message'])
+        self.assertIn('book_svc_', json.dumps(item.get('reply_markup') or {}))
 
 
 class SeedClinicHygieneTests(TestCase):

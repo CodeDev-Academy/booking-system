@@ -676,6 +676,12 @@ class FollowUpTask(models.Model):
     doctor = models.ForeignKey(Doctor, on_delete=models.SET_NULL, null=True, blank=True, related_name='follow_up_tasks')
     follow_up_date = models.DateField(db_index=True)
     notes = models.TextField(blank=True, default='')
+    # Follow-up upgrade / rule B (owner decision): the message box starts empty,
+    # and an EMPTY message means nothing is sent — the recall is a private
+    # clinic note. Only words typed here reach the patient.
+    patient_message = models.TextField(blank=True, default='')
+    # The sweep only sends once this time has passed on the due date (clinic clock).
+    send_at = models.TimeField(default=datetime.time(9, 0))
     reminder_sent = models.BooleanField(default=False)
     is_completed = models.BooleanField(default=False)
     reminder_sent_at = models.DateTimeField(null=True, blank=True)

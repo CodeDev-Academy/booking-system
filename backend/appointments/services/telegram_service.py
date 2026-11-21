@@ -288,20 +288,10 @@ class TelegramService:
 
     @staticmethod
     def format_followup_recall(appointment: Appointment, task: FollowUpTask, clinic: ClinicSetting) -> tuple[str, dict]:
-        """Doctor-directed follow-up recall. The button uses the wired
-        book_svc_ grammar so the patient lands straight in re-booking."""
-        patient_name = html.escape(appointment.patient_name)
-        doc_name = html.escape(appointment.doctor.name)
-        service_name = html.escape(appointment.service.name)
-        clinic_name = html.escape(clinic.clinic_name)
-        date_str = task.follow_up_date.strftime("%a %d %b")
-
-        text = (
-            f"📋 <b>Follow-Up Visit Due {date_str}</b>\n\n"
-            f"Hello <b>{patient_name}</b>, Dr. {doc_name} would like to see you "
-            f"for a {service_name} follow-up at <b>{clinic_name}</b>.\n\n"
-            f"Tap below to pick a time that suits you:"
-        )
+        """Doctor-directed follow-up recall. Under rule B the body is EXACTLY
+        the message reception typed — there is no generic text. The button uses
+        the wired `book_svc_` grammar so the patient lands straight in re-booking."""
+        text = html.escape(task.patient_message)
         keyboard = [[{"text": "📅 Book Follow-Up Visit", "callback_data": f"book_svc_{appointment.service_id}"}]]
         return text, {"inline_keyboard": keyboard}
 
