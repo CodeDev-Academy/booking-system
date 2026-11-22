@@ -15,7 +15,7 @@ the runners themselves.
 | Test Suite / Category | Target Area | Tooling | Total Tests | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **Django application suite** | Models, availability, holds, disruption/leave, booking queue, live visits, auth & sessions, staff, settings, webhooks, analytics, exports, public intake, leave lifecycle, Telegram notices, follow-up messages, recalls list | Django Test Runner (`python manage.py test appointments`) | **506** | ✅ **506/506 OK** (~5 min) |
-| **Frontend contract harnesses** | Booking payloads, calendar truth, clinic clock (3-timezone matrix), follow-up rule, leave lifecycle, no demo seeds, no ghost rows, public booking, queue tabs, recalls, session flow, staff truth, truthful screens, visits sync, UI consolidation & warm-light theme | Node (`frontend/tests/*.js`) | **197** | ✅ **197/197** (15 files) |
+| **Frontend contract harnesses** | Booking payloads, calendar truth, clinic clock (3-timezone matrix), follow-up rule, leave lifecycle, no demo seeds, no ghost rows, public booking, queue tabs, recalls, session flow, staff truth, truthful screens, visits sync, UI consolidation & warm-light theme | Node (`frontend/tests/*.js`) | **209** | ✅ **209/209** (15 files) |
 | **n8n node harnesses** | Workflows 01–08: adapter, callback auth, disruption notifier, log nodes, format, reminders, reply handler, simulator ids, sweeper, voice guard | Node (`n8n/tests/*.js`) | **11 files** | ✅ all green |
 | **Frontend production build** | `vite build` (module graph, asset emit) | Vite | — | ✅ clean |
 | **Playwright E2E spec** | Full user journeys across queue / calendar / simulator / visits / staff / settings / auth | Playwright (`frontend/e2e/clinic-e2e.spec.js`) | 8 scenarios | ⚠️ spec exists and is runnable (`npm run test:e2e`), but it is **not** part of any automated run here — no CI, and it was last executed manually in live mode |
@@ -775,6 +775,29 @@ execution log). Production staging (Railway/Vercel) is not deployed yet.
   Django **506/506 OK**. Browser proof: all five pages and every tab render with zero console errors
   and zero horizontal overflow at desktop width; the Schedule Grid showed the three real doctors with
   their real specialties, and choosing "Lead Dental Surgeon" left only Dr. Bello Ibrahim.
+- [x] `T-784`: **Schedule Grid tells the truth** (real week, real visits, no demo doctor): the grid
+  still read a hardcoded `DOCTOR_META` table of invented patients, rooms and shifts, so real doctors
+  showed a blank suite/shift; the **7-Day Overview** always said **Oct 26–31**, showed **0 visits**,
+  and clicked into **2026-10-26**; an empty roster produced three demo doctors; the month calendar
+  highlighted a made-up list of busy days. Pinned by `test_impeccable_ui.js` (24 checks) and
+  `test_calendar_truth.js` (12 checks):
+  - `DOCTOR_META` is deleted; no invented patient, room or shift remains.
+  - An empty roster shows "No doctors on the roster yet" instead of demo doctors.
+  - The 7-Day Overview is Monday–Sunday of the **real clinic week**, dated from the clinic clock, with
+    each card counting the store blocks for that day; empty days say "No visits booked"; "Switch to …"
+    opens that real date.
+  - Doctor cards count real visits in the visible week and show the doctor's real shift
+    (`09:00 – 17:00 WAT` from the API).
+  - One `toAgendaRow` helper feeds the day list and the week cards; rows sort by the real start
+    timestamp (the old label compare put "01:30 PM" before "09:00 AM").
+  - The month calendar marks only days with a real booking for the selected doctor and reads the
+    selected day in clinic time.
+  - "Clinic Closed on Sundays" appears only when nothing is booked; a real Sunday visit is shown.
+
+  Gates: 15 frontend harnesses **209/209**, `npm run build` clean (CalendarView chunk 86.0 kB →
+  77.5 kB), Django **506/506 OK**. Browser proof: week cards read Nov 16–22 with 3/1/2 visits per
+  doctor; Dr. Bello's Sunday card listed his 3 real patients; "Switch to Sunday" opened
+  Sunday, Nov 22 with the same 3 rows in time order; zero console errors, zero horizontal overflow.
 
 ---
 
@@ -835,6 +858,7 @@ execution log). Production staging (Railway/Vercel) is not deployed yet.
 | 2026-11-21 | Brain Agent | `Follow-Up Rule B / T-781` | **PASSED** | The recall engine was active but fired at 00:05 (date only), the doctor's instruction could never reach the patient, the pop-up promised a feedback survey that did not exist, and the store threw away the chosen date (always +14 days). Owner rule B: the message box starts EMPTY and an empty box sends NOTHING — the recall is a private note. Added `patient_message` + `send_at` (migration `0010`), a date+time gate in the sweep, a message box and time field in the pop-up, the private-note label, and honest banner/toast copy. 6 tests red-first; `test_follow_up.js` 11 checks. Gates: 13 harnesses **171/171**, build clean, Django **497/497 OK**. Live **12/12**: typed message due in the past sent verbatim once; empty and future tasks sent nothing and wrote no claim; the clinical note never appears; proof rows deleted, flags restored. |
 | 2026-11-21 | Brain Agent | `Recalls List / T-782` | **PASSED** | Recalls were invisible after saving (admin only). Added `GET /follow-ups/` (counts for upcoming/sent/done/cancelled, search, clinical note deliberately absent), `PATCH /follow-ups/{id}/` (cancel kept on record, mark done, edit date/time/message only BEFORE sending), and the `/recalls` page with four groups, inline edit and honest note-only rows. 9 tests red-first; `test_recalls.js` 13 checks. Gates: 14 harnesses **184/184**, build clean, Django **506/506 OK**. Live **19/19**: create + list, search, cancel stays visible and silent, edit changes the sent words, mark-done silences, sent recall refuses edits; rows deleted, flags restored. |
 | 2026-11-21 | Brain Agent | `UI Consolidation / T-783` | **PASSED** | Owner approved the design review: one clear place for each job, warm light theme. Recalls merged into **Visits & Recalls** as a tab (`/recalls` opens it); **Clinic Settings** split into 3 tabs and the 4 top KPI boxes removed; **Staff & Reports** split into Team Roster / Reports & CSV with the 2 static security boxes removed; the duplicate **"Today's Schedule"** tab, list, detail modal and CSS deleted from Requests Queue; the fake "Abuja, NG" search bar and "Sarah Aliyu" profile menu removed from Schedule Grid, with specialty filters now derived from the real doctors on the selected day; **LeftRail** owns the single staff card and Sign Out while **Header** keeps label/status/clock/Lock; every `#0c1a30` navy and `#38bdf8` sky-blue replaced by the obsidian `#111114` and amber palette; headings use the fixed five-step scale. New `test_impeccable_ui.js` (13 checks) pins all of it, including the calendar store reading the API's `specialty` key and the exact-match specialty filter. Gates: 15 harnesses **197/197**, build clean (index 372.4 kB → 360.0 kB), Django **506/506 OK**. Browser proof: five pages and every tab render with zero console errors and zero horizontal overflow; the staff roster loaded 7 real rows after the API answer; the Schedule Grid showed the 3 real doctors and "Lead Dental Surgeon" filtered to one. |
+| 2026-11-22 | Brain Agent | `Schedule Grid truth / T-784` | **PASSED** | The grid's `DOCTOR_META` table invented patients, rooms and shifts; real doctors showed a blank suite/shift, the 7-Day Overview always read Oct 26–31 with 0 visits and clicked into 2026-10-26, an empty roster produced three demo doctors, and the month calendar highlighted a made-up busy-day list. Deleted `DOCTOR_META`; removed the demo fallback and added an honest empty-roster state; rebuilt the week overview as Monday–Sunday of the real clinic week with real store blocks, real dates and per-day empty text; doctor cards count real weekly visits and show the API's real shift; one `toAgendaRow` helper feeds day and week rows and sorts by real start time; the month calendar marks only real booked days and reads clinic time; "Clinic Closed on Sundays" now only when nothing is booked. 11 red-first checks in `test_impeccable_ui.js` (24 total) plus 1 in `test_calendar_truth.js` (12). Gates: 15 harnesses **209/209**, build clean (CalendarView 86.0 kB → 77.5 kB), Django **506/506 OK**. Browser proof: week cards Nov 16–22 with 3/1/2 visits; Dr. Bello's Sunday card listed 3 real patients; "Switch to Sunday" opened Sunday, Nov 22 with the same 3 rows. |
 
 ---
 

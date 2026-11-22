@@ -2956,6 +2956,42 @@ belong to the warm light theme.
 Gates: 15 harnesses 197/197 (new `test_impeccable_ui.js`, 13 checks), build
 clean, Django 506/506 OK. No backend or API change.
 
+## Schedule Grid — real week, real visits, no demo doctor (2026-11-22)
+
+**The problem.** The Schedule Grid still carried a hardcoded `DOCTOR_META` table:
+invented patients ("Tunde Musa", "Fatima Bello"), invented rooms ("Cedarcare
+Dental Suite 1") and invented shifts. Real doctors got an empty meta, so their
+suite and shift rendered blank, and the **7-Day Overview** always read
+**Oct 26–31** and showed **0 visits** — then clicked into **2026-10-26** whatever
+day the receptionist was on. When no doctors loaded, three demo doctors appeared
+instead of an honest empty roster. The month calendar also marked a made-up list
+of "busy" days (`[5, 9, 14, 16, 22, 26, 27, 28, 29, 30]`).
+
+**What changed:**
+
+1. **`DOCTOR_META` deleted.** No invented patient, room or shift remains in the
+   grid.
+2. **No demo doctor fallback.** An empty roster shows "No doctors on the roster
+   yet — add a doctor in Staff & Reports".
+3. **7-Day Overview is the real clinic week:** Monday to Sunday, dated from the
+   clinic clock, with each card counting the store blocks for that day. Empty
+   days say "No visits booked"; "Switch to …" opens that real date.
+4. **Doctor cards** count real visits in the visible week and show the doctor's
+   real shift (`09:00 – 17:00 WAT` from the API), not a fake suite.
+5. **One row builder** (`toAgendaRow`) feeds both the day list and the week
+   cards, so time, phone and service always agree. Rows sort by the real start
+   timestamp (the old label compare put "01:30 PM" before "09:00 AM").
+6. **Month calendar** highlights only days with a real booking for the selected
+   doctor, and reads the selected day in clinic time.
+7. **Sunday bookings are shown.** "Clinic Closed on Sundays" now appears only
+   when nothing is booked that day.
+
+Gates: 15 harnesses 209/209 (`test_impeccable_ui.js` 24 checks,
+`test_calendar_truth.js` 12), build clean (CalendarView chunk 86.0 kB → 77.5 kB),
+Django 506/506 OK. No backend or API change. Browser proof: real dates Nov 16–22,
+3/1/2 visits per doctor, Dr. Bello's Sunday card listed his 3 real patients and
+"Switch to Sunday" opened Sunday, Nov 22 with the same 3 rows.
+
 ## Next up - Phase 5 (partner handover)
 
 **Leave flow complete (2026-11-20).** Dated leave, a rolled-back preview,
