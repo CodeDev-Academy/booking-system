@@ -2924,6 +2924,38 @@ Still open: delivery needs the Telegram token (or SMS/WhatsApp when connected).
 
 
 
+## UI Consolidation — one clear place for each job (2026-11-21)
+
+**The problem.** The dashboard had grown crowded. The same page title showed in
+three places, staff identity showed in three places, Requests Queue carried a
+second copy of today's schedule, Schedule Grid showed a fake "Abuja, NG" search
+bar and a fake "Sarah Aliyu" profile, Staff had two security boxes that did
+nothing, and two button colours (navy `#0c1a30`, sky-blue `#38bdf8`) did not
+belong to the warm light theme.
+
+**What changed (owner-approved):**
+
+1. **Visits & Recalls** is one rail item. Live Visits and Follow-Up Recalls are
+   two tabs on one page; `/recalls` opens the Recalls tab.
+2. **Clinic Settings** is three tabs: **Clinic & Hours**, **Services & Rules**,
+   **System & Backup**. The four big top boxes are gone.
+3. **Staff & Reports** is two tabs: **Team Roster** and **Reports & CSV**. The
+   two static security boxes are gone; reports are one click away.
+4. **Requests Queue** has four request tabs only. The duplicate "Today's
+   Schedule" tab, its list, and its detail modal are removed (the schedule
+   lives on Schedule Grid and Live Visits).
+5. **Schedule Grid** drops the fake consumer bar and profile menu. Specialty
+   filters now come from the doctors actually on the selected day.
+6. **LeftRail** keeps the single staff identity card and Sign Out. **Header**
+   keeps only the page label, clinic status, clock and Lock.
+7. **Warm light theme** is consistent: navy and sky-blue are replaced by the
+   obsidian `#111114` and amber palette across views, buttons and CSS.
+8. **Type and spacing** use a fixed five-step scale (`views.css`); card padding
+   is 10–16px; tabs share one segmented control.
+
+Gates: 15 harnesses 197/197 (new `test_impeccable_ui.js`, 13 checks), build
+clean, Django 506/506 OK. No backend or API change.
+
 ## Next up - Phase 5 (partner handover)
 
 **Leave flow complete (2026-11-20).** Dated leave, a rolled-back preview,

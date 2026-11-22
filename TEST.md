@@ -15,7 +15,7 @@ the runners themselves.
 | Test Suite / Category | Target Area | Tooling | Total Tests | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **Django application suite** | Models, availability, holds, disruption/leave, booking queue, live visits, auth & sessions, staff, settings, webhooks, analytics, exports, public intake, leave lifecycle, Telegram notices, follow-up messages, recalls list | Django Test Runner (`python manage.py test appointments`) | **506** | ✅ **506/506 OK** (~5 min) |
-| **Frontend contract harnesses** | Booking payloads, calendar truth, clinic clock (3-timezone matrix), follow-up rule, leave lifecycle, no demo seeds, no ghost rows, public booking, queue tabs, recalls, session flow, staff truth, truthful screens, visits sync | Node (`frontend/tests/*.js`) | **184** | ✅ **184/184** (14 files) |
+| **Frontend contract harnesses** | Booking payloads, calendar truth, clinic clock (3-timezone matrix), follow-up rule, leave lifecycle, no demo seeds, no ghost rows, public booking, queue tabs, recalls, session flow, staff truth, truthful screens, visits sync, UI consolidation & warm-light theme | Node (`frontend/tests/*.js`) | **197** | ✅ **197/197** (15 files) |
 | **n8n node harnesses** | Workflows 01–08: adapter, callback auth, disruption notifier, log nodes, format, reminders, reply handler, simulator ids, sweeper, voice guard | Node (`n8n/tests/*.js`) | **11 files** | ✅ all green |
 | **Frontend production build** | `vite build` (module graph, asset emit) | Vite | — | ✅ clean |
 | **Playwright E2E spec** | Full user journeys across queue / calendar / simulator / visits / staff / settings / auth | Playwright (`frontend/e2e/clinic-e2e.spec.js`) | 8 scenarios | ⚠️ spec exists and is runnable (`npm run test:e2e`), but it is **not** part of any automated run here — no CI, and it was last executed manually in live mode |
@@ -752,6 +752,29 @@ execution log). Production staging (Railway/Vercel) is not deployed yet.
   Live: **19/19** — two recalls created and listed, search finds exactly them, cancel stays visible
   and never sends, an edit changes the words the sweep sends, mark-done silences it, and a sent
   recall refuses further edits. Every proof row deleted; reminder flags restored.
+- [x] `T-783`: **One clear place for each job** (UI consolidation, warm light theme): the dashboard
+  repeated page titles, staff identity and a second today-schedule list. Owner approved the merge.
+  Pinned by `frontend/tests/test_impeccable_ui.js` (13 checks):
+  - Recalls is a tab inside **Visits & Recalls**; the rail has one item, `/recalls` opens that tab.
+  - **Clinic Settings** is three tabs (Clinic & Hours / Services & Rules / System & Backup) and the
+    four top KPI boxes are gone.
+  - **Staff & Reports** is two tabs (Team Roster / Reports & CSV) and the two static security boxes
+    are gone.
+  - **Requests Queue** keeps four request tabs; the duplicate "Today's Schedule" tab, list, detail
+    modal and CSS are removed.
+  - **Schedule Grid** has no fake "Abuja, NG" bar and no fake "Sarah Aliyu" menu; specialty filters
+    come from the doctors on the selected day and compare exactly. The calendar store now reads the
+    `specialty` key the schedule API actually sends (it read `doctor_specialty`, so every doctor fell
+    back to "General Practice" and the filter was a no-op).
+  - **LeftRail** owns the single staff identity card and Sign Out; **Header** keeps the page label,
+    status, clock and Lock.
+  - No `#0c1a30` navy or `#38bdf8` sky-blue remains in the redesigned views; headings use the fixed
+    five-step scale in `views.css`.
+
+  Gates: 15 frontend harnesses **197/197**, `npm run build` clean (index bundle 372.4 kB → 360.0 kB),
+  Django **506/506 OK**. Browser proof: all five pages and every tab render with zero console errors
+  and zero horizontal overflow at desktop width; the Schedule Grid showed the three real doctors with
+  their real specialties, and choosing "Lead Dental Surgeon" left only Dr. Bello Ibrahim.
 
 ---
 
@@ -811,6 +834,7 @@ execution log). Production staging (Railway/Vercel) is not deployed yet.
 | 2026-11-21 | Brain Agent | `Telegram Notice Leg / T-779` | **PASSED** | The moved patient is told. Disruption notices were SMS + WhatsApp only, so with both providers off nobody learned their appointment moved; Telegram is the one channel that works, and the plan now queues a third notice when the patient's request carries `telegram_chat_id`, with the same claim-ref single-shot + correction discipline. Django sends it directly (token lives in Django) and records `sent`/`failed` on the InteractionLog row — a `simulated` answer with no token is a FAILED row with the reason, never a quiet success. n8n still receives only sms/whatsapp. 5/5 red-first; banner reports real sent/failed counts. Gates: 11 harnesses **155/155**, build clean, Django **491/491 OK**. Live **17/17** on this machine (no token): one Telegram notice queued, 0 claimed sent, 1 failed with "Telegram is not configured (no bot token)", provider notices still 2, raw chat ids dropped from the response, audit intact; proof rows deleted. Success path pinned by unit tests (mocked send), because it needs the real token. |
 | 2026-11-21 | Brain Agent | `Follow-Up Rule B / T-781` | **PASSED** | The recall engine was active but fired at 00:05 (date only), the doctor's instruction could never reach the patient, the pop-up promised a feedback survey that did not exist, and the store threw away the chosen date (always +14 days). Owner rule B: the message box starts EMPTY and an empty box sends NOTHING — the recall is a private note. Added `patient_message` + `send_at` (migration `0010`), a date+time gate in the sweep, a message box and time field in the pop-up, the private-note label, and honest banner/toast copy. 6 tests red-first; `test_follow_up.js` 11 checks. Gates: 13 harnesses **171/171**, build clean, Django **497/497 OK**. Live **12/12**: typed message due in the past sent verbatim once; empty and future tasks sent nothing and wrote no claim; the clinical note never appears; proof rows deleted, flags restored. |
 | 2026-11-21 | Brain Agent | `Recalls List / T-782` | **PASSED** | Recalls were invisible after saving (admin only). Added `GET /follow-ups/` (counts for upcoming/sent/done/cancelled, search, clinical note deliberately absent), `PATCH /follow-ups/{id}/` (cancel kept on record, mark done, edit date/time/message only BEFORE sending), and the `/recalls` page with four groups, inline edit and honest note-only rows. 9 tests red-first; `test_recalls.js` 13 checks. Gates: 14 harnesses **184/184**, build clean, Django **506/506 OK**. Live **19/19**: create + list, search, cancel stays visible and silent, edit changes the sent words, mark-done silences, sent recall refuses edits; rows deleted, flags restored. |
+| 2026-11-21 | Brain Agent | `UI Consolidation / T-783` | **PASSED** | Owner approved the design review: one clear place for each job, warm light theme. Recalls merged into **Visits & Recalls** as a tab (`/recalls` opens it); **Clinic Settings** split into 3 tabs and the 4 top KPI boxes removed; **Staff & Reports** split into Team Roster / Reports & CSV with the 2 static security boxes removed; the duplicate **"Today's Schedule"** tab, list, detail modal and CSS deleted from Requests Queue; the fake "Abuja, NG" search bar and "Sarah Aliyu" profile menu removed from Schedule Grid, with specialty filters now derived from the real doctors on the selected day; **LeftRail** owns the single staff card and Sign Out while **Header** keeps label/status/clock/Lock; every `#0c1a30` navy and `#38bdf8` sky-blue replaced by the obsidian `#111114` and amber palette; headings use the fixed five-step scale. New `test_impeccable_ui.js` (13 checks) pins all of it, including the calendar store reading the API's `specialty` key and the exact-match specialty filter. Gates: 15 harnesses **197/197**, build clean (index 372.4 kB → 360.0 kB), Django **506/506 OK**. Browser proof: five pages and every tab render with zero console errors and zero horizontal overflow; the staff roster loaded 7 real rows after the API answer; the Schedule Grid showed the 3 real doctors and "Lead Dental Surgeon" filtered to one. |
 
 ---
 

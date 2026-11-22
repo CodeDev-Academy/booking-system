@@ -1,5 +1,22 @@
 # UI/UX Design Direction & Aesthetics Blueprint (`tastecode.dev` Cloned System)
 
+> **Current shipped theme (2026-11-21) — this section wins over the dark values below.**
+> The live dashboard is **warm light**, not dark. The palette comes from
+> `frontend/src/styles/tokens.css` and must be used for every new screen:
+>
+> - Canvas `--bg: #ece7df`; depth `#e3ded6`; cards `--surface-1: #ffffff`;
+>   inner panels `#f6f3ee`; hairlines `--line: #dfd9cf`, `--line-strong: #c8c1b4`.
+> - Obsidian actions `--surface-dark: #111114` (hover `#1f1f24`), white text.
+> - Accents: amber `#d97706`, ember `#ea580c`, rose `#e11d48`, success `#16a34a`.
+> - Type: fixed five-step scale in `components/views.css` (11 → 14.875 → 18 →
+>   24 → 30 px), `tabular-nums` for clocks, counts and money. Body measure ≤75ch.
+> - Spacing: the 8-token scale `--space-1,2,3,4,6,8,12,16`; card padding 10–16 px.
+> - No navy `#0c1a30`, no sky-blue `#38bdf8`, no zero-offset coloured halos.
+> - One segmented tab bar style (`.segmented-tabs`) for every in-page switcher.
+>
+> Section 1 below is kept as the original planning record; treat its dark canvas,
+> `#0c1a30` buttons and glowing beams as **history, not instructions**.
+
 ## 1. Visual Philosophy & Design Identity (Cloned from `tastecode.dev`)
 The Receptionist Dashboard is built strictly on the **`tastecode.dev` dark minimalist aesthetic**: ultra-refined near-black canvas, hairline borders, soft-rounded charcoal cards, glowing beam accents, and the warm ember/amber gradient spectrum.
 
