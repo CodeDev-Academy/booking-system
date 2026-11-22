@@ -1,13 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Users,
-  UserCheck,
-  ShieldAlert,
-  KeyRound,
   UserPlus,
-  Stethoscope,
   Filter,
   Search,
+  BarChart3,
 } from 'lucide-react';
 import { useStaffDirectory } from '../hooks/useStaffDirectory';
 import { StaffRosterTable } from '../components/admin/StaffRosterTable';
@@ -20,10 +17,12 @@ import '../styles/components/admin.css';
 import '../styles/components/calendar.css';
 
 /**
- * StaffView — Route shell for Task 4.6: Staff Roster, Attendance & Clinic Analytics Bento.
+ * StaffView — Staff Roster & Operational Reports View.
  * Pure presentational wiring connecting useStaffDirectory() hook to admin components.
  */
 export const StaffView = () => {
+  const [activeSection, setActiveSection] = useState('roster'); // 'roster' | 'analytics'
+
   const {
     staffList,
     rawStaffCount,
@@ -41,7 +40,7 @@ export const StaffView = () => {
     <div className="view-container">
       {/* Toast Notification Banner */}
       {toast && (
-        <div className={`calendar-toast-banner toast-${toast.tone}`} style={{ marginBottom: '12px' }}>
+        <div className={`calendar-toast-banner toast-${toast.tone}`} style={{ marginBottom: '8px' }}>
           <div className="toast-content">
             <span className="duty-dot" />
             <span>{toast.text}</span>
@@ -56,163 +55,136 @@ export const StaffView = () => {
         </div>
       )}
 
-      {/* View Header */}
+      {/* Compact View Header with 2-Tab Switcher & Add Button */}
       <div className="view-header">
-        <div className="view-title-group">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
           <div className="view-heading">
-            <Users size={22} color="var(--info)" />
-            <span>Staff &amp; Doctors</span>
+            <Users size={18} color="var(--amber)" />
+            <span>Staff &amp; Reports</span>
+          </div>
+
+          <div className="segmented-tabs" role="tablist" aria-label="Staff and reports switcher">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeSection === 'roster'}
+              className={`segmented-tab-btn ${activeSection === 'roster' ? 'active' : ''}`}
+              onClick={() => setActiveSection('roster')}
+            >
+              <Users size={13} />
+              <span>Team Roster</span>
+              <span className="segmented-tab-count">{rawStaffCount}</span>
+            </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeSection === 'analytics'}
+              className={`segmented-tab-btn ${activeSection === 'analytics' ? 'active' : ''}`}
+              onClick={() => setActiveSection('analytics')}
+            >
+              <BarChart3 size={13} />
+              <span>Reports &amp; CSV</span>
+            </button>
           </div>
         </div>
 
         <div className="view-actions">
+          <span style={{ fontSize: '12px', color: 'var(--text-3)' }}>
+            <strong style={{ color: 'var(--text)' }}>{metrics.doctorsActive}</strong> of {metrics.doctorsCount} doctors on duty
+          </span>
           <button
             type="button"
             onClick={actions.openAddStaffModal}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '8px 16px',
-              background: '#0c1a30',
-              color: '#ffffff',
-              border: 'none',
-              borderRadius: 'var(--radius-full)',
-              fontSize: '12px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              transition: 'all 0.15s ease',
-            }}
+            className="btn-obsidian"
           >
-            <UserPlus size={14} color="#38bdf8" />
-            <span>+ Add Staff Member</span>
+            <UserPlus size={13} />
+            <span>Add Staff Member</span>
           </button>
         </div>
       </div>
 
-      {/* KPI Overview Row */}
-      <div className="kpi-row">
-        <div className="kpi-card">
-          <div className="kpi-label">
-            <span>Total Staff Enrolled</span>
-            <UserCheck size={12} color="var(--text-3)" />
-          </div>
-          <div className="kpi-value tabular-nums">{metrics.totalStaff}</div>
-          <div className="kpi-subtext">{metrics.activeOnDuty} On Active Duty Today</div>
-        </div>
+      {activeSection === 'roster' ? (
+        <div className="staff-view-wrapper">
+          {/* Table Filter Toolbar */}
+          <div className="staff-table-toolbar">
+            <div className="staff-search-box">
+              <Search size={14} color="var(--text-3)" />
+              <input
+                type="text"
+                className="staff-search-input"
+                placeholder="Search staff by name, email, specialty, or shift..."
+                value={searchQuery || ''}
+                onChange={(e) => actions.setSearchQuery(e.target.value)}
+                aria-label="Search staff members"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  className="search-clear-btn"
+                  onClick={() => actions.setSearchQuery('')}
+                  title="Clear Search"
+                >
+                  &times;
+                </button>
+              )}
+            </div>
 
-        <div className="kpi-card">
-          <div className="kpi-label">
-            <span>Doctors Active</span>
-            <span className="badge-pill badge-success mono-tag">ONLINE</span>
-          </div>
-          <div className="kpi-value tabular-nums">{metrics.doctorsActive}</div>
-          <div className="kpi-subtext">{metrics.doctorsCount} Clinicians Registered</div>
-        </div>
-
-        <div className="kpi-card">
-          <div className="kpi-label">
-            <span>Security Governance</span>
-            <KeyRound size={12} color="var(--amber)" />
-          </div>
-          <div className="kpi-value tabular-nums">100%</div>
-          <div className="kpi-subtext">4-Digit Quick-PINs Configured</div>
-        </div>
-
-        <div className="kpi-card">
-          <div className="kpi-label">
-            <span>Instant Access Revocation</span>
-            <ShieldAlert size={12} color="var(--danger-text)" />
-          </div>
-          <div className="kpi-value tabular-nums">Active</div>
-          <div className="kpi-subtext">Immediate Token Revocation</div>
-        </div>
-      </div>
-
-      <div className="staff-view-wrapper">
-        {/* Table Filter Toolbar */}
-        <div className="staff-table-toolbar">
-          <div className="staff-search-box">
-            <Search size={14} color="var(--text-3)" />
-            <input
-              type="text"
-              className="staff-search-input"
-              placeholder="Search staff by name, email, specialty, or shift..."
-              value={searchQuery || ''}
-              onChange={(e) => actions.setSearchQuery(e.target.value)}
-              aria-label="Search staff members"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                className="search-clear-btn"
-                onClick={() => actions.setSearchQuery('')}
-                title="Clear Search"
-              >
-                &times;
-              </button>
-            )}
-          </div>
-
-          <div className="staff-filter-group">
-            <div className="clinician-dropdown-wrapper">
-              <Filter size={13} color="var(--text-3)" />
-              <select
-                className="clinician-select"
-                value={selectedTab}
-                onChange={(e) => actions.setSelectedTab(e.target.value)}
-                aria-label="Filter staff by role"
-              >
-                <option value="all">All Roles ({rawStaffCount})</option>
-                <option value="doctor">Doctors Only ({metrics.doctorsCount})</option>
-                <option value="receptionist">Receptionists Only ({metrics.receptionistsCount})</option>
-              </select>
+            <div className="staff-filter-group">
+              <div className="clinician-dropdown-wrapper">
+                <Filter size={13} color="var(--text-3)" />
+                <select
+                  className="clinician-select"
+                  value={selectedTab}
+                  onChange={(e) => actions.setSelectedTab(e.target.value)}
+                  aria-label="Filter staff by role"
+                >
+                  <option value="all">All Roles ({rawStaffCount})</option>
+                  <option value="doctor">Doctors Only ({metrics.doctorsCount})</option>
+                  <option value="receptionist">Receptionists Only ({metrics.receptionistsCount})</option>
+                </select>
+              </div>
             </div>
           </div>
+
+          {/* Staff Roster Table */}
+          <StaffRosterTable
+            staffList={staffList}
+            onOpenEditStaff={actions.openEditStaffModal}
+          />
         </div>
-
-        {/* Staff Roster Table */}
-        <StaffRosterTable
-          staffList={staffList}
-          onOpenEditStaff={actions.openEditStaffModal}
-        />
-
-        {/* Clinic Analytics & CSV Export Bento */}
-        <div className="analytics-section" style={{ marginTop: '12px' }}>
-          <div className="section-title-row" style={{ marginBottom: '12px' }}>
-            <h2 style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text)' }}>
-              Operational Analytics & Compliance Reporting
-            </h2>
-          </div>
-
+      ) : (
+        <div className="analytics-section">
           <ClinicAnalyticsBento
             metrics={metrics}
             onExportAppointments={actions.exportAppointmentsCSV}
             onExportAttendance={actions.exportAttendanceCSV}
           />
         </div>
-      </div>
+      )}
 
       {/* Staff Edit & Profile Modal */}
       <StaffEditModal
         isOpen={editStaffModal.isOpen}
         staff={editStaffModal.staff}
         onClose={actions.closeEditStaffModal}
-        onUpdateStaff={actions.updateStaffMember}
+        onSave={actions.updateStaffMember}
+        onResetPassword={actions.confirmResetPassword}
+        onResetPin={actions.confirmResetPin}
         onToggleActive={actions.toggleStaffActive}
       />
 
-      {/* Add Staff Modal */}
+      {/* Add New Staff Member Modal */}
       <AddStaffModal
         isOpen={addStaffModalOpen}
         onClose={actions.closeAddStaffModal}
-        onAddStaff={actions.addStaffMember}
+        onAdd={actions.addStaffMember}
       />
 
-      {/* Reset PIN Modal */}
+      {/* Quick-PIN Reset Modal */}
       <ResetPinModal
         isOpen={resetPinModal.isOpen}
-        modalData={resetPinModal}
+        staff={resetPinModal.staff}
         onClose={actions.closeResetPinModal}
         onConfirm={actions.confirmResetPin}
       />

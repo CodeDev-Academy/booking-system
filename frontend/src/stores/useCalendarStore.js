@@ -1124,7 +1124,11 @@ export const useCalendarStore = create(
         mappedDoctors.push({
           id: docId,
           name: docItem.doctor_name || 'Doctor',
-          specialty: docItem.doctor_specialty || 'General Practice',
+          // The schedule payload names this key `specialty` (views_clinic.py);
+          // `doctor_specialty` is the appointment-level name, kept as a fallback.
+          // Reading the wrong key made every doctor "General Practice" and the
+          // specialty filter a no-op.
+          specialty: docItem.specialty || docItem.doctor_specialty || 'General Practice',
           workingDays: docItem.working_days || [],
           shiftStart: docItem.shift_start || null,
           shiftEnd: docItem.shift_end || null,

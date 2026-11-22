@@ -81,8 +81,9 @@ check('C6 the clinical note is never rendered',
   !/\bitem\.notes\b/.test(view) && !/notes:/.test(hook),
   'the list payload has no clinical note by design');
 
-check('C7 the route and the menu item exist',
-  /path="recalls"/.test(app) && /to="\/recalls"/.test(rail),
+const liveVisits = read('../src/views/LiveVisitsView.jsx');
+check('C7 the route and the Live Visits tab exist',
+  /path="recalls"/.test(app) && /RecallsView/.test(liveVisits),
   'a page nobody can reach is dead code');
 
 console.log('');

@@ -124,9 +124,8 @@ export const useTriageQueue = () => {
       { id: 'rerequested', label: 'Re-Requested', hint: 'Priority', count: buckets.rerequested.length, tone: 'ember' },
       { id: 'needs_attention', label: 'Needs Attention', hint: 'Delivery issues', count: buckets.needs_attention.length, tone: 'danger' },
       { id: 'expired', label: 'Expired Offers', hint: null, count: buckets.expired.length, tone: 'neutral' },
-      { id: 'today', label: "Today's Schedule", hint: null, count: appointments.length, tone: 'info' },
     ],
-    [buckets, appointments]
+    [buckets]
   );
 
   // Task 3.4: audible alert when a NEW delivery failure lands (count grows)
@@ -203,53 +202,6 @@ export const useTriageQueue = () => {
         (c.doctorName && c.doctorName.toLowerCase().includes(q))
     );
   }, [activeTab, buckets, toCard, searchQuery]);
-
-  const todayRows = useMemo(() => {
-    const raw = [...appointments]
-      .sort((a, b) => a.start - b.start)
-      .map((a) => {
-        const service = getService(a.serviceId);
-        const doctor = getDoctor(a.doctorId);
-        return {
-          id: a.id,
-          patientName: a.patientName,
-          phone: a.patientPhone || a.phone,
-          serviceName: service ? service.name : '',
-          doctorName: doctor ? doctor.name : '',
-          timeLabel: formatTime(a.start),
-          status: a.status,
-        };
-      });
-    if (!searchQuery.trim()) return raw;
-    const q = searchQuery.toLowerCase().trim();
-    return raw.filter(
-      (r) =>
-        (r.patientName && r.patientName.toLowerCase().includes(q)) ||
-        matchesPhone(r.phone, searchQuery) ||
-        (r.serviceName && r.serviceName.toLowerCase().includes(q)) ||
-        (r.doctorName && r.doctorName.toLowerCase().includes(q))
-    );
-  }, [appointments, searchQuery]);
-
-  // Selected Today's Schedule Patient Modal
-  const [selectedTodayAppointmentId, setSelectedTodayAppointmentId] = useState(null);
-
-  const selectedTodayAppointment = useMemo(() => {
-    if (!selectedTodayAppointmentId) return null;
-    const found = appointments.find((a) => a.id === selectedTodayAppointmentId);
-    if (!found) return null;
-    const service = getService(found.serviceId);
-    const doctor = getDoctor(found.doctorId);
-    return {
-      ...found,
-      durationMin: service ? service.durationMin : 30,
-      bufferMin: service ? service.bufferMin : 10,
-      end: found.start + (service ? service.durationMin : 30) * 60000,
-      patientPhone: found.phone || '+234 800 000 0000',
-      doctorName: doctor ? doctor.name : 'Clinician',
-      serviceName: service ? service.name : 'General Consultation',
-    };
-  }, [selectedTodayAppointmentId, appointments]);
 
   // ---------- Review modal view model ----------
   const selectedRequest = requests.find((r) => r.id === selectedId) || null;
@@ -518,8 +470,6 @@ export const useTriageQueue = () => {
     refreshInteractions: () => fetchInteractions(selectedRequestPhone),
     confirmSingleSlot: (slotId) =>
       selectedRequest && useQueueStore.getState().confirmSingleSlot({ requestId: selectedRequest.id, slotId }),
-    openTodayAppointment: (id) => setSelectedTodayAppointmentId(id),
-    closeTodayAppointment: () => setSelectedTodayAppointmentId(null),
     setSearchQuery,
     dismissToast,
   };
@@ -529,8 +479,6 @@ export const useTriageQueue = () => {
     activeTab,
     searchQuery,
     cards,
-    todayRows,
-    selectedTodayAppointment,
     review,
     toast,
     actions,

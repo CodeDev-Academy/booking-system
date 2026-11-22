@@ -162,7 +162,7 @@ export const LiveVisitsGrid = ({ visitsData }) => {
                   }}
                   title="Patient has arrived in lobby - admit to Waiting Room"
                 >
-                  <CheckCircle2 size={13} color="#38bdf8" />
+                  <CheckCircle2 size={13} />
                   <span>Mark Present</span>
                 </button>
               </div>
@@ -221,23 +221,10 @@ export const LiveVisitsGrid = ({ visitsData }) => {
             type="button"
             onClick={() => setWalkInModalOpen(true)}
             title="Admit an unscheduled walk-in patient at reception"
-            style={{
-              padding: '8px 16px',
-              fontSize: '12px',
-              fontWeight: 600,
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              background: '#0c1a30',
-              color: '#ffffff',
-              border: 'none',
-              borderRadius: 'var(--radius-full)',
-              cursor: 'pointer',
-              transition: 'all 0.15s ease',
-            }}
+            className="btn-obsidian"
           >
-            <Plus size={14} color="#38bdf8" />
-            <span>+ Walk-In Patient (Check-In)</span>
+            <Plus size={14} />
+            <span>Walk-In Patient</span>
           </button>
         </div>
       </div>

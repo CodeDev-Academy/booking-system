@@ -46,18 +46,20 @@ function formatWhen(dateIso, timeIso) {
  * DESIGN ONLY: the hook owns fetching, filtering and the three actions. Nothing
  * here decides what is allowed; Django answers, and the notice shows its words.
  */
-export function RecallsView() {
+export function RecallsView({ embedded = false }) {
   const recalls = useRecalls();
   const editing = recalls.edit;
 
   return (
-    <div className="view-container recalls-page">
-      <div className="view-header">
+    <div className={embedded ? 'recalls-page' : 'view-container recalls-page'}>
+      <div className="view-header" style={embedded ? { borderBottom: 'none', paddingBottom: 0 } : undefined}>
         <div className="view-title-group">
-          <div className="view-heading">
-            <CalendarClock size={22} color="var(--amber)" />
-            <span>Follow-up Recalls</span>
-          </div>
+          {!embedded && (
+            <div className="view-heading">
+              <CalendarClock size={18} color="var(--amber)" />
+              <span>Follow-up Recalls</span>
+            </div>
+          )}
           <p className="recalls-subtitle">
             Every recall is here. A recall with no message is a private note and is never sent.
           </p>

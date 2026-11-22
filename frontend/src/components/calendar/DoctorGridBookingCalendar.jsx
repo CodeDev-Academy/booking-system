@@ -1,29 +1,13 @@
 import React, { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
   Search,
-  MapPin,
   ChevronLeft,
   ChevronRight,
-  ChevronDown,
-  Clock,
   Shield,
-  CheckCircle2,
   Calendar as CalendarIcon,
-  User,
-  Bell,
-  Stethoscope,
-  Sparkles,
   Coffee,
-  AlertCircle,
   Plus,
-  FileText,
-  UserCheck,
   CalendarDays,
-  Lock,
-  LogOut,
-  Users,
-  Settings as SettingsIcon,
   AlertTriangle,
 } from 'lucide-react';
 import {
@@ -37,7 +21,6 @@ import {
 } from '../../services/clinicTimeService';
 import { useCalendarStore } from '../../stores/useCalendarStore';
 import { useStaffStore } from '../../stores/useStaffStore';
-import { useAuthStore } from '../../stores/useAuthStore';
 import { EmergencyDisruptionModal } from './EmergencyDisruptionModal';
 import { LeavePlannerModal } from './LeavePlannerModal';
 import { StrandedPatientsPanel } from './StrandedPatientsPanel';
@@ -67,16 +50,6 @@ const MONTH_NAMES = [
 
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const DAY_NAMES_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
-// Real Clinic Specialties from Clinic Settings & Staff Roster Memory
-const CLINIC_SPECIALTIES = [
-  'All Specialties',
-  'Dental Surgery & Care',
-  'Family Medicine & General Practice',
-  'Consultant Surgery',
-  'Ophthalmology (Eye Care)',
-  'ENT Care',
-];
 
 const DEFAULT_TIME_SLOTS = [
   '08:30 AM',
@@ -223,12 +196,9 @@ export const DoctorGridBookingCalendar = ({
   onReleaseHold,
   onAdmitAppointment,
 }) => {
-  const navigate = useNavigate();
   const calendarDoctors = useCalendarStore((state) => state.doctors);
   const leavePeriods = useCalendarStore((state) => state.leavePeriods);
   const staffList = useStaffStore((state) => state.staffList);
-  const lockDesk = useAuthStore((state) => state.lockDesk);
-  const logout = useAuthStore((state) => state.logout);
   // Risk R-15 disruption cockpit: state + actions for the one-click
   // emergency-leave resolver (modal renders at the end of this component).
   const disruptionModal = useCalendarStore((state) => state.disruptionModal);
@@ -299,7 +269,6 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
   const [selectedDoctorId, setSelectedDoctorId] = useState(() => doctors[0]?.id || 'doc-bello');
   const [timetableHorizon, setTimetableHorizon] = useState('day'); // 'day' | 'week'
   const [selectedTimeSlot, setSelectedTimeSlot] = useState('11:30 AM');
-  const [showUserMenu, setShowUserMenu] = useState(false);
 
   // Dynamic Date Engine — anchored to the clinic clock, never the device.
   const [selectedDate, setSelectedDate] = useState(() => getInitialToday());
@@ -410,21 +379,10 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
 
       if (!matchSearch) return false;
 
+      // The tabs are built from the doctors on the selected day, so the match
+      // is exact — a tab that shows every doctor would be a filter that lies.
       if (selectedSpecialty === 'All Specialties') return true;
-      if (selectedSpecialty === 'Dental Surgery & Care') {
-        return doc.specialty?.toLowerCase().includes('dent') || doc.id === 'doc-bello';
-      }
-      if (selectedSpecialty === 'Family Medicine & General Practice') {
-        return doc.specialty?.toLowerCase().includes('general') || doc.id === 'doc-okafor';
-      }
-      if (selectedSpecialty === 'Consultant Surgery') {
-        return (
-          doc.specialty?.toLowerCase().includes('surg') ||
-          doc.specialty?.toLowerCase().includes('physician') ||
-          doc.id === 'doc-babawo'
-        );
-      }
-      return true;
+      return (doc.specialty || '') === selectedSpecialty;
     });
   }, [doctorsOnSelectedDay, searchDoctorQuery, selectedSpecialty]);
 
@@ -584,147 +542,102 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
     }
   };
 
+  const activeSpecialties = useMemo(() => {
+    const specs = Array.from(
+      new Set((doctorsOnSelectedDay || []).map((d) => d.specialty).filter(Boolean))
+    );
+    return ['All Specialties', ...specs];
+  }, [doctorsOnSelectedDay]);
+
   return (
     <div className="grid-booking-container">
-      {/* 1. Top Search & Location Bar */}
-      <div className="grid-booking-search-bar">
-        <div className="search-location-combo">
-          <div className="search-field-part">
-            <Search size={16} color="#64748b" />
+      {/* Compact Schedule Toolbar: Search + Real Specialties + Month Navigation */}
+      <div
+        className="grid-booking-title-row"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '12px',
+          flexWrap: 'wrap',
+          marginBottom: '12px',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              background: 'var(--surface-1)',
+              border: '1px solid var(--line)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '5px 10px',
+              minWidth: '210px',
+            }}
+          >
+            <Search size={14} color="var(--text-3)" />
             <input
               type="text"
-              placeholder="Find doctors, specialties..."
+              placeholder="Filter doctors or specialty..."
               value={searchDoctorQuery}
               onChange={(e) => setSearchDoctorQuery(e.target.value)}
+              style={{
+                border: 'none',
+                outline: 'none',
+                background: 'transparent',
+                fontSize: '12px',
+                color: 'var(--text)',
+                width: '100%',
+              }}
             />
           </div>
-          <div className="search-combo-divider" />
-          <div className="location-field-part">
-            <MapPin size={15} color="#0c1a30" />
-            <input type="text" defaultValue="Abuja, NG" readOnly />
-          </div>
-          <button type="button" className="search-combo-btn">
-            Search
-          </button>
+
+          {activeSpecialties.length > 2 && (
+            <div className="segmented-tabs" role="tablist" aria-label="Filter by specialty">
+              {activeSpecialties.map((cat) => (
+                <button
+                  key={cat}
+                  type="button"
+                  role="tab"
+                  aria-selected={selectedSpecialty === cat}
+                  className={`segmented-tab-btn ${selectedSpecialty === cat ? 'active' : ''}`}
+                  onClick={() => setSelectedSpecialty(cat)}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* User Profile Pill with Interactive Dropdown */}
-        <div className="grid-booking-user-actions">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <DoubleBookingCountChip
             count={doubleBookingAlert.count}
             onReopen={doubleBookingAlert.reopen}
           />
-          <button type="button" className="round-icon-action-btn" title="Front-Desk Alerts">
-            <Bell size={16} />
-          </button>
 
-          <div className="user-profile-wrapper">
-            <div
-              className="user-profile-pill"
-              onClick={() => setShowUserMenu(!showUserMenu)}
-              role="button"
-              tabIndex={0}
+          <div className="grid-booking-nav-arrows">
+            <button
+              type="button"
+              className="nav-arrow-circle-btn"
+              title="Previous Month"
+              onClick={handlePrevMonth}
             >
-              <div className="user-profile-avatar">SA</div>
-              <span className="user-profile-name">Sarah Aliyu (Front Desk)</span>
-              <ChevronDown size={14} color="#64748b" />
-            </div>
-
-            {/* Interactive Receptionist Profile Popover */}
-            {showUserMenu && (
-              <div className="user-profile-menu-popover">
-                <div className="popover-user-header">
-                  <div className="user-profile-avatar">SA</div>
-                  <div>
-                    <div className="popover-user-name">Sarah Aliyu</div>
-                    <div className="popover-user-role">Senior Receptionist &bull; On Duty</div>
-                  </div>
-                </div>
-
-                <div style={{ fontSize: '11px', color: '#64748b', padding: '2px 4px' }}>
-                  sarah.aliyu@cedarcare.ng &bull; Shift: 08:00–16:00 WAT
-                </div>
-
-                <div style={{ height: '1px', background: '#f1f5f9', margin: '4px 0' }} />
-
-                <button
-                  type="button"
-                  className="popover-menu-item"
-                  onClick={() => {
-                    setShowUserMenu(false);
-                    navigate('/admin/staff');
-                  }}
-                >
-                  <Users size={14} />
-                  <span>Staff &amp; Doctors Roster</span>
-                </button>
-
-                <button
-                  type="button"
-                  className="popover-menu-item"
-                  onClick={() => {
-                    setShowUserMenu(false);
-                    navigate('/admin/settings');
-                  }}
-                >
-                  <SettingsIcon size={14} />
-                  <span>Clinic Settings &amp; Rules</span>
-                </button>
-
-                <button
-                  type="button"
-                  className="popover-menu-item"
-                  onClick={() => {
-                    setShowUserMenu(false);
-                    if (lockDesk) lockDesk();
-                  }}
-                >
-                  <Lock size={14} />
-                  <span>Lock Reception Desk</span>
-                </button>
-
-                <button
-                  type="button"
-                  className="popover-menu-item"
-                  style={{ color: '#ef4444' }}
-                  onClick={() => {
-                    setShowUserMenu(false);
-                    if (logout) logout();
-                    navigate('/login');
-                  }}
-                >
-                  <LogOut size={14} />
-                  <span>Sign Out</span>
-                </button>
-              </div>
-            )}
+              <ChevronLeft size={15} />
+            </button>
+            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)' }}>
+              {calendarMonthLabel}
+            </span>
+            <button
+              type="button"
+              className="nav-arrow-circle-btn"
+              title="Next Month"
+              onClick={handleNextMonth}
+            >
+              <ChevronRight size={15} />
+            </button>
           </div>
-        </div>
-      </div>
-
-      {/* 2. Page Title & Navigation Arrows */}
-      <div className="grid-booking-title-row">
-        <h1 className="grid-booking-heading">Doctor Schedule &amp; Timetable Hub</h1>
-        <div className="grid-booking-nav-arrows">
-          <button
-            type="button"
-            className="nav-arrow-circle-btn"
-            title="Previous Month"
-            onClick={handlePrevMonth}
-          >
-            <ChevronLeft size={16} />
-          </button>
-          <span style={{ fontSize: '13px', fontWeight: 600, color: '#0f172a' }}>
-            {calendarMonthLabel}
-          </span>
-          <button
-            type="button"
-            className="nav-arrow-circle-btn"
-            title="Next Month"
-            onClick={handleNextMonth}
-          >
-            <ChevronRight size={16} />
-          </button>
         </div>
       </div>
 
@@ -779,20 +692,6 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
         </div>
       )}
 
-      {/* 3. Horizontal Specialty Category Pills Bar (From Clinic Memory) */}
-      <div className="specialty-pills-bar">
-        {CLINIC_SPECIALTIES.map((cat) => (
-          <button
-            key={cat}
-            type="button"
-            className={`specialty-pill-btn ${selectedSpecialty === cat ? 'active' : ''}`}
-            onClick={() => setSelectedSpecialty(cat)}
-          >
-            {cat}
-          </button>
-        ))}
-      </div>
-
       {/* 4. Three-Column Bento Grid Layout */}
       <div className="grid-booking-bento-layout">
         {/* ==================================================================
@@ -843,7 +742,7 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
                         </span>
                       ) : null}
                       <span style={{ fontSize: '10px', color: '#16a34a', fontWeight: 600 }}>
-                        &bull; {weekApptsCount} visits this week
+                        &bull; {weekApptsCount} {weekApptsCount === 1 ? 'visit' : 'visits'} this week
                       </span>
                     </div>
                   </div>
@@ -966,7 +865,7 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
           {/* Timetable Control Strip: Horizon Toggle & Functional Day Navigation */}
           <div className="timetable-control-strip">
             <div className="timetable-date-indicator">
-              <CalendarIcon size={14} color="#0c1a30" />
+              <CalendarIcon size={14} color="#111114" />
               <span>
                 {selectedDayName}, {selectedMonthName} {selectedDayNumber}, {selectedYear}
               </span>
@@ -1238,7 +1137,7 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
                     key={day}
                     className="week-day-card"
                     style={{
-                      borderColor: isSelected ? '#0c1a30' : '#e2e8f0',
+                      borderColor: isSelected ? '#111114' : '#e2e8f0',
                       background: isSelected ? '#ffffff' : '#f8fafc',
                     }}
                   >
@@ -1302,7 +1201,7 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
             className="calendar-quick-book-btn"
             onClick={handleBookNow}
           >
-            <Plus size={14} color="#0c1a30" />
+            <Plus size={14} color="#111114" />
             <span>+ Quick Book Walk-In Slot</span>
           </button>
 

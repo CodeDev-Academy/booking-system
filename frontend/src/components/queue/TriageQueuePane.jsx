@@ -1,5 +1,5 @@
 import React from 'react';
-import { Inbox, CheckCircle2, X, ChevronRight, Search } from 'lucide-react';
+import { Inbox, CheckCircle2, X, Search } from 'lucide-react';
 import { QueueCard } from './QueueCard';
 
 const EMPTY_COPY = {
@@ -9,18 +9,16 @@ const EMPTY_COPY = {
   expired: 'No expired offers to follow up.',
 };
 
-/** TriageQueuePane — tabs + FIFO card list + today's schedule + toast. Pure presentational. */
+/** TriageQueuePane — request tabs + FIFO card list + toast. Pure presentational. */
 export const TriageQueuePane = ({
   tabs,
   activeTab,
   cards,
-  todayRows,
   searchQuery,
   onSearch,
   toast,
   onTab,
   onOpen,
-  onSelectTodayRow,
   onDismissToast,
 }) => (
   <section className="triage-pane" aria-label="Inbound requests queue">
@@ -89,40 +87,7 @@ export const TriageQueuePane = ({
       </div>
     </div>
 
-    {activeTab === 'today' ? (
-      <ul className="today-list">
-        {todayRows.map((row) => (
-          <li
-            key={row.id}
-            className="today-row today-row-clickable"
-            onClick={() => onSelectTodayRow && onSelectTodayRow(row.id)}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                onSelectTodayRow && onSelectTodayRow(row.id);
-              }
-            }}
-            title={`Click to view patient profile & details for ${row.patientName}`}
-          >
-            <span className="today-time tabular-nums">{row.timeLabel}</span>
-            <div className="today-main">
-              <span className="today-name">{row.patientName}</span>
-              <span className="today-sub">
-                {row.serviceName} · {row.doctorName}
-              </span>
-            </div>
-            <div className="today-right">
-              <span className={`badge-pill ${row.status === 'completed' ? 'badge-success' : row.status === 'held' ? 'badge-amber' : 'badge-info'}`}>
-                {row.status === 'held' ? 'hold' : row.status}
-              </span>
-              <ChevronRight size={15} className="today-chevron" />
-            </div>
-          </li>
-        ))}
-      </ul>
-    ) : cards.length === 0 ? (
+    {cards.length === 0 ? (
       <div className="queue-empty">
         <Inbox size={28} />
         <p>{EMPTY_COPY[activeTab]}</p>

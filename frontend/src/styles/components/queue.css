@@ -143,7 +143,7 @@ textarea.field-input { min-height: 80px; padding: var(--space-2) var(--space-3);
 }
 
 .queue-tab:hover { color: var(--text); background: var(--surface-hover); }
-.queue-tab.active { background: #0c1a30; color: #ffffff; box-shadow: 0 1px 4px rgba(12, 26, 48, 0.2); }
+.queue-tab.active { background: #111114; color: #ffffff; box-shadow: 0 1px 4px rgba(12, 26, 48, 0.2); }
 
 .queue-tab-count {
   min-width: 20px;
@@ -158,7 +158,7 @@ textarea.field-input { min-height: 80px; padding: var(--space-2) var(--space-3);
 }
 .queue-tab.active .queue-tab-count {
   background: #1e293b;
-  color: #38bdf8;
+  color: #ffb547;
   border-color: #334155;
 }
 
@@ -217,20 +217,6 @@ textarea.field-input { min-height: 80px; padding: var(--space-2) var(--space-3);
 
 .queue-empty { display: flex; flex-direction: column; align-items: center; gap: var(--space-3); padding: var(--space-12) var(--space-4); border: 1px dashed var(--line-strong); border-radius: var(--radius-xl); color: var(--text-3); text-align: center; background: var(--surface-1); }
 .queue-empty p { max-width: 360px; font-size: var(--text-sm); color: var(--text-2); }
-
-/* Today's schedule */
-.today-list { list-style: none; display: flex; flex-direction: column; gap: var(--space-2); }
-.today-row { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-3) var(--space-4); background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--radius-md); box-shadow: var(--shadow-sm); transition: all var(--transition-fast); }
-.today-row-clickable { cursor: pointer; }
-.today-row-clickable:hover { border-color: var(--line-strong); background: var(--surface-hover); transform: translateY(-1px); box-shadow: var(--shadow-md); }
-.today-row-clickable:focus-visible { outline: 2px solid var(--surface-dark); outline-offset: 2px; }
-.today-time { width: 72px; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-2); flex-shrink: 0; font-feature-settings: "tnum"; }
-.today-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.today-name { font-weight: 600; color: var(--text); }
-.today-sub { font-size: var(--text-xs); color: var(--text-2); }
-.today-right { display: flex; align-items: center; gap: var(--space-3); }
-.today-chevron { color: var(--text-3); transition: transform var(--transition-fast), color var(--transition-fast); }
-.today-row-clickable:hover .today-chevron { transform: translateX(3px); color: var(--text); }
 
 /* Toast */
 .queue-toast { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--radius-md); box-shadow: var(--shadow-md); font-size: var(--text-sm); animation: fadeIn 200ms ease-out; }
@@ -467,7 +453,7 @@ textarea.field-input { min-height: 80px; padding: var(--space-2) var(--space-3);
   justify-content: center;
   font-weight: 700;
   font-size: 15px;
-  color: #0c1a30;
+  color: #111114;
   flex-shrink: 0;
   overflow: hidden;
 }
@@ -538,7 +524,7 @@ textarea.field-input { min-height: 80px; padding: var(--space-2) var(--space-3);
 
 .bento-queue-action-btn {
   width: 100%;
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
   border: none;
   border-radius: var(--radius-full);

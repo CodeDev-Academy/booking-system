@@ -3,7 +3,6 @@ import { Inbox } from 'lucide-react';
 import { useTriageQueue } from '../hooks/useTriageQueue';
 import { TriageQueuePane } from '../components/queue/TriageQueuePane';
 import { ReviewModal } from '../components/review/ReviewModal';
-import { AppointmentDetailsModal } from '../components/calendar/AppointmentDetailsModal';
 import '../styles/components/views.css';
 import '../styles/components/queue.css';
 import '../styles/components/calendar.css';
@@ -18,8 +17,6 @@ export const QueueView = () => {
     activeTab,
     searchQuery,
     cards,
-    todayRows,
-    selectedTodayAppointment,
     review,
     toast,
     actions,
@@ -27,11 +24,11 @@ export const QueueView = () => {
 
   return (
     <div className="view-container">
-      {/* Calm, Professional View Header */}
+      {/* Compact View Header */}
       <div className="view-header">
         <div className="view-title-group">
           <div className="view-heading">
-            <Inbox size={22} color="var(--amber)" />
+            <Inbox size={18} color="var(--amber)" />
             <span>Patient Booking Requests</span>
           </div>
         </div>
@@ -41,27 +38,15 @@ export const QueueView = () => {
         tabs={tabs}
         activeTab={activeTab}
         cards={cards}
-        todayRows={todayRows}
         searchQuery={searchQuery}
         onSearch={actions.setSearchQuery}
         toast={toast}
         onTab={actions.setActiveTab}
         onOpen={actions.openRequest}
-        onSelectTodayRow={actions.openTodayAppointment}
         onDismissToast={actions.dismissToast}
       />
 
       <ReviewModal review={review} actions={actions} />
-
-      {/* Full Patient Dossier & Details Modal for Today's Schedule */}
-      <AppointmentDetailsModal
-        isOpen={Boolean(selectedTodayAppointment)}
-        appointment={selectedTodayAppointment}
-        onClose={actions.closeTodayAppointment}
-        onCheckIn={() => {
-          actions.closeTodayAppointment();
-        }}
-      />
     </div>
   );
 };

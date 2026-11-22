@@ -1,14 +1,13 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Settings,
   Sliders,
-  CheckCircle2,
   Clock,
-  Sparkles,
   Save,
   Bell,
   BellOff,
   Volume2,
+  Database,
 } from 'lucide-react';
 import { useClinicSettings } from '../hooks/useClinicSettings';
 import { useAppModeStore } from '../stores/appModeStore';
@@ -23,10 +22,12 @@ import '../styles/components/views.css';
 import '../styles/components/settings.css';
 
 /**
- * SettingsView — Route View for Task 4.7: Visual Clinic Settings Bento & White-Label Config Exporter
+ * SettingsView — Organized 3-Tab Clinic Settings & White-Label Config Exporter
  * Pure presentational orchestration consuming the headless useClinicSettings hook.
  */
 export const SettingsView = () => {
+  const [activeTab, setActiveTab] = useState('clinic'); // 'clinic' | 'services' | 'system'
+
   const {
     hidePitchSimulator,
     toggleHidePitchSimulator,
@@ -53,7 +54,7 @@ export const SettingsView = () => {
       {toast && (
         <div
           className={`calendar-toast-banner toast-${toast.tone}`}
-          style={{ marginBottom: '14px' }}
+          style={{ marginBottom: '8px' }}
         >
           <div className="toast-content">
             <span className="duty-dot" />
@@ -69,197 +70,177 @@ export const SettingsView = () => {
         </div>
       )}
 
-      {/* View Header with Save Button */}
+      {/* Compact Header with 3-Tab Switcher & Save Button */}
       <div className="view-header">
-        <div className="view-title-group">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
           <div className="view-heading">
-            <Settings size={22} color="var(--amber)" />
+            <Settings size={18} color="var(--amber)" />
             <span>Clinic Settings</span>
             {isDirty && (
-              <span className="badge-pill badge-ember mono-tag">UNSAVED EDITS</span>
+              <span className="badge-pill badge-ember mono-tag">UNSAVED</span>
             )}
+          </div>
+
+          <div className="segmented-tabs" role="tablist" aria-label="Settings sections">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'clinic'}
+              className={`segmented-tab-btn ${activeTab === 'clinic' ? 'active' : ''}`}
+              onClick={() => setActiveTab('clinic')}
+            >
+              <Clock size={13} />
+              <span>Clinic &amp; Hours</span>
+            </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'services'}
+              className={`segmented-tab-btn ${activeTab === 'services' ? 'active' : ''}`}
+              onClick={() => setActiveTab('services')}
+            >
+              <Sliders size={13} />
+              <span>Services &amp; Rules</span>
+              {services?.length > 0 && (
+                <span className="segmented-tab-count">{services.length}</span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'system'}
+              className={`segmented-tab-btn ${activeTab === 'system' ? 'active' : ''}`}
+              onClick={() => setActiveTab('system')}
+            >
+              <Database size={13} />
+              <span>System &amp; Backup</span>
+            </button>
           </div>
         </div>
 
-        <div className="view-actions" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div className="view-actions">
           <span style={{ fontSize: '11px', color: isDirty ? 'var(--amber)' : 'var(--text-3)' }}>
-            {isDirty ? '● Unsaved changes' : '✓ Synced & saved locally'}
+            {isDirty ? '● Unsaved changes' : '✓ Saved'}
           </span>
           <button
             type="button"
             onClick={actions.saveSettings}
-            style={{
-              padding: '8px 18px',
-              fontSize: '12px',
-              fontWeight: 600,
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              background: '#0c1a30',
-              color: '#ffffff',
-              border: 'none',
-              borderRadius: 'var(--radius-full)',
-              cursor: 'pointer',
-              transition: 'all 0.15s ease',
-            }}
+            className="btn-obsidian"
             title="Save clinic profile, hours, rules, and reminder settings"
           >
-            <Save size={14} color="#38bdf8" />
-            <span>{isDirty ? 'Save All Settings' : 'Settings Saved'}</span>
+            <Save size={13} />
+            <span>{isDirty ? 'Save Settings' : 'Saved'}</span>
           </button>
         </div>
       </div>
 
-      {/* KPI Overview Strip (Plain English) */}
-      <div className="kpi-row">
-        <div className="kpi-card">
-          <div className="kpi-label">
-            <span>Decision Time Limit</span>
-            <Sliders size={12} color="var(--amber)" />
-          </div>
-          <div className="kpi-value tabular-nums">
-            {schedulingRules.offerExpiryMinutes}m
-          </div>
-          <div className="kpi-subtext">Patient offer choice window</div>
-        </div>
+      {/* Tab 1: Clinic Identity, Operating Hours & Desk Chimes */}
+      {activeTab === 'clinic' && (
+        <div className="settings-view-wrapper">
+          <ClinicProfileCard
+            clinicProfile={clinicProfile}
+            onUpdate={actions.updateProfile}
+            operationalStats={operationalStats}
+          />
 
-        <div className="kpi-card">
-          <div className="kpi-label">
-            <span>Temporary Slot Lock</span>
-            <CheckCircle2 size={12} color="var(--success-text)" />
-          </div>
-          <div className="kpi-value tabular-nums">
-            {schedulingRules.holdExpiryMinutes}m
-          </div>
-          <div className="kpi-subtext">Holds slot during confirmation</div>
-        </div>
+          <OperatingHoursBento
+            operatingHours={operatingHours}
+            onToggleDay={actions.toggleDayOpen}
+            onUpdateDayHours={actions.updateDayHours}
+            operationalStats={operationalStats}
+          />
 
-        <div className="kpi-card">
-          <div className="kpi-label">
-            <span>Cleaning &amp; Prep Buffer</span>
-            <Sparkles size={12} color="var(--info)" />
-          </div>
-          <div className="kpi-value tabular-nums">
-            {schedulingRules.defaultBufferMinutes}m
-          </div>
-          <div className="kpi-subtext">Room turnaround between visits</div>
-        </div>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '10px 14px',
+              background: 'var(--surface-1)',
+              borderRadius: 'var(--radius-md)',
+              border: '1px solid var(--line)',
+              flexWrap: 'wrap',
+              gap: '10px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              {audioEnabled ? <Bell size={15} color="var(--amber)" /> : <BellOff size={15} color="var(--text-3)" />}
+              <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)' }}>
+                Front-Desk Audio Chimes
+              </span>
+              <span className={`badge-pill ${audioEnabled ? 'badge-success' : 'badge-neutral'} mono-tag`} style={{ fontSize: '10px', padding: '1px 6px' }}>
+                {audioEnabled ? 'ON' : 'MUTED'}
+              </span>
+              <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>
+                Alerts when a new patient request arrives
+              </span>
+            </div>
 
-        <div className="kpi-card">
-          <div className="kpi-label">
-            <span>Weekly Operations</span>
-            <Clock size={12} color="var(--rose)" />
-          </div>
-          <div className="kpi-value tabular-nums">
-            {operationalStats.weeklyHours}h
-          </div>
-          <div className="kpi-subtext">
-            {operationalStats.activeDaysCount} active days / week
-          </div>
-        </div>
-      </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button
+                type="button"
+                className="btn-base btn-secondary btn-sm"
+                onClick={() => soundService.playChime()}
+                style={{ fontSize: '11px', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                title="Test audio chime"
+              >
+                <Volume2 size={12} />
+                <span>Test Sound</span>
+              </button>
 
-      {/* Settings Bento Grid Stack */}
-      <div className="settings-view-wrapper">
-        {/* 1. Clinic Identity & Channels (Multi-Phone & Multi-Email Tags) */}
-        <ClinicProfileCard
-          clinicProfile={clinicProfile}
-          onUpdate={actions.updateProfile}
-          operationalStats={operationalStats}
-        />
-
-        {/* 2. Operating Hours & Shifts */}
-        <OperatingHoursBento
-          operatingHours={operatingHours}
-          onToggleDay={actions.toggleDayOpen}
-          onUpdateDayHours={actions.updateDayHours}
-          operationalStats={operationalStats}
-        />
-
-        {/* 3. Compact Front-Desk Audio Chime Control */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '10px 14px',
-            background: 'var(--surface-1)',
-            borderRadius: 'var(--radius-lg)',
-            border: '1px solid var(--border)',
-            boxShadow: 'var(--shadow-sm)',
-            flexWrap: 'wrap',
-            gap: '10px',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {audioEnabled ? <Bell size={16} color="var(--amber)" /> : <BellOff size={16} color="var(--text-3)" />}
-            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)' }}>
-              Front-Desk Audio Chimes:
-            </span>
-            <span className={`badge-pill ${audioEnabled ? 'badge-success' : 'badge-neutral'} mono-tag`} style={{ fontSize: '9px', padding: '1px 6px' }}>
-              {audioEnabled ? 'ON' : 'MUTED'}
-            </span>
-            <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>
-              (Telegram/WhatsApp patient intake alerts)
-            </span>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <button
-              type="button"
-              className="btn-base btn-secondary btn-sm"
-              onClick={() => soundService.playChime()}
-              style={{ fontSize: '11px', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: '4px' }}
-              title="Test audio chime"
-            >
-              <Volume2 size={12} />
-              <span>Test Sound</span>
-            </button>
-
-            <button
-              type="button"
-              className={`btn-base ${audioEnabled ? 'btn-danger' : 'btn-success'} btn-sm`}
-              onClick={toggleAudio}
-              style={{ fontSize: '11px', padding: '3px 10px' }}
-            >
-              {audioEnabled ? 'Mute' : 'Turn On'}
-            </button>
+              <button
+                type="button"
+                className={`btn-base ${audioEnabled ? 'btn-secondary' : 'btn-primary'} btn-sm`}
+                onClick={toggleAudio}
+                style={{ fontSize: '11px', padding: '4px 10px' }}
+              >
+                {audioEnabled ? 'Mute' : 'Turn On'}
+              </button>
+            </div>
           </div>
         </div>
+      )}
 
-        {/* 4. Scheduling Engine Rules & Timers (Plain English) */}
-        <SchedulingRulesBento
-          schedulingRules={schedulingRules}
-          notificationRules={notificationRules}
-          onUpdateRule={actions.updateRule}
-          onToggleNotification={actions.toggleNotification}
-        />
+      {/* Tab 2: Services Catalogue & Scheduling Rules */}
+      {activeTab === 'services' && (
+        <div className="settings-view-wrapper">
+          <ServicesManagementBento
+            services={services}
+            onAddService={actions.addService}
+            onDeleteService={actions.deleteService}
+            onToggleActive={actions.toggleServiceActive}
+          />
 
-        {/* 5. Clinical Services & Specialties Registry */}
-        <ServicesManagementBento
-          services={services}
-          onAddService={actions.addService}
-          onDeleteService={actions.deleteService}
-          onToggleActive={actions.toggleServiceActive}
-        />
+          <SchedulingRulesBento
+            schedulingRules={schedulingRules}
+            notificationRules={notificationRules}
+            onUpdateRule={actions.updateRule}
+            onToggleNotification={actions.toggleNotification}
+          />
+        </div>
+      )}
 
-        {/* 6. System Architecture, API Engine & Client Handover */}
-        <SystemDeploymentBento
-          hidePitchSimulator={hidePitchSimulator}
-          onToggleHidePitchSimulator={toggleHidePitchSimulator}
-        />
+      {/* Tab 3: System Deployment & JSON Backup */}
+      {activeTab === 'system' && (
+        <div className="settings-view-wrapper">
+          <SystemDeploymentBento
+            hidePitchSimulator={hidePitchSimulator}
+            onToggleHidePitchSimulator={toggleHidePitchSimulator}
+          />
 
-        {/* 7. White-Label Config Exporter */}
-        <ConfigExporterBento
-          configJsonString={configJsonString}
-          isDirty={isDirty}
-          hidePitchSimulator={hidePitchSimulator}
-          onExportJson={actions.exportClientConfigJson}
-          onCopyJson={actions.copyClientConfigJson}
-          onSave={actions.saveSettings}
-          onReset={actions.resetToDefaults}
-        />
-      </div>
+          <ConfigExporterBento
+            configJsonString={configJsonString}
+            isDirty={isDirty}
+            hidePitchSimulator={hidePitchSimulator}
+            onExportJson={actions.exportClientConfigJson}
+            onCopyJson={actions.copyClientConfigJson}
+            onSave={actions.saveSettings}
+            onReset={actions.resetToDefaults}
+          />
+        </div>
+      )}
     </div>
   );
 };

@@ -8,9 +8,6 @@ import {
   Settings,
   Smartphone,
   ChevronLeft,
-  Bell,
-  BellOff,
-  CalendarClock,
   Lock,
   Sparkles,
   LogOut,
@@ -22,8 +19,7 @@ import '../../styles/components/leftRail.css';
 
 /**
  * LeftRail — Primary Receptionist & Admin Navigation Bar
- * Pure presentational component governed by tasteskill.dev aesthetics.
- * Features desktop collapse, mobile overlay drawer, live status counts, and offline demo toggle.
+ * Pure presentational component governed by Impeccable Operate aesthetics.
  */
 export const LeftRail = ({ strandedCount = 0 }) => {
   const { currentStaff: authStaff, lockWorkstation, logout } = useAuthStore();
@@ -33,8 +29,6 @@ export const LeftRail = ({ strandedCount = 0 }) => {
     toggleSidebar,
     closeMobileDrawer,
     hidePitchSimulator,
-    audioEnabled,
-    toggleAudio,
     queueCounts,
     clinicInfo,
   } = useAppModeStore();
@@ -45,13 +39,9 @@ export const LeftRail = ({ strandedCount = 0 }) => {
   const brandName = clinicProfile?.clinicName || clinicInfo.name;
   const brandBranch = clinicProfile?.address || clinicInfo.branch;
 
-  // Wave 3 / Step 3.7-B: the identity card shows the REAL signed-in session
-  // (useAuthStore, set at login). The fake 'Sarah Aliyu' default is gone, so
-  // this must survive a null session instead of crashing on .name.
   const sessionName = authStaff?.name || authStaff?.full_name || 'Not signed in';
-  const sessionRole = authStaff?.role || 'front desk';
+  const sessionRole = authStaff?.role === 'clinic_admin' ? 'Admin' : 'Front Desk';
   const sessionAvatar = authStaff?.avatar || sessionName.slice(0, 2).toUpperCase();
-  const sessionShift = authStaff?.shift || 'Session active';
 
   const handleNavClick = () => {
     closeMobileDrawer();
@@ -66,7 +56,7 @@ export const LeftRail = ({ strandedCount = 0 }) => {
       <div className="rail-header">
         <NavLink to="/queue" className="brand-wrapper" title={brandName} onClick={handleNavClick}>
           <div className="brand-logo-spark">
-            <Sparkles size={18} strokeWidth={2.5} />
+            <Sparkles size={16} strokeWidth={2.5} />
           </div>
           <div className="brand-text">
             <span className="brand-title">{brandName}</span>
@@ -78,27 +68,18 @@ export const LeftRail = ({ strandedCount = 0 }) => {
           type="button"
           onClick={toggleSidebar}
           className="rail-toggle-btn"
-          title="Close Navigation"
-          aria-label="Close Navigation"
+          title="Collapse Navigation"
+          aria-label="Collapse Navigation"
         >
-          <ChevronLeft size={16} />
+          <ChevronLeft size={15} />
         </button>
-      </div>
-
-      {/* Staff Identity Card */}
-      <div className="rail-staff-badge" title={`${sessionName} · ${sessionRole}`}>
-        <div className="staff-avatar-circle">{sessionAvatar}</div>
-        <div className="staff-info-col">
-          <span className="staff-name">{sessionName}</span>
-          <span className="staff-shift">{sessionShift}</span>
-        </div>
       </div>
 
       {/* Navigation Sections */}
       <div className="rail-nav-content">
         {/* Section 1: Front Desk */}
         <div className="nav-section">
-          <span className="nav-section-label">Reception Desk</span>
+          <span className="nav-section-label">Front Desk</span>
 
           <NavLink
             to="/queue"
@@ -106,7 +87,7 @@ export const LeftRail = ({ strandedCount = 0 }) => {
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
             title="Patient Booking Requests"
           >
-            <Inbox size={18} className="nav-icon" />
+            <Inbox size={17} className="nav-icon" />
             <span className="nav-label">Requests Queue</span>
             {queueCounts.newRequests > 0 && (
               <span className="nav-count-badge tabular-nums">
@@ -118,7 +99,7 @@ export const LeftRail = ({ strandedCount = 0 }) => {
                 className="nav-count-badge nav-count-badge-danger tabular-nums"
                 title="Requests with failed deliveries — open the Needs Attention tab"
               >
-                ⚠ {queueCounts.needsAttention}
+                {queueCounts.needsAttention}
               </span>
             )}
           </NavLink>
@@ -129,18 +110,14 @@ export const LeftRail = ({ strandedCount = 0 }) => {
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
             title="Master Clinical Schedule Grid"
           >
-            <CalendarIcon size={18} className="nav-icon" />
+            <CalendarIcon size={17} className="nav-icon" />
             <span className="nav-label">Schedule Grid</span>
-            {strandedCount > 0 ? (
+            {strandedCount > 0 && (
               <span
                 className="nav-count-badge nav-count-badge-danger tabular-nums"
                 title={`${strandedCount} patient${strandedCount === 1 ? ' is' : 's are'} still booked under a doctor on leave — open the Schedule Grid`}
               >
-                ⚠ {strandedCount}
-              </span>
-            ) : (
-              <span className="badge-pill badge-neutral mono-tag" style={{ fontSize: '9px' }}>
-                GRID
+                {strandedCount}
               </span>
             )}
           </NavLink>
@@ -149,38 +126,30 @@ export const LeftRail = ({ strandedCount = 0 }) => {
             to="/live-visits"
             onClick={handleNavClick}
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            title="Live Clinic Visits"
+            title="Live Clinic Visits & Follow-Up Recalls"
           >
-            <Activity size={18} className="nav-icon" />
-            <span className="nav-label">Live Visits</span>
-            <span className="nav-count-badge tabular-nums">
-              {queueCounts.todaySchedule}
-            </span>
-          </NavLink>
-
-          <NavLink
-            to="/recalls"
-            onClick={handleNavClick}
-            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            title="Every follow-up recall, including the ones not sent yet"
-          >
-            <CalendarClock size={18} className="nav-icon" />
-            <span className="nav-label">Recalls</span>
+            <Activity size={17} className="nav-icon" />
+            <span className="nav-label">Visits &amp; Recalls</span>
+            {queueCounts.todaySchedule > 0 && (
+              <span className="nav-count-badge tabular-nums">
+                {queueCounts.todaySchedule}
+              </span>
+            )}
           </NavLink>
         </div>
 
         {/* Section 2: Administration */}
         <div className="nav-section">
-          <span className="nav-section-label">Management</span>
+          <span className="nav-section-label">Administration</span>
 
           <NavLink
             to="/admin/staff"
             onClick={handleNavClick}
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            title="Staff Roster & Attendance"
+            title="Staff Roster & Reports"
           >
-            <Users size={18} className="nav-icon" />
-            <span className="nav-label">Staff & Doctors</span>
+            <Users size={17} className="nav-icon" />
+            <span className="nav-label">Staff &amp; Reports</span>
           </NavLink>
 
           <NavLink
@@ -189,7 +158,7 @@ export const LeftRail = ({ strandedCount = 0 }) => {
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
             title="Clinic Hours & Rules"
           >
-            <Settings size={18} className="nav-icon" />
+            <Settings size={17} className="nav-icon" />
             <span className="nav-label">Clinic Settings</span>
           </NavLink>
         </div>
@@ -197,7 +166,7 @@ export const LeftRail = ({ strandedCount = 0 }) => {
         {/* Section 3: Pitch & Simulator (Hidden in Client Handover Mode) */}
         {!hidePitchSimulator && (
           <div className="nav-section">
-            <span className="nav-section-label">Client Pitch</span>
+            <span className="nav-section-label">Demo</span>
 
             <NavLink
               to="/simulator"
@@ -205,77 +174,49 @@ export const LeftRail = ({ strandedCount = 0 }) => {
               className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
               title="Interactive Split Simulator"
             >
-              <Smartphone size={18} className="nav-icon" />
+              <Smartphone size={17} className="nav-icon" />
               <span className="nav-label">Pitch Simulator</span>
-              <span className="badge-pill badge-ember mono-tag" style={{ fontSize: '9px' }}>
-                SIM
-              </span>
             </NavLink>
           </div>
         )}
       </div>
 
-      {/* Footer Utility Controls */}
+      {/* Single Staff Identity & Workstation Controls Footer */}
       <div className="rail-footer">
-        {/* Active Authenticated Staff Card */}
-        {authStaff && (
-          <div
-            style={{
-              padding: '8px 10px',
-              borderRadius: '8px',
-              background: 'var(--surface-2)',
-              border: '1px solid var(--border)',
-              marginBottom: '10px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: '8px',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-              <div
-                style={{
-                  width: '28px',
-                  height: '28px',
-                  borderRadius: '50%',
-                  background: 'rgba(255, 181, 71, 0.15)',
-                  color: 'var(--amber)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '11px',
-                  fontWeight: 700,
-                  flexShrink: 0,
-                }}
-              >
-                {authStaff.avatar || 'SA'}
-              </div>
-              <div style={{ minWidth: 0, overflow: 'hidden' }}>
-                <div
-                  style={{
-                    fontSize: '12px',
-                    fontWeight: 600,
-                    color: 'var(--text)',
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}
-                >
-                  {authStaff.name}
-                </div>
-                <div style={{ fontSize: '10px', color: 'var(--text-3)' }}>
-                  {authStaff.role === 'clinic_admin' ? (
-                    <span style={{ color: 'var(--amber)' }}>👑 Admin</span>
-                  ) : (
-                    <span style={{ color: 'var(--success-text)' }}>Front Desk</span>
-                  )}
-                </div>
-              </div>
+        <div
+          style={{
+            padding: '8px 10px',
+            borderRadius: 'var(--radius-sm)',
+            background: 'var(--surface-2)',
+            border: '1px solid var(--line)',
+            marginBottom: '8px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            minWidth: 0,
+          }}
+          title={`${sessionName} · ${sessionRole}`}
+        >
+          <div className="staff-avatar-circle">{sessionAvatar}</div>
+          <div style={{ minWidth: 0, overflow: 'hidden' }}>
+            <div
+              style={{
+                fontSize: '12px',
+                fontWeight: 600,
+                color: 'var(--text)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {sessionName}
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-3)' }}>
+              {sessionRole}
             </div>
           </div>
-        )}
+        </div>
 
-        {/* Secondary Utility Controls */}
         <div className="rail-footer-actions">
           <button
             type="button"
@@ -292,12 +233,12 @@ export const LeftRail = ({ strandedCount = 0 }) => {
             type="button"
             onClick={logout}
             className="footer-icon-btn"
-            style={{ color: 'var(--rose-text, #ff4f79)' }}
+            style={{ color: 'var(--danger-text)' }}
             title="Log Out of Workstation"
             aria-label="Log Out"
           >
             <LogOut size={13} />
-            <span className="footer-btn-label">Logout</span>
+            <span className="footer-btn-label">Sign Out</span>
           </button>
         </div>
       </div>

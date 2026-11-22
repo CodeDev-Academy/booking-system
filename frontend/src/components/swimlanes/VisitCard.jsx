@@ -270,14 +270,14 @@ export const VisitCard = ({
           <button
             type="button"
             className="bento-visit-primary-btn"
-            style={{ width: '100%', background: '#0c1a30' }}
+            style={{ width: '100%' }}
             onClick={(e) => {
               e.stopPropagation();
               onOpenFollowUp(id);
             }}
             title="Conclude visit and log recall"
           >
-            <CheckCircle2 size={13} color="#38bdf8" />
+            <CheckCircle2 size={13} />
             <span>Finish Visit &amp; Recall</span>
           </button>
         )}

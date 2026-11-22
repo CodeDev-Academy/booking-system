@@ -800,7 +800,7 @@
 .expected-time {
   font-size: 11px;
   font-weight: 700;
-  color: #0c1a30;
+  color: #111114;
   font-feature-settings: "tnum";
 }
 
@@ -829,7 +829,7 @@
 .expected-admit-btn {
   width: 100%;
   margin-top: 4px;
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
   border: none;
   border-radius: var(--radius-full);
@@ -950,7 +950,7 @@
   justify-content: center;
   font-weight: 700;
   font-size: 15px;
-  color: #0c1a30;
+  color: #111114;
   flex-shrink: 0;
   overflow: hidden;
 }
@@ -1041,7 +1041,7 @@
 }
 
 .bento-visit-primary-btn {
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
   border: none;
   border-radius: var(--radius-full);

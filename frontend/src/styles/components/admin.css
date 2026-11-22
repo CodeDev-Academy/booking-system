@@ -617,8 +617,8 @@
 }
 
 .bento-staff-card.current-session {
-  border-color: #0c1a30;
-  box-shadow: 0 0 0 1px #0c1a30, 0 2px 8px rgba(12, 26, 48, 0.08);
+  border-color: #111114;
+  box-shadow: 0 0 0 1px #111114, 0 2px 8px rgba(12, 26, 48, 0.08);
 }
 
 .bento-staff-card.deactivated {
@@ -642,7 +642,7 @@
   justify-content: center;
   font-weight: 700;
   font-size: 15px;
-  color: #0c1a30;
+  color: #111114;
   flex-shrink: 0;
   overflow: hidden;
 }
@@ -709,7 +709,7 @@
 
 .bento-staff-action-btn {
   width: 100%;
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
   border: none;
   border-radius: var(--radius-full);

@@ -55,98 +55,36 @@ export const CalendarView = () => {
           </button>
         </div>
       )}
-      {/* View Header with 2-Tab Switcher - Centered Layout */}
-      <div
-        className="view-header calendar-view-header"
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          textAlign: 'center',
-          gap: '14px',
-          marginBottom: '18px',
-          width: '100%',
-        }}
-      >
-        <div className="view-title-group" style={{ textAlign: 'center', margin: '0 auto' }}>
-          <div
-            className="view-heading"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              textAlign: 'center',
-              width: '100%',
-            }}
-          >
-            <CalendarIcon size={22} color="var(--success-text)" />
-            <span>Doctor Schedule &amp; Clinical Records</span>
+      {/* Compact Header with Unified Segmented Switcher */}
+      <div className="view-header">
+        <div className="view-title-group">
+          <div className="view-heading">
+            <CalendarIcon size={18} color="var(--amber)" />
+            <span>Doctor Schedule &amp; Records</span>
           </div>
         </div>
 
-        {/* View Switcher Tabs - Centered */}
-        <div
-          className="calendar-view-tabs"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: 'var(--surface-2)',
-            border: '1px solid var(--line)',
-            borderRadius: 'var(--radius-full)',
-            padding: '3px',
-            gap: '4px',
-            margin: '0 auto',
-            flexWrap: 'wrap',
-          }}
-        >
-          {/* Tab 1: Doctor Schedule & Timetable (Bento Layout) */}
+        <div className="segmented-tabs" role="tablist" aria-label="Schedule and records switcher">
           <button
             type="button"
-            className={`calendar-view-tab-btn ${activeTab === 'schedule' ? 'active' : ''}`}
+            role="tab"
+            aria-selected={activeTab === 'schedule'}
+            className={`segmented-tab-btn ${activeTab === 'schedule' ? 'active' : ''}`}
             onClick={() => setActiveTab('schedule')}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '6px 16px',
-              borderRadius: 'var(--radius-full)',
-              border: 'none',
-              background: activeTab === 'schedule' ? '#0c1a30' : 'transparent',
-              color: activeTab === 'schedule' ? '#ffffff' : 'var(--text-3)',
-              fontSize: '12px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              transition: 'all 0.15s ease',
-            }}
           >
-            <CalendarDays size={13} color={activeTab === 'schedule' ? '#38bdf8' : 'currentColor'} />
-            <span>Doctor Schedule &amp; Timetable</span>
+            <CalendarDays size={13} />
+            <span>Schedule Grid</span>
           </button>
 
-          {/* Tab 2: Past Patient Records Archive */}
           <button
             type="button"
-            className={`calendar-view-tab-btn ${activeTab === 'history' ? 'active' : ''}`}
+            role="tab"
+            aria-selected={activeTab === 'history'}
+            className={`segmented-tab-btn ${activeTab === 'history' ? 'active' : ''}`}
             onClick={() => setActiveTab('history')}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '6px 16px',
-              borderRadius: 'var(--radius-full)',
-              border: 'none',
-              background: activeTab === 'history' ? '#0c1a30' : 'transparent',
-              color: activeTab === 'history' ? '#ffffff' : 'var(--text-3)',
-              fontSize: '12px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              transition: 'all 0.15s ease',
-            }}
           >
             <History size={13} />
-            <span>Past Patient Records Archive</span>
+            <span>Past Patient Records</span>
           </button>
         </div>
       </div>

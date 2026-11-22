@@ -40,7 +40,7 @@ function App() {
             <Route path="queue" element={<QueueView />} />
             <Route path="calendar" element={<CalendarView />} />
             <Route path="live-visits" element={<LiveVisitsView />} />
-            <Route path="recalls" element={<RecallsView />} />
+            <Route path="recalls" element={<LiveVisitsView initialTab="recalls" />} />
             <Route path="admin/staff" element={<StaffView />} />
             <Route path="admin/settings" element={<SettingsView />} />
             <Route path="simulator" element={<SimulatorView />} />

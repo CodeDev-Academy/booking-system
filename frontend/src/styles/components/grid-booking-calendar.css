@@ -1,7 +1,7 @@
 /* ==========================================================================
    Doctor Grid Booking Calendar (Uploaded Design Recreation)
    Style: Soft UI Evolution + Modern Healthcare Bento (ui-ux-pro-max standard)
-   Palette: Porcelain Canvas #f4f6fa, Deep Navy #0c1a30, White Cards #ffffff
+   Palette: Porcelain Canvas #f4f6fa, Deep Navy #111114, White Cards #ffffff
    ========================================================================== */
 
 .grid-booking-container {
@@ -110,7 +110,7 @@
 }
 
 .search-combo-btn {
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
   border: none;
   border-radius: var(--radius-full);
@@ -148,7 +148,7 @@
 
 .round-icon-action-btn:hover {
   background: #f8fafc;
-  color: #0c1a30;
+  color: #111114;
   border-color: #cbd5e1;
 }
 
@@ -223,9 +223,9 @@
 }
 
 .nav-arrow-circle-btn:hover {
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
-  border-color: #0c1a30;
+  border-color: #111114;
 }
 
 /* Specialty Horizontal Pill Bar */
@@ -263,9 +263,9 @@
 }
 
 .specialty-pill-btn.active {
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
-  border-color: #0c1a30;
+  border-color: #111114;
   box-shadow: 0 2px 6px rgba(12, 26, 48, 0.15);
 }
 
@@ -341,7 +341,7 @@
 }
 
 .doctor-select-card.selected {
-  border-color: #0c1a30;
+  border-color: #111114;
   box-shadow: 0 4px 16px rgba(12, 26, 48, 0.1);
   background: #ffffff;
 }
@@ -363,7 +363,7 @@
   justify-content: center;
   font-weight: 700;
   font-size: 15px;
-  color: #0c1a30;
+  color: #111114;
   flex-shrink: 0;
   overflow: hidden;
 }
@@ -410,7 +410,7 @@
 
 .doctor-card-action-btn {
   width: 100%;
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
   border: none;
   border-radius: var(--radius-full);
@@ -427,7 +427,7 @@
 }
 
 .doctor-select-card.selected .doctor-card-action-btn {
-  background: #0c1a30;
+  background: #111114;
 }
 
 /* --------------------------------------------------------------------------
@@ -471,7 +471,7 @@
   justify-content: center;
   font-size: 18px;
   font-weight: 700;
-  color: #0c1a30;
+  color: #111114;
   flex-shrink: 0;
   overflow: hidden;
 }
@@ -500,7 +500,7 @@
 }
 
 .dossier-action-btn {
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
   border: none;
   border-radius: var(--radius-full);
@@ -683,7 +683,7 @@
   justify-content: center;
   font-size: 11px;
   font-weight: 700;
-  color: #0c1a30;
+  color: #111114;
   overflow: hidden;
 }
 
@@ -842,7 +842,7 @@
 }
 
 .date-cell-btn.active-selected {
-  background: #0c1a30 !important;
+  background: #111114 !important;
   color: #ffffff !important;
   font-weight: 700;
   box-shadow: 0 2px 8px rgba(12, 26, 48, 0.2);
@@ -893,14 +893,14 @@
 }
 
 .time-slot-btn:hover:not(:disabled) {
-  border-color: #0c1a30;
+  border-color: #111114;
   background: #f8fafc;
 }
 
 .time-slot-btn.active {
-  background: #0c1a30 !important;
+  background: #111114 !important;
   color: #ffffff !important;
-  border-color: #0c1a30 !important;
+  border-color: #111114 !important;
   box-shadow: 0 2px 8px rgba(12, 26, 48, 0.2);
 }
 
@@ -915,7 +915,7 @@
 
 .visit-hours-book-cta {
   width: 100%;
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
   border: none;
   border-radius: var(--radius-full);
@@ -974,7 +974,7 @@
   justify-content: center;
   font-size: 17px;
   font-weight: 700;
-  color: #0c1a30;
+  color: #111114;
   flex-shrink: 0;
   overflow: hidden;
 }
@@ -1052,7 +1052,7 @@
 }
 
 .horizon-toggle-btn.active {
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
   box-shadow: 0 1px 3px rgba(12, 26, 48, 0.15);
 }
@@ -1155,7 +1155,7 @@
 
 .popover-menu-item:hover {
   background: #f8fafc;
-  color: #0c1a30;
+  color: #111114;
 }
 
 /* Quick Book Button above Calendar */
@@ -1171,7 +1171,7 @@
   padding: 8px 14px;
   font-size: 12px;
   font-weight: 600;
-  color: #0c1a30;
+  color: #111114;
   cursor: pointer;
   transition: all 0.15s ease;
   box-shadow: 0 1px 3px rgba(12, 26, 48, 0.04);
@@ -1179,9 +1179,9 @@
 }
 
 .calendar-quick-book-btn:hover {
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
-  border-color: #0c1a30;
+  border-color: #111114;
   box-shadow: 0 3px 8px rgba(12, 26, 48, 0.15);
 }
 
@@ -1207,9 +1207,9 @@
 }
 
 .day-nav-arrow-btn:hover {
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
-  border-color: #0c1a30;
+  border-color: #111114;
 }
 
 .day-nav-today-btn {
@@ -1224,7 +1224,7 @@
 }
 
 .day-nav-today-btn:hover {
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
 }
 
@@ -1371,7 +1371,7 @@
 
 .week-day-card:hover {
   background: #ffffff;
-  border-color: #0c1a30;
+  border-color: #111114;
   box-shadow: 0 2px 8px rgba(12, 26, 48, 0.06);
 }
 
@@ -1422,16 +1422,16 @@
   padding: 5px;
   font-size: 11px;
   font-weight: 600;
-  color: #0c1a30;
+  color: #111114;
   cursor: pointer;
   text-align: center;
   margin-top: 4px;
 }
 
 .week-day-action-btn:hover {
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
-  border-color: #0c1a30;
+  border-color: #111114;
 }
 
 /* ==========================================================================
@@ -1479,7 +1479,7 @@
   justify-content: center;
   font-weight: 700;
   font-size: 15px;
-  color: #0c1a30;
+  color: #111114;
   flex-shrink: 0;
   overflow: hidden;
 }
@@ -1560,7 +1560,7 @@
 
 .patient-record-action-btn {
   width: 100%;
-  background: #0c1a30;
+  background: #111114;
   color: #ffffff;
   border: none;
   border-radius: var(--radius-full);
