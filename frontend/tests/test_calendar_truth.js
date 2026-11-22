@@ -57,10 +57,16 @@ check('G1 no default-to-Bello meta for unknown doctors',
   !/DOCTOR_META\['doc-bello'\]/.test(gridSrc),
   'a real (UUID) doctor used to show Bello\'s fake week');
 const dayAppts = fnBody(gridSrc, 'const activeDayAppointments = useMemo', 'const getSlotDetails');
+// The row fields moved into one shared helper (day list + week overview), so
+// the contract is checked there. Both panels build rows with it.
+const agendaRow = fnBody(gridSrc, 'const toAgendaRow = (b) => ({', '});');
 check('G2 day rows carry the block\'s real fields',
-  /start:\s*b\.start/.test(dayAppts || '') && /patientPhone:\s*b\.patientPhone/.test(dayAppts || '')
-    && /serviceName/.test(dayAppts || ''),
+  /start:\s*b\.start/.test(agendaRow || '') && /patientPhone:\s*b\.patientPhone/.test(agendaRow || '')
+    && /serviceName/.test(agendaRow || ''),
   'the modal callback needs start/end/phone/service from the row');
+check('G2b both the day list and the week overview use that row helper',
+  /\.map\(toAgendaRow\)/.test(dayAppts || '') && /\.map\(toAgendaRow\)/.test(gridSrc),
+  'one row builder keeps the day list and the week cards in agreement');
 
 const calendarView = read('../src/views/CalendarView.jsx');
 const modalCb = fnBody(calendarView, 'onSelectAppointment={(apt) => {', 'onReleaseHold');

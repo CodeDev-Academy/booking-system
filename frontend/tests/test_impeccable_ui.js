@@ -109,6 +109,54 @@ check('C2 zero mismatched #0c1a30 navy or #38bdf8 sky-blue in updated views',
   ),
   'all views must use the warm-light obsidian and amber palette');
 
+console.log('D. Schedule Grid Tells The Truth');
+
+check('D1 the fake DOCTOR_META table is gone',
+  !/DOCTOR_META/.test(gridCalendar),
+  'a hardcoded table of invented patients, suites and shifts must not drive the grid');
+
+check('D2 no demo doctor stands in for a real roster',
+  !/'doc-bello'/.test(gridCalendar) && !/Dr\. Aminu Bello/.test(gridCalendar),
+  'an empty clinic must show an empty roster, not a fake dentist');
+
+check('D3 the 7-Day Overview derives its dates from the clinic week',
+  /const weekDays = useMemo\(/.test(gridCalendar) && !/26 \+ idx/.test(gridCalendar),
+  'the week overview hardcoded Oct 26-31 and clicked into 2026-10-26');
+
+check('D4 the week overview reads real store blocks',
+  /const weekDays = useMemo\(\(\) => \{[\s\S]{0,1200}storeBlocks/.test(gridCalendar),
+  'each week card must count the appointments the backend sent');
+
+check('D5 a week card opens that real day',
+  /setSelectedDate\(new Date\(day\.startMs\)\)/.test(gridCalendar),
+  'clicking "Switch to Friday" must land on the real Friday');
+
+check('D6 the timetable header shows the doctor\'s real shift, no fake suite',
+  !/activeDocMeta/.test(gridCalendar) && /currentDoctor\?\.shiftStart/.test(gridCalendar),
+  'suite/shift came from the fake table and rendered blank for real doctors');
+
+check('D7 an empty roster has an honest empty state',
+  /doctor-roster-empty/.test(gridCalendar) && /return \[\]/.test(gridCalendar),
+  'the grid must say the roster is empty instead of inventing three doctors');
+
+check('D8 the day agenda sorts by the real start time, not the label text',
+  !/timeA\.localeCompare\(timeB\)/.test(gridCalendar) && /a\.start - b\.start/.test(gridCalendar),
+  '"01:30 PM" sorted before "09:00 AM" because the labels were compared as strings');
+
+check('D9 the month calendar marks real busy days, not a hardcoded list',
+  !/\[5, 9, 14, 16, 22, 26, 27, 28, 29, 30\]/.test(gridCalendar)
+    && /const hasAppts = storeBlocks\.some\(/.test(gridCalendar)
+    && /selectedParts\.day === dayNum/.test(gridCalendar),
+  'invented busy days and device-local date reads mislead the receptionist');
+
+check('D10 the 7-Day Overview really covers seven days (Monday to Sunday)',
+  /Array\.from\(\{ length: 7 \}/.test(gridCalendar),
+  'six cards under a "7-Day Overview" label hid Sunday\'s real visits');
+
+check('D11 a real Sunday booking is shown, not hidden behind "Clinic Closed"',
+  /selectedDayName === 'Sunday' && activeDayAppointments\.length === 0/.test(gridCalendar),
+  'the closed message may only appear when nothing is booked');
+
 console.log('');
 if (failures) {
   console.log(`FAILED ${failures}/${checks} checks`);

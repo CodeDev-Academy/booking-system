@@ -51,6 +51,34 @@ const MONTH_NAMES = [
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const DAY_NAMES_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
+const isVisitBlock = (b) => b.type === 'appointment' || b.type === 'hold';
+
+/**
+ * One agenda row from one real store block. Both the day list and the week
+ * overview use this, so a patient's time, phone and service read the same
+ * wherever the receptionist looks. Nothing here is invented: a missing value
+ * stays missing instead of falling back to a demo patient.
+ */
+const toAgendaRow = (b) => ({
+  id: b.appointmentId || b.id,
+  appointmentId: b.appointmentId || b.id,
+  time: `${clinicTimeLabel(b.start)} – ${clinicTimeLabel(b.end)}`,
+  patientName: b.patientName,
+  patientPhone: b.patientPhone,
+  phone: b.patientPhone,
+  type: b.patientType || 'new',
+  serviceId: b.serviceId,
+  serviceName: b.serviceName,
+  service: b.serviceName || 'Consultation',
+  doctorId: b.doctorId,
+  doctorName: b.doctorName,
+  status: b.status || 'confirmed',
+  bufferMin: b.bufferMin || 10,
+  start: b.start,
+  end: b.end,
+  isDynamic: true,
+});
+
 const DEFAULT_TIME_SLOTS = [
   '08:30 AM',
   '09:00 AM',
@@ -69,116 +97,6 @@ const DEFAULT_TIME_SLOTS = [
   '04:30 PM',
   '05:00 PM',
 ];
-
-// Rich clinic data for doctor shift hours & room suites
-const DOCTOR_META = {
-  'doc-bello': {
-    experience: 'Dental Surgeon | 14 yrs experience',
-    suite: 'Cedarcare Dental Suite 1',
-    shift: '09:00 – 17:00 WAT',
-    specialtyCategory: 'Dental Surgery & Care',
-    weekAppointments: {
-      Monday: [
-        { id: 'apt-b1', time: '09:00 AM – 09:30 AM', patientName: 'Tunde Musa', type: 'returning', phone: '+234 803 987 6543', service: 'Dental Consultation', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-b2', time: '10:00 AM – 10:45 AM', patientName: 'Fatima Bello', type: 'new', phone: '+234 802 111 3333', service: 'Tooth Extraction', status: 'confirmed', bufferMin: 15 },
-        { id: 'apt-b3', time: '11:00 AM – 11:30 AM', patientName: 'Zainab Lawal', type: 'returning', phone: '+234 807 666 7777', service: 'Dental Consultation', status: 'held', holdExpiresIn: '11m 45s' },
-        { id: 'apt-b4', time: '02:30 PM – 03:15 PM', patientName: 'Emeka Obi', type: 'returning', phone: '+234 809 123 4567', service: 'Follow-Up Inspection', status: 'arrived', bufferMin: 10 },
-      ],
-      Tuesday: [
-        { id: 'apt-b5', time: '09:00 AM – 09:30 AM', patientName: 'Rahman Lawal', type: 'returning', phone: '+234 803 222 1100', service: 'Dental Consultation', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-b6', time: '11:30 AM – 12:15 PM', patientName: 'Amina Yusuf', type: 'new', phone: '+234 801 234 5678', service: 'Tooth Extraction', status: 'confirmed', bufferMin: 15 },
-        { id: 'apt-b7', time: '02:00 PM – 02:30 PM', patientName: 'Ibrahim Sani', type: 'returning', phone: '+234 805 555 0101', service: 'Prophylaxis & Cleaning', status: 'confirmed', bufferMin: 10 },
-      ],
-      Wednesday: [
-        { id: 'apt-b8', time: '09:30 AM – 10:15 AM', patientName: 'Hauwa Yusuf', type: 'new', phone: '+234 806 777 8899', service: 'Tooth Extraction', status: 'confirmed', bufferMin: 15 },
-        { id: 'apt-b9', time: '10:30 AM – 11:00 AM', patientName: 'Sani Bello', type: 'returning', phone: '+234 802 333 4455', service: 'Dental Consultation', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-b10', time: '03:00 PM – 03:45 PM', patientName: 'Maryam Alabi', type: 'new', phone: '+234 814 555 6677', service: 'Tooth Extraction', status: 'confirmed', bufferMin: 15 },
-      ],
-      Thursday: [
-        { id: 'apt-b11', time: '10:00 AM – 10:30 AM', patientName: 'Kolawole Adeyemi', type: 'new', phone: '+234 803 555 0192', service: 'Dental Consultation', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-b12', time: '02:00 PM – 02:45 PM', patientName: 'Bisi Alabi', type: 'returning', phone: '+234 805 111 2233', service: 'Tooth Extraction', status: 'confirmed', bufferMin: 15 },
-      ],
-      Friday: [
-        { id: 'apt-b13', time: '09:00 AM – 09:30 AM', patientName: 'Chioma Nwosu', type: 'returning', phone: '+234 808 999 8877', service: 'Dental Consultation', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-b14', time: '10:00 AM – 10:45 AM', patientName: 'Danjuma Kenneth', type: 'new', phone: '+234 803 777 6655', service: 'Tooth Extraction', status: 'confirmed', bufferMin: 15 },
-        { id: 'apt-b15', time: '02:30 PM – 03:00 PM', patientName: 'Aliyu Garba', type: 'returning', phone: '+234 802 444 8899', service: 'Prophylaxis & Cleaning', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-b16', time: '03:30 PM – 04:15 PM', patientName: 'Halima Sadiq', type: 'new', phone: '+234 813 555 1212', service: 'Tooth Extraction', status: 'confirmed', bufferMin: 15 },
-      ],
-      Saturday: [
-        { id: 'apt-b17', time: '10:00 AM – 10:30 AM', patientName: 'Tariq Mohammed', type: 'returning', phone: '+234 809 333 2211', service: 'Dental Checkup', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-b18', time: '11:00 AM – 11:30 AM', patientName: 'Zainab Lawal', type: 'returning', phone: '+234 807 666 7777', service: 'Dental Consultation', status: 'confirmed', bufferMin: 10 },
-      ],
-    },
-  },
-  'doc-okafor': {
-    experience: 'Primary Care Physician | 10 yrs experience',
-    suite: 'Cedarcare Executive Suite B',
-    shift: '08:00 – 16:00 WAT',
-    specialtyCategory: 'Family Medicine & General Practice',
-    weekAppointments: {
-      Monday: [
-        { id: 'apt-o1', time: '09:00 AM – 09:30 AM', patientName: 'Kenneth Danjuma', type: 'new', phone: '+234 805 444 5555', service: 'General Health Check-up', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-o2', time: '10:30 AM – 11:00 AM', patientName: 'Amina Yusuf', type: 'returning', phone: '+234 801 234 5678', service: 'Blood Pressure Review', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-o3', time: '02:00 PM – 02:30 PM', patientName: 'Ibrahim Sani', type: 'returning', phone: '+234 805 555 0101', service: 'General Health Review', status: 'arrived', bufferMin: 10 },
-      ],
-      Tuesday: [
-        { id: 'apt-o4', time: '08:30 AM – 09:00 AM', patientName: 'Fatima Bello', type: 'returning', phone: '+234 802 111 3333', service: 'Metabolic Health Exam', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-o5', time: '10:00 AM – 10:30 AM', patientName: 'Kolawole Adeyemi', type: 'new', phone: '+234 803 555 0192', service: 'General Health Check-up', status: 'confirmed', bufferMin: 10 },
-      ],
-      Wednesday: [
-        { id: 'apt-o6', time: '09:00 AM – 09:30 AM', patientName: 'Chioma Nwosu', type: 'returning', phone: '+234 808 999 8877', service: 'General Health Review', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-o7', time: '11:00 AM – 11:30 AM', patientName: 'Tunde Musa', type: 'returning', phone: '+234 803 987 6543', service: 'Preventive Wellness', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-o8', time: '01:30 PM – 02:00 PM', patientName: 'Bisi Alabi', type: 'returning', phone: '+234 805 111 2233', service: 'Blood Pressure Review', status: 'confirmed', bufferMin: 10 },
-      ],
-      Thursday: [
-        { id: 'apt-o9', time: '10:00 AM – 10:30 AM', patientName: 'Rahman Lawal', type: 'new', phone: '+234 803 222 1100', service: 'General Health Check-up', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-o10', time: '02:30 PM – 03:00 PM', patientName: 'Maryam Alabi', type: 'returning', phone: '+234 814 555 6677', service: 'Routine Examination', status: 'confirmed', bufferMin: 10 },
-      ],
-      Friday: [
-        { id: 'apt-o11', time: '08:30 AM – 09:00 AM', patientName: 'Emeka Obi', type: 'returning', phone: '+234 809 123 4567', service: 'General Health Review', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-o12', time: '10:30 AM – 11:00 AM', patientName: 'Aliyu Garba', type: 'returning', phone: '+234 802 444 8899', service: 'Cardiovascular Screening', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-o13', time: '02:00 PM – 02:30 PM', patientName: 'Zainab Lawal', type: 'returning', phone: '+234 807 666 7777', service: 'Routine Check-up', status: 'confirmed', bufferMin: 10 },
-      ],
-      Saturday: [
-        { id: 'apt-o14', time: '09:00 AM – 09:30 AM', patientName: 'Halima Sadiq', type: 'new', phone: '+234 813 555 1212', service: 'General Consultation', status: 'confirmed', bufferMin: 10 },
-      ],
-    },
-  },
-  'doc-babawo': {
-    experience: 'Consultant Physician & Surgeon | 16 yrs experience',
-    suite: 'Cedarcare Executive Suite & Theater',
-    shift: '08:00 – 17:00 WAT',
-    specialtyCategory: 'Consultant Surgery',
-    weekAppointments: {
-      Monday: [
-        { id: 'apt-bw1', time: '11:00 AM – 11:30 AM', patientName: 'Aliyu Garba', type: 'returning', phone: '+234 802 444 8899', service: 'Consultant Clinical Review', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-bw2', time: '02:30 PM – 03:15 PM', patientName: 'Halima Sadiq', type: 'new', phone: '+234 813 555 1212', service: 'Pre-Operative Assessment', status: 'confirmed', bufferMin: 15 },
-        { id: 'apt-bw3', time: '03:30 PM – 04:00 PM', patientName: 'Ibrahim Danjuma', type: 'returning', phone: '+234 803 111 9900', service: 'Post-Op Suture Inspection', status: 'arrived', bufferMin: 10 },
-      ],
-      Tuesday: [
-        { id: 'apt-bw4', time: '10:00 AM – 10:45 AM', patientName: 'Kenneth Danjuma', type: 'new', phone: '+234 805 444 5555', service: 'Surgical Consultation', status: 'confirmed', bufferMin: 15 },
-        { id: 'apt-bw5', time: '02:00 PM – 02:30 PM', patientName: 'Tunde Musa', type: 'returning', phone: '+234 803 987 6543', service: 'Follow-up Clinical Review', status: 'confirmed', bufferMin: 10 },
-      ],
-      Wednesday: [
-        { id: 'apt-bw6', time: '09:00 AM – 09:45 AM', patientName: 'Amina Yusuf', type: 'returning', phone: '+234 801 234 5678', service: 'Consultant Second Opinion', status: 'confirmed', bufferMin: 15 },
-        { id: 'apt-bw7', time: '11:30 AM – 12:00 PM', patientName: 'Emeka Obi', type: 'returning', phone: '+234 809 123 4567', service: 'Post-Op Inspection', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-bw8', time: '03:00 PM – 03:45 PM', patientName: 'Fatima Bello', type: 'new', phone: '+234 802 111 3333', service: 'Minor Surgical Assessment', status: 'confirmed', bufferMin: 15 },
-      ],
-      Thursday: [
-        { id: 'apt-bw9', time: '10:30 AM – 11:15 AM', patientName: 'Sani Bello', type: 'new', phone: '+234 802 333 4455', service: 'Clinical Consultation', status: 'confirmed', bufferMin: 15 },
-        { id: 'apt-bw10', time: '02:00 PM – 02:30 PM', patientName: 'Zainab Lawal', type: 'returning', phone: '+234 807 666 7777', service: 'Post-Op Follow-up', status: 'confirmed', bufferMin: 10 },
-      ],
-      Friday: [
-        { id: 'apt-bw11', time: '09:00 AM – 09:45 AM', patientName: 'Kolawole Adeyemi', type: 'returning', phone: '+234 803 555 0192', service: 'Surgical Review', status: 'confirmed', bufferMin: 15 },
-        { id: 'apt-bw12', time: '11:00 AM – 11:30 AM', patientName: 'Chioma Nwosu', type: 'returning', phone: '+234 808 999 8877', service: 'Consultant Clinical Review', status: 'confirmed', bufferMin: 10 },
-        { id: 'apt-bw13', time: '02:30 PM – 03:15 PM', patientName: 'Bisi Alabi', type: 'new', phone: '+234 805 111 2233', service: 'Pre-Operative Assessment', status: 'confirmed', bufferMin: 15 },
-      ],
-      Saturday: [
-        { id: 'apt-bw14', time: '10:00 AM – 10:45 AM', patientName: 'Rahman Lawal', type: 'returning', phone: '+234 803 222 1100', service: 'Consultant Second Opinion', status: 'confirmed', bufferMin: 15 },
-      ],
-    },
-  },
-};
 
 /**
  * DoctorGridBookingCalendar — Master Bento Grid Booking & Schedule Hub
@@ -243,7 +161,9 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
   const doubleBookingAlert = useDoubleBookingAlert();
 
   // Colleague options for the disruption modal (on-duty doctors only) — filled
-  // in below, once the timetable's selected day is known.
+  // in below, once the timetable's selected day is known. An empty roster
+  // stays empty: the grid shows an honest "no doctors" state instead of
+  // inventing a dentist the clinic never hired.
   const doctors = useMemo(() => {
     if (calendarDoctors && calendarDoctors.length > 0) return calendarDoctors;
     const staffDocs = staffList.filter((s) => s.role === 'doctor');
@@ -256,17 +176,13 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
         isOnDuty: s.status === 'on_duty',
       }));
     }
-    return [
-      { id: 'doc-bello', name: 'Dr. Aminu Bello', specialty: 'Dentistry', avatar: 'AB', isOnDuty: true },
-      { id: 'doc-okafor', name: 'Dr. Chinelo Okafor', specialty: 'General Practice', avatar: 'CO', isOnDuty: true },
-      { id: 'doc-babawo', name: 'Dr. Babawo', specialty: 'Consultant Surgery', avatar: 'BW', isOnDuty: true },
-    ];
+    return [];
   }, [calendarDoctors, staffList]);
 
   // View States
   const [selectedSpecialty, setSelectedSpecialty] = useState('All Specialties');
   const [searchDoctorQuery, setSearchDoctorQuery] = useState('');
-  const [selectedDoctorId, setSelectedDoctorId] = useState(() => doctors[0]?.id || 'doc-bello');
+  const [selectedDoctorId, setSelectedDoctorId] = useState(() => doctors[0]?.id || null);
   const [timetableHorizon, setTimetableHorizon] = useState('day'); // 'day' | 'week'
   const [selectedTimeSlot, setSelectedTimeSlot] = useState('11:30 AM');
 
@@ -395,13 +311,6 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
     );
   }, [doctorsOnSelectedDay, selectedDoctorId, filteredDoctors]);
 
-  const activeDocMeta = useMemo(() => {
-    // Wave 3 / Step 3.4: an unknown doctor (any real UUID) gets an EMPTY
-    // meta, not Bello's fake week - the week panel then shows only the
-    // dynamic, real blocks. The demo registry only covers mock ids.
-    return DOCTOR_META[currentDoctor?.id] || {};
-  }, [currentDoctor]);
-
   // "View in calendar" from the red alert: jump to the overlapping day and
   // select the clashing doctor's column, then step the overlay aside. The red
   // chip stays until the clash itself is gone.
@@ -438,68 +347,85 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
   // opened from another timezone.
   const formatSlotTime = (ts) => clinicTimeLabel(ts);
 
-  // Day appointments for active doctor (Merges static seed + dynamic Walk-In bookings)
+  // Day appointments for the active doctor — REAL store blocks only. The old
+  // version merged in a hardcoded demo week, so a real doctor's day showed
+  // invented patients the clinic never booked.
   const activeDayAppointments = useMemo(() => {
-    if (selectedDayName === 'Sunday') return [];
-    const weekAppts = activeDocMeta.weekAppointments || {};
-    const staticDayAppts = weekAppts[selectedDayName] || [];
+    return storeBlocks
+      .filter(
+        (b) =>
+          b.doctorId === currentDoctor?.id &&
+          isVisitBlock(b) &&
+          clinicDayKey(b.start) === selectedDayKey
+      )
+      .map(toAgendaRow)
+      // Sort by the real timestamp. The labels are 12-hour text, so comparing
+      // them put "01:30 PM" before "09:00 AM".
+      .sort((a, b) => a.start - b.start);
+  }, [selectedDayKey, storeBlocks, currentDoctor]);
 
-    // Filter dynamic blocks for active doctor on currently viewed day — the
-    // day match is a CLINIC day key, not the device's calendar date.
-    const dynamicAppts = storeBlocks
-      .filter((b) => {
-        if (b.doctorId !== currentDoctor?.id) return false;
-        if (b.type !== 'appointment' && b.type !== 'hold') return false;
-        return clinicDayKey(b.start) === selectedDayKey;
-      })
-      .map((b) => {
-        const startStr = formatSlotTime(b.start);
-        const endStr = formatSlotTime(b.end);
-        return {
-          id: b.appointmentId || b.id,
-          appointmentId: b.appointmentId || b.id,
-          time: `${startStr} – ${endStr}`,
-          patientName: b.patientName,
-          // Wave 3 / Step 3.4: the row carries the block's OWN data so the
-          // details modal never has to invent times, guess the service from
-          // label text, or default the doctor.
-          patientPhone: b.patientPhone,
-          phone: b.patientPhone,
-          type: b.patientType || 'new',
-          serviceId: b.serviceId,
-          serviceName: b.serviceName,
-          service: b.serviceName || (b.serviceId?.includes('extract') ? 'Tooth Extraction' : 'Dental Consultation'),
-          doctorId: b.doctorId,
-          doctorName: b.doctorName,
-          status: b.status || 'confirmed',
-          bufferMin: b.bufferMin || 10,
-          start: b.start,
-          end: b.end,
-          isDynamic: true,
-        };
-      });
+  // The clinic week that contains the selected day, Monday first. Every date
+  // comes from the clinic clock; every visit comes from the store. The old
+  // panel hardcoded "Oct 26-31" and opened 2026-10-26 for any doctor.
+  const weekRange = useMemo(() => {
+    const mondayFirstIdx = (selectedParts.weekdayIdx + 6) % 7;
+    const startMs = clinicDayStartOfParts(
+      selectedParts.year,
+      selectedParts.monthIdx,
+      selectedParts.day - mondayFirstIdx
+    );
+    return { mondayFirstIdx, startMs };
+  }, [selectedParts.year, selectedParts.monthIdx, selectedParts.day, selectedParts.weekdayIdx]);
 
-    // Merge static and dynamic, deduplicating by ID
-    const merged = [...staticDayAppts];
-    dynamicAppts.forEach((dyn) => {
-      if (!merged.some((m) => m.id === dyn.id)) {
-        merged.push(dyn);
-      }
-    });
-
-    // Sort chronologically by start time
-    return merged.sort((a, b) => {
-      const timeA = a.time.split(' – ')[0];
-      const timeB = b.time.split(' – ')[0];
-      return timeA.localeCompare(timeB);
+  const weekDays = useMemo(() => {
+    const visits = storeBlocks.filter(
+      (b) => b.doctorId === currentDoctor?.id && isVisitBlock(b)
+    );
+    // Monday through Sunday: a real seven-day week, matching the "7-Day
+    // Overview" label. The old panel showed six invented days, so Sunday's
+    // real visits (and any walk-in that day) had nowhere to appear.
+    return Array.from({ length: 7 }, (_, idx) => {
+      const startMs = clinicDayStartOfParts(
+        selectedParts.year,
+        selectedParts.monthIdx,
+        selectedParts.day - weekRange.mondayFirstIdx + idx
+      );
+      const parts = clinicParts(startMs);
+      const rows = visits
+        .filter((b) => clinicDayKey(b.start) === parts.dayKey)
+        .map(toAgendaRow)
+        .sort((a, b) => a.start - b.start);
+      return {
+        key: parts.dayKey,
+        startMs,
+        weekdayName: parts.weekdayName,
+        label: `${MONTH_NAMES[parts.monthIdx].slice(0, 3)} ${parts.day}`,
+        rows,
+      };
     });
   }, [
-    activeDocMeta,
-    selectedDayName,
-    selectedDayKey,
     storeBlocks,
     currentDoctor,
+    selectedParts.year,
+    selectedParts.monthIdx,
+    selectedParts.day,
+    weekRange.mondayFirstIdx,
   ]);
+
+  // Visits shown on a doctor's card = real blocks inside the visible week.
+  const weekEndMs = clinicDayStartOfParts(
+    selectedParts.year,
+    selectedParts.monthIdx,
+    selectedParts.day - weekRange.mondayFirstIdx + 7
+  );
+  const countWeekVisits = (doctorId) =>
+    storeBlocks.filter(
+      (b) =>
+        b.doctorId === doctorId &&
+        isVisitBlock(b) &&
+        b.start >= weekRange.startMs &&
+        b.start < weekEndMs
+    ).length;
 
   // Check if slot is booked for this doctor (Real-Time Synchronized)
   const getSlotDetails = (slotStr) => {
@@ -700,19 +626,17 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
         <div className="column-choose-doctor">
           <div className="column-section-title">Choose Doctor</div>
 
-          {filteredDoctors.map((doc) => {
-            // Wave 3 / Step 3.4: unknown (real UUID) doctors get an empty demo
-            // meta, not Bello's - the card then counts only real blocks.
-            const meta = DOCTOR_META[doc.id] || {};
+          {doctors.length === 0 ? (
+            <div className="doctor-roster-empty">
+              <strong>No doctors on the roster yet.</strong>
+              <span>
+                Add a doctor in Staff &amp; Reports, then this grid will show their real
+                appointments.
+              </span>
+            </div>
+          ) : filteredDoctors.map((doc) => {
             const isSelected = doc.id === currentDoctor?.id;
-            const staticCount = Object.values(meta.weekAppointments || {}).reduce(
-              (acc, arr) => acc + arr.length,
-              0
-            );
-            const dynamicCount = storeBlocks.filter(
-              (b) => b.doctorId === doc.id && (b.type === 'appointment' || b.type === 'hold')
-            ).length;
-            const weekApptsCount = staticCount + dynamicCount;
+            const weekApptsCount = countWeekVisits(doc.id);
 
             return (
               <div
@@ -729,9 +653,6 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
                   </div>
                   <div className="doctor-card-text">
                     <span className="doctor-card-name">{doc.name}</span>
-                    <span className="doctor-card-experience">
-                      {meta.experience}
-                    </span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                       <span className="doctor-card-specialty-tag">
                         {doc.specialty || 'General Practice'}
@@ -796,9 +717,15 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
                     </>
                   ) : null}
                   &bull;{' '}
-                  <span style={{ color: '#0369a1', fontWeight: 600 }}>{currentDoctor?.specialty}</span> &bull;{' '}
-                  <span>{activeDocMeta.suite}</span> &bull;{' '}
-                  <span className="tabular-nums">{activeDocMeta.shift}</span>
+                  <span style={{ color: '#0369a1', fontWeight: 600 }}>{currentDoctor?.specialty}</span>
+                  {currentDoctor?.shiftStart && currentDoctor?.shiftEnd ? (
+                    <>
+                      {' '}&bull;{' '}
+                      <span className="tabular-nums">
+                        {currentDoctor.shiftStart} – {currentDoctor.shiftEnd} WAT
+                      </span>
+                    </>
+                  ) : null}
                 </span>
               </div>
             </div>
@@ -957,7 +884,10 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
           {/* Horizon View A: Day Timetable Agenda (Unscattered & Scoped) */}
           {timetableHorizon === 'day' ? (
             <div className="bento-agenda-list">
-              {selectedDayName === 'Sunday' ? (
+              {/* Sunday is the clinic's rest day, but a real Sunday booking
+                  (walk-in, emergency) must still show. The closed message is
+                  only the honest answer when nothing is booked. */}
+              {selectedDayName === 'Sunday' && activeDayAppointments.length === 0 ? (
                 <div style={{ padding: '36px', textAlign: 'center', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
                   <CalendarIcon size={24} color="#64748b" style={{ margin: '0 auto 8px auto', display: 'block' }} />
                   <div style={{ fontSize: '13px', fontWeight: 600, color: '#0f172a' }}>Clinic Closed on Sundays</div>
@@ -1124,17 +1054,15 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
               )}
             </div>
           ) : (
-            /* Horizon View B: 7-Day Overview for Active Doctor (Full Patient Reviews per Day) */
+            /* Horizon View B: 7-Day Overview for the active doctor — the real
+               clinic week (Monday first) with the real visits the backend sent. */
             <div className="week-overview-grid">
-              {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((day, idx) => {
-                const dayAppts = activeDocMeta.weekAppointments?.[day] || [];
-                const isSelected = selectedDayName === day;
-                // Calculate date for this day of week in current week (base Monday Oct 26)
-                const computedDayNumber = 26 + idx;
+              {weekDays.map((day) => {
+                const isSelected = selectedDayKey === day.key;
 
                 return (
                   <div
-                    key={day}
+                    key={day.key}
                     className="week-day-card"
                     style={{
                       borderColor: isSelected ? '#111114' : '#e2e8f0',
@@ -1143,46 +1071,52 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
                   >
                     <div className="week-day-header">
                       <div>
-                        <span className="week-day-title">{day}</span>
+                        <span className="week-day-title">{day.weekdayName}</span>
                         <span style={{ fontSize: '11px', color: '#64748b', marginLeft: '6px' }}>
-                          Oct {computedDayNumber}
+                          {day.label}
                         </span>
                       </div>
-                      <span className="week-day-count">{dayAppts.length} visits</span>
+                      <span className="week-day-count">
+                        {day.rows.length} {day.rows.length === 1 ? 'visit' : 'visits'}
+                      </span>
                     </div>
 
                     {/* Complete List of Patients for This Day */}
                     <div className="week-day-patient-list">
-                      {dayAppts.map((apt) => (
-                        <div
-                          key={apt.id}
-                          className="week-patient-chip"
-                          onClick={() => onSelectAppointment && onSelectAppointment(apt)}
-                          style={{ cursor: 'pointer' }}
-                          title={`Click to view clinical details for ${apt.patientName}`}
-                        >
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                            <strong>{apt.time.split(' – ')[0]}:</strong>
-                            <span style={{ fontSize: '9px', fontWeight: 600, color: '#16a34a' }}>
-                              {apt.status}
-                            </span>
+                      {day.rows.length === 0 ? (
+                        <div className="week-day-empty">No visits booked</div>
+                      ) : (
+                        day.rows.map((apt) => (
+                          <div
+                            key={apt.id}
+                            className="week-patient-chip"
+                            onClick={() => onSelectAppointment && onSelectAppointment(apt)}
+                            style={{ cursor: 'pointer' }}
+                            title={`Click to view clinical details for ${apt.patientName}`}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <strong>{apt.time.split(' – ')[0]}:</strong>
+                              <span style={{ fontSize: '9px', fontWeight: 600, color: '#16a34a' }}>
+                                {apt.status}
+                              </span>
+                            </div>
+                            <div>
+                              {apt.patientName} &bull; <span style={{ color: '#0369a1' }}>{apt.service}</span>
+                            </div>
                           </div>
-                          <div>
-                            {apt.patientName} &bull; <span style={{ color: '#0369a1' }}>{apt.service}</span>
-                          </div>
-                        </div>
-                      ))}
+                        ))
+                      )}
                     </div>
 
                     <button
                       type="button"
                       className="week-day-action-btn"
                       onClick={() => {
-                        setSelectedDate(new Date(clinicDayStartOfParts(2026, 9, computedDayNumber)));
+                        setSelectedDate(new Date(day.startMs));
                         setTimetableHorizon('day');
                       }}
                     >
-                      Switch to {day} Timetable &rarr;
+                      Switch to {day.weekdayName} Timetable &rarr;
                     </button>
                   </div>
                 );
@@ -1256,12 +1190,20 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
               {Array.from({ length: daysInMonth }).map((_, idx) => {
                 const dayNum = idx + 1;
                 const isSelected =
-                  selectedDate.getFullYear() === calendarYear &&
-                  selectedDate.getMonth() === calendarMonthIdx &&
-                  selectedDate.getDate() === dayNum;
+                  selectedParts.year === calendarYear &&
+                  selectedParts.monthIdx === calendarMonthIdx &&
+                  selectedParts.day === dayNum;
 
-                // Highlight dates that have scheduled appointments
-                const hasAppts = [5, 9, 14, 16, 22, 26, 27, 28, 29, 30].includes(dayNum);
+                // A day is marked only when the selected doctor really has a
+                // visit on it. The old list [5, 9, 14, ...] was invented, so
+                // quiet days looked busy and real days looked empty.
+                const dayKey = `${calendarYear}-${String(calendarMonthIdx + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+                const hasAppts = storeBlocks.some(
+                  (b) =>
+                    b.doctorId === currentDoctor?.id &&
+                    isVisitBlock(b) &&
+                    clinicDayKey(b.start) === dayKey
+                );
 
                 return (
                   <button
