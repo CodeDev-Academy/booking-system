@@ -798,6 +798,35 @@ execution log). Production staging (Railway/Vercel) is not deployed yet.
   77.5 kB), Django **506/506 OK**. Browser proof: week cards read Nov 16–22 with 3/1/2 visits per
   doctor; Dr. Bello's Sunday card listed his 3 real patients; "Switch to Sunday" opened
   Sunday, Nov 22 with the same 3 rows in time order; zero console errors, zero horizontal overflow.
+- [x] `T-785`: **The lunch break is a real setting** (Settings saves it, the grid obeys it): the
+  Settings lunch inputs edited values that never reached the database — the save nested them under
+  `schedule_engine`, which `ClinicSettingSerializer` silently drops. Verified live before the fix:
+  PATCH answered **200** and lunch stayed **13:00–14:00**. Meanwhile the booking engine protected
+  13:00–14:00 while the Schedule Grid drew a hardcoded **12:00–13:00** — three places, three
+  answers. Pinned by `test_settings_truth.js` (10 checks) and two tests in
+  `Phase3ClinicSettingsTests`:
+  - Save sends `lunch_break_start`, `lunch_break_end` and `working_days` as real fields; load
+    restores them (Django's `HH:MM:SS` normalised to `HH:MM` for the time inputs).
+  - **One** clinic-wide "Clinic hours" + "Daily lunch break" control. The day rows show the shared
+    hours and net shift; only open/closed is per day, because the database stores one schedule.
+    The per-day lunch inputs (values that were never saved) are deleted.
+  - `GET /calendar/schedule/` publishes a `clinic` block (lunch, open/close, working days). The
+    calendar store keeps it on **both** sync paths — empty roster and real roster.
+  - The grid draws the saved window at its real clock position, interleaved with the day's
+    appointments; the slot grid marks the same window.
+  - No break (missing, or start = end) draws nothing. Sunday draws no lunch card.
+  - Test-helper fix: `_last_weekday()` started at today, so "today at 10:00" was still in the
+    future in morning runs and `test_a_past_slot_is_refused` failed by the clock, not by a defect.
+
+  Two real defects were caught by the live browser pass and pinned (L9, L10): only the
+  empty-roster branch stored the lunch (a real roster drew no break at all), and a zero-length
+  break still drew "12:15 PM until 12:15 PM".
+
+  Gates: 16 frontend harnesses **219/219**, `npm run build` clean, Django **508/508 OK**.
+  Browser proof: saved 12:15–12:45 → the database read 12:15/12:45; the grid showed
+  "12:15 PM until 12:45 PM" between the 09:30 AM and 02:00 PM visits; a zero-length break drew no
+  card; Sunday drew none; Settings reloaded with 12:15–12:45, 9.5 hrs net shift and 57.0h/week;
+  zero console errors, no horizontal overflow.
 
 ---
 
@@ -859,6 +888,7 @@ execution log). Production staging (Railway/Vercel) is not deployed yet.
 | 2026-11-21 | Brain Agent | `Recalls List / T-782` | **PASSED** | Recalls were invisible after saving (admin only). Added `GET /follow-ups/` (counts for upcoming/sent/done/cancelled, search, clinical note deliberately absent), `PATCH /follow-ups/{id}/` (cancel kept on record, mark done, edit date/time/message only BEFORE sending), and the `/recalls` page with four groups, inline edit and honest note-only rows. 9 tests red-first; `test_recalls.js` 13 checks. Gates: 14 harnesses **184/184**, build clean, Django **506/506 OK**. Live **19/19**: create + list, search, cancel stays visible and silent, edit changes the sent words, mark-done silences, sent recall refuses edits; rows deleted, flags restored. |
 | 2026-11-21 | Brain Agent | `UI Consolidation / T-783` | **PASSED** | Owner approved the design review: one clear place for each job, warm light theme. Recalls merged into **Visits & Recalls** as a tab (`/recalls` opens it); **Clinic Settings** split into 3 tabs and the 4 top KPI boxes removed; **Staff & Reports** split into Team Roster / Reports & CSV with the 2 static security boxes removed; the duplicate **"Today's Schedule"** tab, list, detail modal and CSS deleted from Requests Queue; the fake "Abuja, NG" search bar and "Sarah Aliyu" profile menu removed from Schedule Grid, with specialty filters now derived from the real doctors on the selected day; **LeftRail** owns the single staff card and Sign Out while **Header** keeps label/status/clock/Lock; every `#0c1a30` navy and `#38bdf8` sky-blue replaced by the obsidian `#111114` and amber palette; headings use the fixed five-step scale. New `test_impeccable_ui.js` (13 checks) pins all of it, including the calendar store reading the API's `specialty` key and the exact-match specialty filter. Gates: 15 harnesses **197/197**, build clean (index 372.4 kB → 360.0 kB), Django **506/506 OK**. Browser proof: five pages and every tab render with zero console errors and zero horizontal overflow; the staff roster loaded 7 real rows after the API answer; the Schedule Grid showed the 3 real doctors and "Lead Dental Surgeon" filtered to one. |
 | 2026-11-22 | Brain Agent | `Schedule Grid truth / T-784` | **PASSED** | The grid's `DOCTOR_META` table invented patients, rooms and shifts; real doctors showed a blank suite/shift, the 7-Day Overview always read Oct 26–31 with 0 visits and clicked into 2026-10-26, an empty roster produced three demo doctors, and the month calendar highlighted a made-up busy-day list. Deleted `DOCTOR_META`; removed the demo fallback and added an honest empty-roster state; rebuilt the week overview as Monday–Sunday of the real clinic week with real store blocks, real dates and per-day empty text; doctor cards count real weekly visits and show the API's real shift; one `toAgendaRow` helper feeds day and week rows and sorts by real start time; the month calendar marks only real booked days and reads clinic time; "Clinic Closed on Sundays" now only when nothing is booked. 11 red-first checks in `test_impeccable_ui.js` (24 total) plus 1 in `test_calendar_truth.js` (12). Gates: 15 harnesses **209/209**, build clean (CalendarView 86.0 kB → 77.5 kB), Django **506/506 OK**. Browser proof: week cards Nov 16–22 with 3/1/2 visits; Dr. Bello's Sunday card listed 3 real patients; "Switch to Sunday" opened Sunday, Nov 22 with the same 3 rows. |
+| 2026-11-24 | Brain Agent | `Settings lunch wire / T-785` | **PASSED** | The Settings lunch control was a cut wire: the save nested the value under `schedule_engine`, which the serializer drops — verified live (PATCH 200, lunch stayed 13:00–14:00) while the engine protected 13:00–14:00 and the grid drew 12:00–13:00. Now the save sends flat `lunch_break_start`/`lunch_break_end`/`working_days`, the load restores them (`HH:MM:SS` → `HH:MM`), and the hours table has ONE clinic-wide hours + lunch control with per-day open/closed only. `GET /calendar/schedule/` publishes a `clinic` block; the store keeps it on both sync paths; the grid draws the saved window interleaved with the day's appointments and marks the same slots; no break (or start = end) and Sunday draw nothing. 2 Django tests red-first (`clinic` key missing → added; PATCH fields already supported), new `test_settings_truth.js` 8 red → 10 checks. The browser pass caught two real defects, both pinned: the normal sync path never stored the lunch (L9), and a zero-length break still drew a card (L10). Also fixed a clock-flaky helper (`_last_weekday` started at today, so a morning run saw "today 10:00" as future). Gates: 16 harnesses **219/219**, build clean, Django **508/508 OK**. Live: saved 12:15–12:45 → DB 12:15/12:45; grid card "12:15 PM until 12:45 PM" between the 09:30 AM and 02:00 PM visits; zero-length break → no card; Sunday → none; Settings reload 12:15–12:45, 9.5 hrs net, 57.0h/week; zero console errors, no overflow. |
 
 ---
 

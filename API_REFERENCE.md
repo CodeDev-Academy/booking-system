@@ -501,11 +501,31 @@ Aggregates all 4 schedule layers (doctor shifts, confirmed appointments, active 
 - `doctor_id`: *(Optional)* Filter by doctor UUID
 - `service_id`: *(Optional)* Service UUID to automatically dim gaps smaller than treatment duration + buffer
 
+**Response includes a `clinic` block** (T-785) so the grid draws the same rest window the
+booking engine enforces:
+
+```json
+{
+  "clinic": {
+    "lunch_break_start": "12:15",
+    "lunch_break_end": "12:45",
+    "open_time": "08:00",
+    "close_time": "18:00",
+    "working_days": [1, 2, 3, 4, 5, 6]
+  }
+}
+```
+
+Clocks are `HH:MM`. A break whose start equals its end means **no break**; the UI draws none.
+
 ### `GET /api/v1/clinic/settings/`
 Returns complete clinic configuration including operating hours, state machine timers, and custom white-label parameters.
 
 ### `PATCH /api/v1/clinic/settings/`
 Updates clinic operating hours, default buffers, offer windows, or custom white-label settings without requiring database migrations.
+The schedule fields are **flat model fields**: `open_time`, `close_time`, `working_days`,
+`lunch_break_start`, `lunch_break_end`. A nested `schedule_engine` object is ignored by the
+serializer (this is how the Settings lunch control used to save nothing while answering 200).
 
 ### `GET /api/v1/clinic/settings/export/`
 Downloads the entire clinic configuration as a clean `client-config.json` template.

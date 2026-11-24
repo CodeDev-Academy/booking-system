@@ -2992,6 +2992,51 @@ Django 506/506 OK. No backend or API change. Browser proof: real dates Nov 16–
 3/1/2 visits per doctor, Dr. Bello's Sunday card listed his 3 real patients and
 "Switch to Sunday" opened Sunday, Nov 22 with the same 3 rows.
 
+## Settings lunch break — a real control, not decoration (2026-11-24, T-785)
+
+**The problem.** Settings → Clinic & Hours already showed an editable lunch break
+per day, but the save nested it under `schedule_engine`, and the Django serializer
+only accepts real model fields — so it was silently dropped. Verified live before
+the fix: PATCH answered **200** and lunch stayed **13:00–14:00**. The booking engine
+protected 13:00–14:00 while the Schedule Grid drew a hardcoded **12:00–13:00**:
+three places, three answers, and staff could book over the real rest window.
+
+**What changed:**
+
+1. **The save is real.** `lunch_break_start`, `lunch_break_end` and `working_days`
+   travel as flat fields; the load restores them (Django's `HH:MM:SS` normalised to
+   `HH:MM` for the time inputs). No migration — the fields already existed.
+2. **One clinic-wide schedule.** The database stores one open/close pair and one
+   lunch break, so the table now shows one "Clinic hours" + "Daily lunch break"
+   control; the day rows show the shared hours and net shift, and only open/closed
+   is per day. The per-day lunch inputs (values that were never saved) are deleted.
+3. **The grid obeys the setting.** `GET /calendar/schedule/` publishes a `clinic`
+   block (lunch, open/close, working days) in the response the grid already loads.
+   The lunch card sits at its real clock position, interleaved with the day's
+   appointments; the slot grid marks the same window.
+4. **Honest absence.** No break (missing, or start = end) draws nothing; Sunday
+   draws no lunch card.
+
+**Two defects the live browser pass caught** (both pinned): only the empty-roster
+sync branch stored the lunch, so a clinic WITH doctors drew no break at all; and a
+zero-length break still drew "12:15 PM until 12:15 PM". Also fixed a clock-flaky
+test helper (`_last_weekday` started at today, so a morning run saw "today 10:00"
+as the future).
+
+Gates: 16 harnesses 219/219 (new `test_settings_truth.js`, 10 checks), build clean,
+Django 508/508 OK (2 new tests). Browser proof: saved 12:15–12:45 → the database
+read 12:15/12:45; the grid showed "12:15 PM until 12:45 PM" between the 09:30 AM and
+02:00 PM visits; a zero-length break drew no card; Sunday drew none; Settings
+reloaded with 12:15–12:45, 9.5 hrs net shift, 57.0h/week; zero console errors.
+
+**Next in this thread (T-786):** emergency reserve slots are still hardcoded
+("1 Emergency Reserve", a 01:30 PM card). They live in `AvailabilityRule` rows but
+have no API to list or edit them.
+
+**Known dead code:** `CalendarDayView.jsx` still hardcodes a 12:00–13:00 lunch, but
+its only parent (`MasterCalendarGrid`) is not mounted anywhere, so no live screen
+shows it. Remove or rewire it when that view is revived.
+
 ## Next up - Phase 5 (partner handover)
 
 **Leave flow complete (2026-11-20).** Dated leave, a rolled-back preview,

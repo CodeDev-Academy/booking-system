@@ -269,7 +269,7 @@ High-level overview tailored for clinic owners and managers:
 ### Specifications:
 1. **1-Click Doctor Swapping**: Clicking `[✏️ Edit / Swap]` displays only doctors who are qualified for the selected treatment and on active duty that day.
 2. **15-Minute Granular Time Scrubber**: Receptionists can nudge slots forward or backward in 15-minute increments with instant visual validation.
-3. **Live Collision Shield**: Any overlapping appointment, active temporary hold, or doctor break immediately triggers an amber warning: `[⚠️ Dr. Bello is in lunch break 12:00–13:00]`, preventing accidental collision before dispatch.
+3. **Live Collision Shield**: Any overlapping appointment, active temporary hold, or doctor break immediately triggers an amber warning: `[⚠️ Dr. Bello is in lunch break 13:00–14:00]`, preventing accidental collision before dispatch. The times come from the clinic's **saved** lunch setting (Settings → Clinic & Hours), never a hardcoded window — T-785 made the setting real and the Schedule Grid draws the same hours.
 4. **Custom Slot Addition**: Receptionists can add a 4th slot or replace a suggestion with an arbitrary date/time, automatically verifying that the required service buffer (e.g. +10m sanitization) is preserved.
 
 ---
