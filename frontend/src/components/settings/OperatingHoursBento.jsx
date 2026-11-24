@@ -1,12 +1,29 @@
 import React from 'react';
 import { Clock, Coffee, CalendarCheck2, Power } from 'lucide-react';
 
+/**
+ * Clinic hours are ONE schedule in the database: a single open/close pair and
+ * a single lunch break. The old table offered per-day time and lunch inputs,
+ * but the save only kept the first day and the lunch never reached the server
+ * at all. This shows the real shape: one schedule, plus per-day open/closed.
+ */
 export const OperatingHoursBento = ({
   operatingHours,
+  clinicHours,
+  lunchBreak,
   onToggleDay,
-  onUpdateDayHours,
+  onUpdateClinicHours,
+  onUpdateLunchBreak,
   operationalStats,
 }) => {
+  const minutes = (hhmm) => {
+    if (!hhmm) return 0;
+    const [h, m] = hhmm.split(':').map(Number);
+    return h * 60 + m;
+  };
+  const netMinutes = Math.max(0, minutes(clinicHours.closeTime) - minutes(clinicHours.openTime)
+    - Math.max(0, minutes(lunchBreak.end) - minutes(lunchBreak.start)));
+
   return (
     <div className="settings-card">
       <div className="settings-card-header">
@@ -17,7 +34,7 @@ export const OperatingHoursBento = ({
           <div>
             <h3 className="settings-card-title">Weekly Operating Hours & Shifts</h3>
             <p className="settings-card-subtitle">
-              Configure clinic opening times, sanitization lunch intervals, and closed days.
+              One clinic schedule, plus the days the clinic is open.
             </p>
           </div>
         </div>
@@ -32,33 +49,64 @@ export const OperatingHoursBento = ({
         </div>
       </div>
 
+      <div className="clinic-hours-control">
+        <label className="clinic-hours-field">
+          <span className="clinic-hours-label">Clinic hours</span>
+          <span className="time-range-group">
+            <input
+              type="time"
+              className="time-picker-input tabular-nums"
+              value={clinicHours.openTime}
+              onChange={(e) => onUpdateClinicHours('openTime', e.target.value)}
+            />
+            <span className="time-sep">→</span>
+            <input
+              type="time"
+              className="time-picker-input tabular-nums"
+              value={clinicHours.closeTime}
+              onChange={(e) => onUpdateClinicHours('closeTime', e.target.value)}
+            />
+          </span>
+        </label>
+
+        <label className="clinic-hours-field">
+          <span className="clinic-hours-label">
+            <Coffee size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
+            Daily lunch break
+          </span>
+          <span className="time-range-group">
+            <input
+              type="time"
+              className="time-picker-input tabular-nums"
+              value={lunchBreak.start}
+              onChange={(e) => onUpdateLunchBreak('start', e.target.value)}
+            />
+            <span className="time-sep">→</span>
+            <input
+              type="time"
+              className="time-picker-input tabular-nums"
+              value={lunchBreak.end}
+              onChange={(e) => onUpdateLunchBreak('end', e.target.value)}
+            />
+          </span>
+        </label>
+
+        <span className="clinic-hours-note">
+          Applies to every open day. Bookings inside the lunch break are refused.
+        </span>
+      </div>
+
       <div className="hours-schedule-table">
         <div className="hours-table-head">
           <div className="col-day">Day of Week</div>
           <div className="col-status">Status</div>
-          <div className="col-times">Open – Close Hours</div>
-          <div className="col-lunch">
-            <Coffee size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
-            Lunch Break Interval
-          </div>
+          <div className="col-times">Clinic Hours</div>
           <div className="col-duration">Net Shift</div>
         </div>
 
         <div className="hours-table-body">
           {operatingHours.map((d) => {
-            let durationText = 'Closed';
-            if (d.isOpen && d.openTime && d.closeTime) {
-              const [oH, oM] = d.openTime.split(':').map(Number);
-              const [cH, cM] = d.closeTime.split(':').map(Number);
-              let totalMins = cH * 60 + cM - (oH * 60 + oM);
-              if (d.lunchStart && d.lunchEnd) {
-                const [lsh, lsm] = d.lunchStart.split(':').map(Number);
-                const [leh, lem] = d.lunchEnd.split(':').map(Number);
-                totalMins -= (leh * 60 + lem - (lsh * 60 + lsm));
-              }
-              const hrs = (Math.max(0, totalMins) / 60).toFixed(1);
-              durationText = `${hrs} hrs`;
-            }
+            const durationText = d.isOpen ? `${(netMinutes / 60).toFixed(1)} hrs` : 'Closed';
 
             return (
               <div
@@ -82,51 +130,9 @@ export const OperatingHoursBento = ({
                 </div>
 
                 <div className="col-times">
-                  <div className="time-range-group">
-                    <input
-                      type="time"
-                      className="time-picker-input tabular-nums"
-                      value={d.openTime}
-                      disabled={!d.isOpen}
-                      onChange={(e) =>
-                        onUpdateDayHours(d.dayIndex, 'openTime', e.target.value)
-                      }
-                    />
-                    <span className="time-sep">→</span>
-                    <input
-                      type="time"
-                      className="time-picker-input tabular-nums"
-                      value={d.closeTime}
-                      disabled={!d.isOpen}
-                      onChange={(e) =>
-                        onUpdateDayHours(d.dayIndex, 'closeTime', e.target.value)
-                      }
-                    />
-                  </div>
-                </div>
-
-                <div className="col-lunch">
-                  <div className="time-range-group">
-                    <input
-                      type="time"
-                      className="time-picker-input tabular-nums input-lunch"
-                      value={d.lunchStart}
-                      disabled={!d.isOpen}
-                      onChange={(e) =>
-                        onUpdateDayHours(d.dayIndex, 'lunchStart', e.target.value)
-                      }
-                    />
-                    <span className="time-sep">→</span>
-                    <input
-                      type="time"
-                      className="time-picker-input tabular-nums input-lunch"
-                      value={d.lunchEnd}
-                      disabled={!d.isOpen}
-                      onChange={(e) =>
-                        onUpdateDayHours(d.dayIndex, 'lunchEnd', e.target.value)
-                      }
-                    />
-                  </div>
+                  <span className="col-hours-text tabular-nums">
+                    {d.isOpen ? `${clinicHours.openTime} – ${clinicHours.closeTime}` : '—'}
+                  </span>
                 </div>
 
                 <div className="col-duration">

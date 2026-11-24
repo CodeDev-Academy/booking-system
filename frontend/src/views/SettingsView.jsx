@@ -38,6 +38,8 @@ export const SettingsView = () => {
   const {
     clinicProfile,
     operatingHours,
+    clinicHours,
+    lunchBreak,
     schedulingRules,
     notificationRules,
     services,
@@ -147,8 +149,11 @@ export const SettingsView = () => {
 
           <OperatingHoursBento
             operatingHours={operatingHours}
+            clinicHours={clinicHours}
+            lunchBreak={lunchBreak}
             onToggleDay={actions.toggleDayOpen}
-            onUpdateDayHours={actions.updateDayHours}
+            onUpdateClinicHours={actions.updateClinicHours}
+            onUpdateLunchBreak={actions.updateLunchBreak}
             operationalStats={operationalStats}
           />
 

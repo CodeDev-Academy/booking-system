@@ -53,6 +53,35 @@ const DAY_NAMES_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 
 
 const isVisitBlock = (b) => b.type === 'appointment' || b.type === 'hold';
 
+// "12:30" -> 750. Minutes since midnight are the only way to compare a saved
+// clock value with a 12-hour agenda label.
+const minutesFromHHMM = (hhmm) => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || ''));
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+};
+
+// 750 -> "12:30 PM", the label style the agenda already uses.
+const labelFromHHMM = (hhmm) => {
+  const mins = minutesFromHHMM(hhmm);
+  if (mins === null) return '';
+  const h24 = Math.floor(mins / 60) % 24;
+  const mm = String(mins % 60).padStart(2, '0');
+  const suffix = h24 >= 12 ? 'PM' : 'AM';
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${String(h12).padStart(2, '0')}:${mm} ${suffix}`;
+};
+
+// "12:30 PM" -> 750. Tolerates the narrow no-break space some engines put
+// between the clock and AM/PM.
+const minutesFromLabel = (label) => {
+  const m = /^(\d{1,2}):(\d{2})\s*([AP]M)$/i.exec(String(label || '').trim());
+  if (!m) return null;
+  let h = Number(m[1]) % 12;
+  if (m[3].toUpperCase() === 'PM') h += 12;
+  return h * 60 + Number(m[2]);
+};
+
 /**
  * One agenda row from one real store block. Both the day list and the week
  * overview use this, so a patient's time, phone and service read the same
@@ -341,6 +370,15 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
 
   // Subscribe to live calendar blocks for real-time walk-in reflection
   const storeBlocks = useCalendarStore((state) => state.blocks) || [];
+  // The clinic's real lunch break, from the same schedule sync. null means the
+  // feed has not answered yet, or the clinic has no break configured.
+  const clinicLunch = useCalendarStore((state) => state.clinicLunch) || null;
+  // A break whose end is not after its start is NO break (a clinic can clear
+  // it by setting both clocks the same). Drawing "12:15 until 12:15" would
+  // promise a rest window that does not exist.
+  const hasClinicLunch =
+    Boolean(clinicLunch?.start && clinicLunch?.end) &&
+    minutesFromHHMM(clinicLunch.end) > minutesFromHHMM(clinicLunch.start);
 
   // Helper to format block time e.g. "09:30 AM" — in CLINIC time. The old
   // device-locale formatting renamed 09:00 to 04:00 the moment the site was
@@ -363,6 +401,26 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
       // them put "01:30 PM" before "09:00 AM".
       .sort((a, b) => a.start - b.start);
   }, [selectedDayKey, storeBlocks, currentDoctor]);
+
+  // One sorted timeline for the day: real appointments plus the real lunch
+  // break at its saved clock position. The lunch card used to be glued after
+  // the last appointment, so a 13:00 break looked like the day's final event.
+  const dayTimeline = useMemo(() => {
+    const items = activeDayAppointments.map((apt) => {
+      const parts = clinicParts(apt.start);
+      return {
+        kind: 'appointment',
+        minutes: parts.hour * 60 + parts.minute,
+        apt,
+      };
+    });
+    const hasLunch = hasClinicLunch && selectedDayName !== 'Sunday';
+    if (hasLunch) {
+      const lunchMinutes = minutesFromHHMM(clinicLunch.start);
+      if (lunchMinutes !== null) items.push({ kind: 'lunch', minutes: lunchMinutes });
+    }
+    return items.sort((a, b) => a.minutes - b.minutes);
+  }, [activeDayAppointments, clinicLunch, hasClinicLunch, selectedDayName]);
 
   // The clinic week that contains the selected day, Monday first. Every date
   // comes from the clinic clock; every visit comes from the store. The old
@@ -452,8 +510,21 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
       return { isBooked: true, patientName: matchingBlock.patientName, type: 'appointment' };
     }
 
-    if (slotStr === '12:00 PM' || slotStr === '12:30 PM') {
-      return { isBooked: true, label: 'Lunch', type: 'lunch' };
+    // The lunch window shown here is the one the booking engine enforces.
+    // Before, the grid painted 12:00-12:30 regardless of the saved setting.
+    if (hasClinicLunch) {
+      const slotMin = minutesFromLabel(slotStr);
+      const lunchStart = minutesFromHHMM(clinicLunch.start);
+      const lunchEnd = minutesFromHHMM(clinicLunch.end);
+      if (
+        slotMin !== null &&
+        lunchStart !== null &&
+        lunchEnd !== null &&
+        slotMin >= lunchStart &&
+        slotMin < lunchEnd
+      ) {
+        return { isBooked: true, label: 'Lunch', type: 'lunch' };
+      }
     }
     if (slotStr === '01:30 PM') {
       return { isBooked: false, isReserve: true, label: 'Reserve' };
@@ -903,114 +974,123 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
                     View Monday Timetable &rarr;
                   </button>
                 </div>
-              ) : activeDayAppointments.length === 0 ? (
-                <div style={{ padding: '32px', textAlign: 'center', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
-                  <CalendarIcon size={22} color="#64748b" style={{ margin: '0 auto 6px auto', display: 'block' }} />
-                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#0f172a' }}>No Scheduled Appointments</div>
-                  <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
-                    All slots are open for walk-in bookings or online patient requests.
-                  </div>
-                </div>
               ) : (
-                /* Chronological Scheduled Appointments */
-                activeDayAppointments.map((apt) => (
-                  <div
-                    key={apt.id}
-                    className={`bento-agenda-card ${
-                      apt.status === 'held' ? 'event-hold' : 'event-confirmed'
-                    }`}
-                  >
-                    <div className="bento-time-col">
-                      <span className="bento-time-primary">{apt.time.split(' – ')[0]}</span>
-                      <span className="bento-duration-sub">until {apt.time.split(' – ')[1]}</span>
-                    </div>
-
-                    <div className="bento-details-col">
-                      <div className="bento-patient-name-row">
-                        <span className="bento-patient-name">{apt.patientName}</span>
-                        <span
-                          className={`event-type-pill ${
-                            apt.type === 'returning' ? 'returning' : 'new'
-                          }`}
-                        >
-                          {apt.type}
-                        </span>
-                        {apt.status === 'held' && (
-                          <span
-                            style={{
-                              fontSize: '10px',
-                              fontWeight: 700,
-                              color: '#b45309',
-                              background: '#fef3c7',
-                              padding: '1px 6px',
-                              borderRadius: '10px',
-                            }}
-                          >
-                            Held Online: {apt.holdExpiresIn || '12m left'}
-                          </span>
-                        )}
-                      </div>
-                      <div className="bento-service-sub">
-                        <span>{apt.service}</span> &bull;{' '}
-                        <span className="tabular-nums">{apt.phone}</span>
-                        {apt.bufferMin && (
-                          <span style={{ color: '#16a34a', marginLeft: '6px' }}>
-                            &bull; {apt.bufferMin}m buffer safe
-                          </span>
-                        )}
+                <>
+                  {dayTimeline.length === 0 && (
+                    <div style={{ padding: '32px', textAlign: 'center', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+                      <CalendarIcon size={22} color="#64748b" style={{ margin: '0 auto 6px auto', display: 'block' }} />
+                      <div style={{ fontSize: '13px', fontWeight: 600, color: '#0f172a' }}>No Scheduled Appointments</div>
+                      <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
+                        All slots are open for walk-in bookings or online patient requests.
                       </div>
                     </div>
+                  )}
 
-                    <div className="bento-actions-col">
-                      <button
-                        type="button"
-                        className="event-action-btn-sm"
-                        onClick={() => onSelectAppointment && onSelectAppointment(apt)}
+                  {/* One chronological timeline: the day's real appointments and
+                      the clinic's real lunch break, ordered by clock time. */}
+                  {dayTimeline.map((item) => {
+                    if (item.kind === 'lunch') {
+                      return (
+                        <div key="clinic-lunch" className="bento-agenda-card event-break">
+                          <div className="bento-time-col">
+                            <span className="bento-time-primary">{labelFromHHMM(clinicLunch.start)}</span>
+                            <span className="bento-duration-sub">until {labelFromHHMM(clinicLunch.end)}</span>
+                          </div>
+                          <div className="bento-details-col">
+                            <div className="bento-patient-name-row">
+                              <Coffee size={14} color="#64748b" />
+                              <span className="bento-patient-name">Clinic Lunch &amp; Sanitization Break</span>
+                            </div>
+                            <div className="bento-service-sub">
+                              Clinic-wide protected rest and equipment sterilization interval
+                            </div>
+                          </div>
+                          <div className="bento-actions-col">
+                            <span style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>Protected</span>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    const apt = item.apt;
+                    return (
+                      <div
+                        key={apt.id}
+                        className={`bento-agenda-card ${
+                          apt.status === 'held' ? 'event-hold' : 'event-confirmed'
+                        }`}
                       >
-                        Dossier
-                      </button>
-                      {apt.status === 'held' ? (
-                        <button
-                          type="button"
-                          className="event-action-btn-secondary"
-                          onClick={() => onReleaseHold && onReleaseHold(apt.id)}
-                        >
-                          Release
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="event-action-btn-secondary"
-                          onClick={() => onAdmitAppointment && onAdmitAppointment(apt)}
-                        >
-                          Arrived
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))
-              )}
+                        <div className="bento-time-col">
+                          <span className="bento-time-primary">{apt.time.split(' – ')[0]}</span>
+                          <span className="bento-duration-sub">until {apt.time.split(' – ')[1]}</span>
+                        </div>
 
-              {/* Clinic Lunch Break Event */}
-              {selectedDayName !== 'Sunday' && (
-                <div className="bento-agenda-card event-break">
-                  <div className="bento-time-col">
-                    <span className="bento-time-primary">12:00 PM</span>
-                    <span className="bento-duration-sub">until 01:00 PM</span>
-                  </div>
-                  <div className="bento-details-col">
-                    <div className="bento-patient-name-row">
-                      <Coffee size={14} color="#64748b" />
-                      <span className="bento-patient-name">Clinic Lunch &amp; Sanitization Break</span>
-                    </div>
-                    <div className="bento-service-sub">
-                      Clinic-wide protected rest and equipment sterilization interval
-                    </div>
-                  </div>
-                  <div className="bento-actions-col">
-                    <span style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>Protected</span>
-                  </div>
-                </div>
+                        <div className="bento-details-col">
+                          <div className="bento-patient-name-row">
+                            <span className="bento-patient-name">{apt.patientName}</span>
+                            <span
+                              className={`event-type-pill ${
+                                apt.type === 'returning' ? 'returning' : 'new'
+                              }`}
+                            >
+                              {apt.type}
+                            </span>
+                            {apt.status === 'held' && (
+                              <span
+                                style={{
+                                  fontSize: '10px',
+                                  fontWeight: 700,
+                                  color: '#b45309',
+                                  background: '#fef3c7',
+                                  padding: '1px 6px',
+                                  borderRadius: '10px',
+                                }}
+                              >
+                                Held Online: {apt.holdExpiresIn || '12m left'}
+                              </span>
+                            )}
+                          </div>
+                          <div className="bento-service-sub">
+                            <span>{apt.service}</span> &bull;{' '}
+                            <span className="tabular-nums">{apt.phone}</span>
+                            {apt.bufferMin && (
+                              <span style={{ color: '#16a34a', marginLeft: '6px' }}>
+                                &bull; {apt.bufferMin}m buffer safe
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="bento-actions-col">
+                          <button
+                            type="button"
+                            className="event-action-btn-sm"
+                            onClick={() => onSelectAppointment && onSelectAppointment(apt)}
+                          >
+                            Dossier
+                          </button>
+                          {apt.status === 'held' ? (
+                            <button
+                              type="button"
+                              className="event-action-btn-secondary"
+                              onClick={() => onReleaseHold && onReleaseHold(apt.id)}
+                            >
+                              Release
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="event-action-btn-secondary"
+                              onClick={() => onAdmitAppointment && onAdmitAppointment(apt)}
+                            >
+                              Arrived
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
               )}
 
               {/* Emergency Walk-In Reserve Slot */}

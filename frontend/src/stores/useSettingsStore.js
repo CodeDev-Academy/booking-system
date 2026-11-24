@@ -119,6 +119,17 @@ export const useSettingsStore = create(
     (set, get) => ({
       clinicProfile: { ...DEFAULT_PROFILE },
       operatingHours: DEFAULT_HOURS.map((h) => ({ ...h })),
+      // One clinic-wide schedule. The backend stores a single open/close pair
+      // and a single lunch break; per-day rows keep their values in sync so
+      // the capacity maths and the hours table agree.
+      clinicHours: {
+        openTime: DEFAULT_HOURS[0].openTime,
+        closeTime: DEFAULT_HOURS[0].closeTime,
+      },
+      lunchBreak: {
+        start: DEFAULT_HOURS[0].lunchStart,
+        end: DEFAULT_HOURS[0].lunchEnd,
+      },
       schedulingRules: { ...DEFAULT_RULES },
       notificationRules: { ...DEFAULT_NOTIFICATIONS },
       // Wave 3 / Step 3.7-B: services come from the API — the seeded
@@ -147,11 +158,22 @@ export const useSettingsStore = create(
     });
   },
 
-  updateDayHours: (dayIndex, field, value) => {
+  // Open/close and the lunch break are clinic-wide in the database, so an
+  // edit on any row updates every row. Keeping them per-row was how the
+  // screen came to promise a schedule the booking engine never had.
+  updateClinicHours: (field, value) => {
     set((state) => ({
-      operatingHours: state.operatingHours.map((d) =>
-        d.dayIndex === dayIndex ? { ...d, [field]: value } : d
-      ),
+      clinicHours: { ...state.clinicHours, [field]: value },
+      operatingHours: state.operatingHours.map((d) => ({ ...d, [field]: value })),
+      isDirty: true,
+    }));
+  },
+
+  updateLunchBreak: (field, value) => {
+    const rowField = field === 'start' ? 'lunchStart' : 'lunchEnd';
+    set((state) => ({
+      lunchBreak: { ...state.lunchBreak, [field]: value },
+      operatingHours: state.operatingHours.map((d) => ({ ...d, [rowField]: value })),
       isDirty: true,
     }));
   },
@@ -210,6 +232,22 @@ export const useSettingsStore = create(
 
       if (settingsData) {
         const customCfg = settingsData.custom_config || {};
+        // Django returns clocks as "HH:MM:SS"; <input type="time"> wants
+        // "HH:MM". A missing value keeps the current one instead of blanking
+        // the control.
+        const clock = (value, fallback) => {
+          const text = typeof value === 'string' ? value.slice(0, 5) : '';
+          return /^\d{2}:\d{2}$/.test(text) ? text : fallback;
+        };
+        const openTime = clock(settingsData.open_time, get().clinicHours.openTime);
+        const closeTime = clock(settingsData.close_time, get().clinicHours.closeTime);
+        const lunchStart = clock(settingsData.lunch_break_start, get().lunchBreak.start);
+        const lunchEnd = clock(settingsData.lunch_break_end, get().lunchBreak.end);
+        // An empty list means "not configured"; do not close every day.
+        const workingDays =
+          Array.isArray(settingsData.working_days) && settingsData.working_days.length > 0
+            ? settingsData.working_days
+            : null;
         const phonesArr =
           Array.isArray(settingsData.phones) && settingsData.phones.length > 0
             ? settingsData.phones
@@ -224,6 +262,16 @@ export const useSettingsStore = create(
             : get().clinicProfile.emails;
 
         set((state) => ({
+          clinicHours: { openTime, closeTime },
+          lunchBreak: { start: lunchStart, end: lunchEnd },
+          operatingHours: state.operatingHours.map((d) => ({
+            ...d,
+            openTime,
+            closeTime,
+            lunchStart,
+            lunchEnd,
+            isOpen: workingDays ? workingDays.includes(d.dayIndex) : d.isOpen,
+          })),
           clinicProfile: {
             ...state.clinicProfile,
             clinicName: settingsData.clinic_name || state.clinicProfile.clinicName,
@@ -306,6 +354,9 @@ export const useSettingsStore = create(
           whatsapp_phone_id: config.clinic.whatsapp_phone_id,
           open_time: config.schedule_engine.open_time,
           close_time: config.schedule_engine.close_time,
+          lunch_break_start: config.schedule_engine.lunch_break_start,
+          lunch_break_end: config.schedule_engine.lunch_break_end,
+          working_days: config.schedule_engine.working_days,
           offer_expiry_minutes: config.schedule_engine.rules.offer_expiry_minutes,
           hold_expiry_minutes: config.schedule_engine.rules.hold_expiry_minutes,
           default_buffer_minutes: config.schedule_engine.rules.default_buffer_minutes,
@@ -346,6 +397,14 @@ export const useSettingsStore = create(
     set({
       clinicProfile: { ...DEFAULT_PROFILE },
       operatingHours: DEFAULT_HOURS.map((h) => ({ ...h })),
+      clinicHours: {
+        openTime: DEFAULT_HOURS[0].openTime,
+        closeTime: DEFAULT_HOURS[0].closeTime,
+      },
+      lunchBreak: {
+        start: DEFAULT_HOURS[0].lunchStart,
+        end: DEFAULT_HOURS[0].lunchEnd,
+      },
       schedulingRules: { ...DEFAULT_RULES },
       notificationRules: { ...DEFAULT_NOTIFICATIONS },
       // Wave 3 / Step 3.7-B: a config reset is a CLEAR, not a re-seed —
@@ -363,7 +422,7 @@ export const useSettingsStore = create(
   dismissToast: () => set({ toast: null }),
 
   generateClientConfigJson: () => {
-    const { clinicProfile, operatingHours, schedulingRules, notificationRules } = get();
+    const { clinicProfile, operatingHours, clinicHours, lunchBreak, schedulingRules, notificationRules } = get();
     const workingDays = operatingHours
       .filter((d) => d.isOpen)
       .map((d) => d.dayIndex);
@@ -385,8 +444,10 @@ export const useSettingsStore = create(
         currency_symbol: clinicProfile.currencySymbol,
       },
       schedule_engine: {
-        open_time: operatingHours[0]?.openTime || '08:00',
-        close_time: operatingHours[0]?.closeTime || '18:00',
+        open_time: clinicHours.openTime || '08:00',
+        close_time: clinicHours.closeTime || '18:00',
+        lunch_break_start: lunchBreak.start || '13:00',
+        lunch_break_end: lunchBreak.end || '14:00',
         working_days: workingDays,
         operating_hours_by_day: operatingHours.map((d) => ({
           day: d.day,
@@ -599,6 +660,8 @@ export const useSettingsStore = create(
       partialize: (state) => ({
         clinicProfile: state.clinicProfile,
         operatingHours: state.operatingHours,
+        clinicHours: state.clinicHours,
+        lunchBreak: state.lunchBreak,
         schedulingRules: state.schedulingRules,
         notificationRules: state.notificationRules,
         services: state.services,

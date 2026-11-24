@@ -80,6 +80,11 @@ export const useCalendarStore = create(
   // All blocks on schedule (appointments, holds, buffers, breaks, reserves)
   blocks: [],
 
+  // The clinic's real rest window and hours, read from the same schedule feed
+  // the grid already loads. null until the first sync.
+  clinicLunch: null,
+  clinicHours: null,
+
   // Walk-In Quick Booking Modal — no mock pre-selection; the UI populates
   // the first REAL doctor/service once the roster answers.
   walkInModal: {
@@ -1102,11 +1107,28 @@ export const useCalendarStore = create(
       const data = await apiService.fetchCalendarSchedule(startIso, '', endIso);
       const docSchedules = data?.doctors || [];
 
+      // The lunch break the booking engine enforces, taken from the very
+      // response the grid is already loading. The screen used to draw a
+      // hardcoded 12:00-13:00 while the engine protected 13:00-14:00.
+      const clinicLunch = data?.clinic
+        ? {
+            start: data.clinic.lunch_break_start,
+            end: data.clinic.lunch_break_end,
+          }
+        : null;
+      const clinicHours = data?.clinic
+        ? {
+            openTime: data.clinic.open_time,
+            closeTime: data.clinic.close_time,
+            workingDays: data.clinic.working_days || [],
+          }
+        : null;
+
       // Wave 3 / Step 3.2: an empty roster is an answer, not a reason to keep
       // the previous blocks on screen. A brand-new clinic shows an empty
       // calendar. (A FAILED fetch is different: the catch keeps the screen.)
       if (!Array.isArray(docSchedules) || docSchedules.length === 0) {
-        set({ blocks: [], leavePeriods: {} });
+        set({ blocks: [], leavePeriods: {}, clinicLunch, clinicHours });
         return;
       }
 
@@ -1185,7 +1207,7 @@ export const useCalendarStore = create(
       // Wave 3 / Step 3.4: the lane columns come from the backend roster —
       // the mock DOCTORS list is only the pre-sync initial state (and is
       // removed entirely in Step 3.7-B).
-      set({ leavePeriods, doctors: mappedDoctors });
+      set({ leavePeriods, doctors: mappedDoctors, clinicLunch, clinicHours });
 
       if (remoteBlocks.length > 0) {
         set((state) => {

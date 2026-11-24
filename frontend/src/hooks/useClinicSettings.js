@@ -23,6 +23,8 @@ export const useClinicSettings = () => {
   const {
     clinicProfile,
     operatingHours,
+    clinicHours,
+    lunchBreak,
     schedulingRules,
     notificationRules,
     services,
@@ -41,6 +43,8 @@ export const useClinicSettings = () => {
   }, [
     clinicProfile,
     operatingHours,
+    clinicHours,
+    lunchBreak,
     schedulingRules,
     notificationRules,
     store,
@@ -51,24 +55,15 @@ export const useClinicSettings = () => {
     const activeDays = operatingHours.filter((d) => d.isOpen);
     const activeDaysCount = activeDays.length;
 
-    let totalMinutes = 0;
-    activeDays.forEach((d) => {
-      const [oH, oM] = d.openTime.split(':').map(Number);
-      const [cH, cM] = d.closeTime.split(':').map(Number);
-      const openMins = oH * 60 + oM;
-      const closeMins = cH * 60 + cM;
-
-      let netDayMins = Math.max(0, closeMins - openMins);
-
-      if (d.lunchStart && d.lunchEnd) {
-        const [lsh, lsm] = d.lunchStart.split(':').map(Number);
-        const [leh, lem] = d.lunchEnd.split(':').map(Number);
-        const lunchMins = Math.max(0, leh * 60 + lem - (lsh * 60 + lsm));
-        netDayMins = Math.max(0, netDayMins - lunchMins);
-      }
-
-      totalMinutes += netDayMins;
-    });
+    const toMinutes = (hhmm) => {
+      const [h, m] = String(hhmm || '0:0').split(':').map(Number);
+      return (h || 0) * 60 + (m || 0);
+    };
+    // One clinic-wide schedule: open/close and the lunch break come from the
+    // single saved setting, not from each row's leftovers.
+    const dayMins = Math.max(0, toMinutes(clinicHours.closeTime) - toMinutes(clinicHours.openTime));
+    const lunchMins = Math.max(0, toMinutes(lunchBreak.end) - toMinutes(lunchBreak.start));
+    const totalMinutes = activeDaysCount * Math.max(0, dayMins - lunchMins);
 
     const weeklyHours = (totalMinutes / 60).toFixed(1);
 
@@ -79,11 +74,13 @@ export const useClinicSettings = () => {
         totalMinutes / (30 + schedulingRules.defaultBufferMinutes)
       ),
     };
-  }, [operatingHours, schedulingRules.defaultBufferMinutes]);
+  }, [operatingHours, clinicHours, lunchBreak, schedulingRules.defaultBufferMinutes]);
 
   return {
     clinicProfile,
     operatingHours,
+    clinicHours,
+    lunchBreak,
     schedulingRules,
     notificationRules,
     services,
@@ -93,7 +90,8 @@ export const useClinicSettings = () => {
     operationalStats,
     actions: {
       updateProfile: store.updateProfile,
-      updateDayHours: store.updateDayHours,
+      updateClinicHours: store.updateClinicHours,
+      updateLunchBreak: store.updateLunchBreak,
       toggleDayOpen: store.toggleDayOpen,
       updateRule: store.updateRule,
       toggleNotification: store.toggleNotification,

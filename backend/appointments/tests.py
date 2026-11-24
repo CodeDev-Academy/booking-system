@@ -1665,6 +1665,48 @@ class Phase3ClinicSettingsTests(APITestCase):
         self.assertEqual(len(doctor_schedule['appointments']), 1)
         self.assertEqual(doctor_schedule['appointments'][0]['patient_name'], 'Calendar Patient')
 
+    def test_schedule_payload_carries_clinic_lunch_break(self):
+        """
+        The schedule feed must publish the clinic's REAL lunch break. The grid
+        used to draw a hardcoded 12:00-13:00 break while the booking engine
+        protected 13:00-14:00, so staff booked over the real rest window.
+        """
+        self.clinic.lunch_break_start = datetime.time(12, 30)
+        self.clinic.lunch_break_end = datetime.time(13, 15)
+        self.clinic.save()
+
+        self.client.force_authenticate(user=self.receptionist)
+        today = timezone.localdate()
+        res = self.client.get('/api/v1/calendar/schedule/', {
+            'start_date': today.isoformat(),
+            'end_date': (today + datetime.timedelta(days=1)).isoformat(),
+        })
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('clinic', res.data)
+        self.assertEqual(res.data['clinic']['lunch_break_start'], '12:30')
+        self.assertEqual(res.data['clinic']['lunch_break_end'], '13:15')
+
+    def test_patch_settings_saves_lunch_break_and_working_days(self):
+        """
+        PATCH /clinic/settings/ accepts the exact fields the Settings screen
+        shows: lunch start/end and the working-day list. These were silently
+        dropped before because the UI nested them under `schedule_engine`.
+        """
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.patch('/api/v1/clinic/settings/', {
+            'lunch_break_start': '12:45',
+            'lunch_break_end': '13:30',
+            'working_days': [1, 2, 3, 4, 5],
+        }, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.clinic.refresh_from_db()
+        self.assertEqual(self.clinic.lunch_break_start.strftime('%H:%M'), '12:45')
+        self.assertEqual(self.clinic.lunch_break_end.strftime('%H:%M'), '13:30')
+        self.assertEqual(self.clinic.working_days, [1, 2, 3, 4, 5])
+
+
 
 class Phase3RealtimeWebhookTests(APITestCase):
     """
@@ -5509,7 +5551,10 @@ class AcquireSlotClinicRulesTests(APITestCase):
         raise AssertionError('no weekday found')
 
     def _last_weekday(self):
-        day = timezone.localdate()
+        # Start YESTERDAY: "today at 10:00" is still in the FUTURE before 10:00
+        # local time, so a morning test run saw a legal slot and failed. This
+        # helper must always return a day that has already ended.
+        day = timezone.localdate() - datetime.timedelta(days=1)
         for _ in range(21):
             if day.isoweekday() <= 5:
                 return day

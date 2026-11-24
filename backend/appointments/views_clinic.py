@@ -700,6 +700,7 @@ class CalendarScheduleView(APIView):
         start_date = serializer.validated_data['resolved_start']
         end_date = serializer.validated_data['resolved_end']
         doctor_id = serializer.validated_data.get('doctor_id')
+        clinic = ClinicSetting.get_settings()
 
         doctors_qs = Doctor.objects.filter(is_active=True).prefetch_related('leaves')
         if doctor_id:
@@ -761,6 +762,17 @@ class CalendarScheduleView(APIView):
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
             "appointments_count": appts_qs.count(),
+            # The grid must draw the clinic's REAL rest window, not a guess.
+            # The booking engine already refuses slots inside this break
+            # (services/availability.py), so the screen has to show the same
+            # hours or staff will book over it.
+            "clinic": {
+                "lunch_break_start": clinic.lunch_break_start.strftime('%H:%M'),
+                "lunch_break_end": clinic.lunch_break_end.strftime('%H:%M'),
+                "open_time": clinic.open_time.strftime('%H:%M'),
+                "close_time": clinic.close_time.strftime('%H:%M'),
+                "working_days": clinic.working_days,
+            },
             "doctors": list(schedule_by_doctor.values()),
         }, status=status.HTTP_200_OK)
 
