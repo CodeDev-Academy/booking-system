@@ -556,6 +556,27 @@ export const apiService = {
     });
   },
 
+  // T-786: emergency walk-in reserve slots are real AvailabilityRule rows.
+  async fetchReserveSlots(params = {}) {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '')
+    ).toString();
+    return request(`/clinic/reserve-slots/${qs ? `?${qs}` : ''}`);
+  },
+
+  async createReserveSlot(payload) {
+    return request('/clinic/reserve-slots/', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async deleteReserveSlot(id) {
+    return request(`/clinic/reserve-slots/${id}/`, {
+      method: 'DELETE',
+    });
+  },
+
   async fetchServices(params = {}) {
     const query = new URLSearchParams(params).toString();
     return request(`/clinic/services/${query ? `?${query}` : ''}`);

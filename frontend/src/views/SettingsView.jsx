@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Settings,
   Sliders,
@@ -11,9 +11,11 @@ import {
 } from 'lucide-react';
 import { useClinicSettings } from '../hooks/useClinicSettings';
 import { useAppModeStore } from '../stores/appModeStore';
+import { useCalendarStore } from '../stores/useCalendarStore';
 import { soundService } from '../services/soundService';
 import { ClinicProfileCard } from '../components/settings/ClinicProfileCard';
 import { OperatingHoursBento } from '../components/settings/OperatingHoursBento';
+import { ReserveSlotsBento } from '../components/settings/ReserveSlotsBento';
 import { SchedulingRulesBento } from '../components/settings/SchedulingRulesBento';
 import { ServicesManagementBento } from '../components/settings/ServicesManagementBento';
 import { ConfigExporterBento } from '../components/settings/ConfigExporterBento';
@@ -45,10 +47,23 @@ export const SettingsView = () => {
     services,
     isDirty,
     toast,
+    reserveSlots,
+    reserveBusy,
     configJsonString,
     operationalStats,
     actions,
   } = useClinicSettings();
+
+  // The reserve form's doctor options are the real roster. The calendar store
+  // already knows how to load it; reuse that instead of a second source.
+  const doctors = useCalendarStore((s) => s.doctors);
+  const syncCalendar = useCalendarStore((s) => s.syncFromBackend);
+  const isDemoMode = useAppModeStore((s) => s.isDemoMode);
+  useEffect(() => {
+    if (!isDemoMode && doctors.length === 0 && syncCalendar) {
+      syncCalendar();
+    }
+  }, [isDemoMode, doctors.length, syncCalendar]);
 
   return (
     <div className="view-container">
@@ -155,6 +170,14 @@ export const SettingsView = () => {
             onUpdateClinicHours={actions.updateClinicHours}
             onUpdateLunchBreak={actions.updateLunchBreak}
             operationalStats={operationalStats}
+          />
+
+          <ReserveSlotsBento
+            reserveSlots={reserveSlots}
+            busy={reserveBusy}
+            doctors={doctors}
+            onAdd={actions.addReserveSlot}
+            onRemove={actions.removeReserveSlot}
           />
 
           <div

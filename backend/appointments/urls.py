@@ -55,6 +55,8 @@ from .views_clinic import (
     DoctorLeaveListCreateView,
     DoctorLeaveDetailView,
     CalendarScheduleView,
+    ReserveSlotListCreateView,
+    ReserveSlotDetailView,
     ClinicServiceListCreateView,
     ClinicServiceDetailView,
     DoctorWorkloadView,
@@ -196,6 +198,9 @@ urlpatterns = [
     path('doctors/workload/', DoctorWorkloadView.as_view(), name='doctors-workload'),
     path('clinic/doctors/workload/', DoctorWorkloadView.as_view(), name='clinic-doctors-workload'),
     path('calendar/schedule/', CalendarScheduleView.as_view(), name='calendar-schedule'),
+    # T-786: emergency reserve slots are real rows the clinic can manage.
+    path('clinic/reserve-slots/', ReserveSlotListCreateView.as_view(), name='clinic-reserve-slots'),
+    path('clinic/reserve-slots/<uuid:id>/', ReserveSlotDetailView.as_view(), name='clinic-reserve-slot-detail'),
     path('services/', ClinicServiceListCreateView.as_view(), name='services-list-create'),
     path('services/<str:id>/', ClinicServiceDetailView.as_view(), name='services-detail'),
     path('settings/', ClinicSettingsView.as_view(), name='settings'),

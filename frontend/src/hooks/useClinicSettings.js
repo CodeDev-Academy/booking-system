@@ -12,7 +12,10 @@ export const useClinicSettings = () => {
     if (!isDemoMode && store.syncFromBackend) {
       store.syncFromBackend();
     }
-  }, [isDemoMode, store.syncFromBackend]);
+    if (!isDemoMode && store.loadReserveSlots) {
+      store.loadReserveSlots();
+    }
+  }, [isDemoMode, store.syncFromBackend, store.loadReserveSlots]);
 
   useEffect(() => {
     if (!store.toast) return undefined;
@@ -30,6 +33,8 @@ export const useClinicSettings = () => {
     services,
     isDirty,
     toast,
+    reserveSlots,
+    reserveBusy,
   } = store;
 
   // Computed: Real-time formatted client-config.json string
@@ -86,6 +91,8 @@ export const useClinicSettings = () => {
     services,
     isDirty,
     toast,
+    reserveSlots,
+    reserveBusy,
     configJsonString,
     operationalStats,
     actions: {
@@ -103,6 +110,8 @@ export const useClinicSettings = () => {
       exportClientConfigJson: store.exportClientConfigJson,
       copyClientConfigJson: store.copyClientConfigJson,
       dismissToast: store.dismissToast,
+      addReserveSlot: store.addReserveSlot,
+      removeReserveSlot: store.removeReserveSlot,
     },
   };
 };

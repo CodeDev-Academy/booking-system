@@ -85,6 +85,10 @@ export const useCalendarStore = create(
   clinicLunch: null,
   clinicHours: null,
 
+  // T-786: the real emergency reserve rows from the schedule feed. The grid
+  // draws these instead of a hardcoded "1 Emergency Reserve" card.
+  reserveSlots: [],
+
   // Walk-In Quick Booking Modal — no mock pre-selection; the UI populates
   // the first REAL doctor/service once the roster answers.
   walkInModal: {
@@ -1123,12 +1127,14 @@ export const useCalendarStore = create(
             workingDays: data.clinic.working_days || [],
           }
         : null;
+      // T-786: the real emergency reserve rows travel in the same response.
+      const reserveSlots = Array.isArray(data?.reserve_slots) ? data.reserve_slots : [];
 
       // Wave 3 / Step 3.2: an empty roster is an answer, not a reason to keep
       // the previous blocks on screen. A brand-new clinic shows an empty
       // calendar. (A FAILED fetch is different: the catch keeps the screen.)
       if (!Array.isArray(docSchedules) || docSchedules.length === 0) {
-        set({ blocks: [], leavePeriods: {}, clinicLunch, clinicHours });
+        set({ blocks: [], leavePeriods: {}, clinicLunch, clinicHours, reserveSlots });
         return;
       }
 
@@ -1207,7 +1213,7 @@ export const useCalendarStore = create(
       // Wave 3 / Step 3.4: the lane columns come from the backend roster —
       // the mock DOCTORS list is only the pre-sync initial state (and is
       // removed entirely in Step 3.7-B).
-      set({ leavePeriods, doctors: mappedDoctors, clinicLunch, clinicHours });
+      set({ leavePeriods, doctors: mappedDoctors, clinicLunch, clinicHours, reserveSlots });
 
       if (remoteBlocks.length > 0) {
         set((state) => {

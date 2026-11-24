@@ -9,7 +9,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import ClinicSetting, Doctor, DoctorLeave, StaffUser, Appointment, Service, AuditLog
+from .models import ClinicSetting, Doctor, DoctorLeave, StaffUser, Appointment, Service, AuditLog, AvailabilityRule
 from .permissions import IsStaffAuthenticated, IsClinicAdmin
 from .serializers_clinic import (
     ClinicSettingSerializer,
@@ -758,6 +758,16 @@ class CalendarScheduleView(APIView):
                     'hold_expires_at': appt.hold_expires_at.isoformat() if appt.hold_expires_at else None,
                 })
 
+        # T-786: the real emergency reserve rows, so the grid draws what the
+        # clinic configured instead of a hardcoded "1 Emergency Reserve".
+        reserve_qs = AvailabilityRule.objects.filter(
+            rule_type='emergency_reserve',
+            start_datetime__date__lte=end_date,
+            end_datetime__date__gte=start_date,
+        ).select_related('doctor').order_by('start_datetime')
+        if doctor_id:
+            reserve_qs = reserve_qs.filter(Q(doctor_id=doctor_id) | Q(doctor__isnull=True))
+
         return Response({
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
@@ -773,8 +783,160 @@ class CalendarScheduleView(APIView):
                 "close_time": clinic.close_time.strftime('%H:%M'),
                 "working_days": clinic.working_days,
             },
+            "reserve_slots": [_reserve_slot_dict(r) for r in reserve_qs],
             "doctors": list(schedule_by_doctor.values()),
         }, status=status.HTTP_200_OK)
+
+
+def _reserve_slot_dict(rule):
+    """One emergency reserve row, in clinic time, for the API and the grid."""
+    local_start = timezone.localtime(rule.start_datetime)
+    local_end = timezone.localtime(rule.end_datetime)
+    return {
+        'id': str(rule.id),
+        'doctor_id': str(rule.doctor_id) if rule.doctor_id else None,
+        'doctor_name': rule.doctor.name if rule.doctor_id else None,
+        'date': local_start.date().isoformat(),
+        'start_time': local_start.strftime('%H:%M'),
+        'end_time': local_end.strftime('%H:%M'),
+        'reason': rule.reason,
+        'start_datetime': rule.start_datetime.isoformat(),
+        'end_datetime': rule.end_datetime.isoformat(),
+    }
+
+
+def _parse_clock(value):
+    """'13:30' -> datetime.time, or None. Rejects anything else."""
+    try:
+        return datetime.time.fromisoformat(str(value))
+    except (ValueError, TypeError):
+        return None
+
+
+class ReserveSlotListCreateView(APIView):
+    """
+    GET /api/v1/clinic/reserve-slots/
+        Lists the clinic's emergency walk-in reserve slots (staff).
+    POST /api/v1/clinic/reserve-slots/
+        Adds a reserve slot (admin). Accepts date + start_time + end_time and an
+        optional doctor_id; the clinic-aware datetimes are built server-side.
+    """
+    def get_permissions(self):
+        if self.request.method == 'POST':
+            return [IsClinicAdmin()]
+        return [IsStaffAuthenticated()]
+
+    def get(self, request):
+        qs = AvailabilityRule.objects.filter(
+            rule_type='emergency_reserve'
+        ).select_related('doctor').order_by('start_datetime')
+
+        start = request.query_params.get('start_date')
+        end = request.query_params.get('end_date')
+        if start:
+            qs = qs.filter(end_datetime__date__gte=start)
+        if end:
+            qs = qs.filter(start_datetime__date__lte=end)
+        doctor_id = request.query_params.get('doctor_id')
+        if doctor_id:
+            qs = qs.filter(Q(doctor_id=doctor_id) | Q(doctor__isnull=True))
+
+        rows = [_reserve_slot_dict(r) for r in qs]
+        return Response({'count': len(rows), 'reserve_slots': rows}, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        data = request.data
+        clinic = ClinicSetting.get_settings()
+
+        try:
+            day = datetime.date.fromisoformat(str(data.get('date', '')))
+        except (ValueError, TypeError):
+            return Response({'error': 'INVALID_DATE', 'detail': 'date must be YYYY-MM-DD.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        start_clock = _parse_clock(data.get('start_time'))
+        end_clock = _parse_clock(data.get('end_time'))
+        if start_clock is None or end_clock is None:
+            return Response({'error': 'INVALID_TIME', 'detail': 'start_time and end_time must be HH:MM.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if end_clock <= start_clock:
+            return Response({'error': 'INVALID_WINDOW', 'detail': 'end_time must be after start_time.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if start_clock < clinic.open_time or end_clock > clinic.close_time:
+            return Response({'error': 'OUTSIDE_CLINIC_HOURS',
+                             'detail': 'A reserve must sit inside the clinic opening hours.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        doctor = None
+        doctor_id = data.get('doctor_id')
+        if doctor_id:
+            doctor = Doctor.objects.filter(id=doctor_id, is_active=True).first()
+            if not doctor:
+                return Response({'error': 'UNKNOWN_DOCTOR', 'detail': 'No active doctor with that id.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+
+        start_dt = timezone.make_aware(datetime.datetime.combine(day, start_clock))
+        end_dt = timezone.make_aware(datetime.datetime.combine(day, end_clock))
+
+        # A reserve protects a walk-in window; it must not sit on top of a
+        # patient who is already booked.
+        appt_filter = Q(
+            start_datetime__lt=end_dt, end_datetime__gt=start_dt,
+            status__in=['held', 'confirmed', 'arrived', 'in_consultation'],
+        )
+        if doctor:
+            appt_filter &= Q(doctor=doctor)
+        if Appointment.objects.filter(appt_filter).exists():
+            return Response({'error': 'RESERVE_OVERLAPS_BOOKING',
+                             'detail': 'That window already holds a booked patient.'},
+                            status=status.HTTP_409_CONFLICT)
+
+        if AvailabilityRule.objects.filter(
+            rule_type='emergency_reserve', doctor=doctor,
+            start_datetime=start_dt, end_datetime=end_dt,
+        ).exists():
+            return Response({'error': 'DUPLICATE_RESERVE',
+                             'detail': 'That reserve slot already exists.'},
+                            status=status.HTTP_409_CONFLICT)
+
+        rule = AvailabilityRule.objects.create(
+            doctor=doctor,
+            rule_type='emergency_reserve',
+            start_datetime=start_dt,
+            end_datetime=end_dt,
+            reason=str(data.get('reason', '') or '')[:255],
+        )
+        AuditLog.objects.create(
+            entity_name='AvailabilityRule', entity_id=rule.id,
+            action='RESERVE_SLOT_CREATED', performed_by=request.user.email,
+            changes={'date': day.isoformat(), 'start_time': start_clock.strftime('%H:%M'),
+                     'end_time': end_clock.strftime('%H:%M'),
+                     'doctor_id': str(doctor.id) if doctor else None},
+            ip_address=request.META.get('REMOTE_ADDR'),
+        )
+        return Response(_reserve_slot_dict(rule), status=status.HTTP_201_CREATED)
+
+
+class ReserveSlotDetailView(APIView):
+    """
+    DELETE /api/v1/clinic/reserve-slots/{id}/
+        Removes one emergency reserve slot (admin).
+    """
+    permission_classes = [IsClinicAdmin]
+
+    def delete(self, request, id):
+        rule = AvailabilityRule.objects.filter(id=id, rule_type='emergency_reserve').first()
+        if not rule:
+            return Response({'error': 'NOT_FOUND', 'detail': 'No reserve slot with that id.'},
+                            status=status.HTTP_404_NOT_FOUND)
+        payload = _reserve_slot_dict(rule)
+        rule.delete()
+        AuditLog.objects.create(
+            entity_name='AvailabilityRule', entity_id=id,
+            action='RESERVE_SLOT_DELETED', performed_by=request.user.email,
+            changes=payload, ip_address=request.META.get('REMOTE_ADDR'),
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ClinicServiceListCreateView(APIView):

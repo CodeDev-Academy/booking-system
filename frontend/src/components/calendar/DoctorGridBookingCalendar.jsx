@@ -379,6 +379,8 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
   const hasClinicLunch =
     Boolean(clinicLunch?.start && clinicLunch?.end) &&
     minutesFromHHMM(clinicLunch.end) > minutesFromHHMM(clinicLunch.start);
+  // T-786: the real emergency reserve rows from the same schedule sync.
+  const reserveSlots = useCalendarStore((state) => state.reserveSlots) || [];
 
   // Helper to format block time e.g. "09:30 AM" — in CLINIC time. The old
   // device-locale formatting renamed 09:00 to 04:00 the moment the site was
@@ -402,9 +404,20 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
       .sort((a, b) => a.start - b.start);
   }, [selectedDayKey, storeBlocks, currentDoctor]);
 
-  // One sorted timeline for the day: real appointments plus the real lunch
-  // break at its saved clock position. The lunch card used to be glued after
-  // the last appointment, so a 13:00 break looked like the day's final event.
+  // T-786: the real reserve rows for the selected day and doctor. A clinic-wide
+  // reserve (no doctor) applies to every lane; a doctor-specific one only to
+  // that doctor. Nothing here is invented — an empty list means no reserve.
+  const dayReserves = useMemo(() => {
+    return reserveSlots.filter(
+      (r) =>
+        r.date === selectedDayKey &&
+        (!r.doctor_id || r.doctor_id === currentDoctor?.id)
+    );
+  }, [reserveSlots, selectedDayKey, currentDoctor]);
+
+  // One sorted timeline for the day: real appointments, the real lunch break
+  // and the real reserve slots, each at its saved clock position. The lunch
+  // and reserve cards used to be glued after the last appointment.
   const dayTimeline = useMemo(() => {
     const items = activeDayAppointments.map((apt) => {
       const parts = clinicParts(apt.start);
@@ -419,8 +432,12 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
       const lunchMinutes = minutesFromHHMM(clinicLunch.start);
       if (lunchMinutes !== null) items.push({ kind: 'lunch', minutes: lunchMinutes });
     }
+    dayReserves.forEach((r) => {
+      const minutes = minutesFromHHMM(r.start_time);
+      if (minutes !== null) items.push({ kind: 'reserve', minutes, reserve: r });
+    });
     return items.sort((a, b) => a.minutes - b.minutes);
-  }, [activeDayAppointments, clinicLunch, hasClinicLunch, selectedDayName]);
+  }, [activeDayAppointments, clinicLunch, hasClinicLunch, selectedDayName, dayReserves]);
 
   // The clinic week that contains the selected day, Monday first. Every date
   // comes from the clinic clock; every visit comes from the store. The old
@@ -526,8 +543,17 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
         return { isBooked: true, label: 'Lunch', type: 'lunch' };
       }
     }
-    if (slotStr === '01:30 PM') {
-      return { isBooked: false, isReserve: true, label: 'Reserve' };
+    // T-786: a reserve window comes from the real rows, not a fixed 01:30 PM.
+    const slotMin = minutesFromLabel(slotStr);
+    if (slotMin !== null) {
+      const inReserve = dayReserves.some((r) => {
+        const rs = minutesFromHHMM(r.start_time);
+        const re = minutesFromHHMM(r.end_time);
+        return rs !== null && re !== null && slotMin >= rs && slotMin < re;
+      });
+      if (inReserve) {
+        return { isBooked: false, isReserve: true, label: 'Reserve' };
+      }
     }
     return { isBooked: false, type: 'free' };
   };
@@ -937,7 +963,7 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
             <div className="timetable-metric-item">
               <span className="metric-dot reserve" />
               <span>
-                <strong style={{ color: '#0f172a' }}>1</strong> Emergency Reserve
+                <strong style={{ color: '#0f172a' }}>{dayReserves.length}</strong> Emergency Reserve
               </span>
             </div>
             <span>&bull;</span>
@@ -958,7 +984,7 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
               {/* Sunday is the clinic's rest day, but a real Sunday booking
                   (walk-in, emergency) must still show. The closed message is
                   only the honest answer when nothing is booked. */}
-              {selectedDayName === 'Sunday' && activeDayAppointments.length === 0 ? (
+              {selectedDayName === 'Sunday' && dayTimeline.length === 0 ? (
                 <div style={{ padding: '36px', textAlign: 'center', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
                   <CalendarIcon size={24} color="#64748b" style={{ margin: '0 auto 8px auto', display: 'block' }} />
                   <div style={{ fontSize: '13px', fontWeight: 600, color: '#0f172a' }}>Clinic Closed on Sundays</div>
@@ -1007,6 +1033,49 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
                           </div>
                           <div className="bento-actions-col">
                             <span style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>Protected</span>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    if (item.kind === 'reserve') {
+                      const r = item.reserve;
+                      return (
+                        <div key={`reserve-${r.id}`} className="bento-agenda-card event-reserve">
+                          <div className="bento-time-col">
+                            <span className="bento-time-primary">{labelFromHHMM(r.start_time)}</span>
+                            <span className="bento-duration-sub">until {labelFromHHMM(r.end_time)}</span>
+                          </div>
+                          <div className="bento-details-col">
+                            <div className="bento-patient-name-row">
+                              <Shield size={14} color="#8b5cf6" />
+                              <span className="bento-patient-name">Walk-In Emergency Reserve</span>
+                              <span
+                                style={{
+                                  fontSize: '9px',
+                                  fontWeight: 700,
+                                  color: '#7c3aed',
+                                  background: '#ede9fe',
+                                  padding: '1px 6px',
+                                  borderRadius: '10px',
+                                }}
+                              >
+                                RESERVE
+                              </span>
+                            </div>
+                            <div className="bento-service-sub">
+                              {r.reason || 'Protected triage slot for unscheduled urgent walk-in arrivals'}
+                              {r.doctor_name ? ` • ${r.doctor_name}` : ' • Clinic-wide'}
+                            </div>
+                          </div>
+                          <div className="bento-actions-col">
+                            <button
+                              type="button"
+                              className="event-action-btn-sm"
+                              onClick={() => onOpenWalkInBooking && onOpenWalkInBooking(currentDoctor?.id, selectedDate, labelFromHHMM(r.start_time))}
+                            >
+                              Assign
+                            </button>
                           </div>
                         </div>
                       );
@@ -1091,46 +1160,6 @@ const movingStrandedId = useCalendarStore((state) => state.movingStrandedId);
                     );
                   })}
                 </>
-              )}
-
-              {/* Emergency Walk-In Reserve Slot */}
-              {selectedDayName !== 'Sunday' && (
-                <div className="bento-agenda-card event-reserve">
-                  <div className="bento-time-col">
-                    <span className="bento-time-primary">01:30 PM</span>
-                    <span className="bento-duration-sub">until 02:00 PM</span>
-                  </div>
-                  <div className="bento-details-col">
-                    <div className="bento-patient-name-row">
-                      <Shield size={14} color="#8b5cf6" />
-                      <span className="bento-patient-name">Walk-In Emergency Reserve</span>
-                      <span
-                        style={{
-                          fontSize: '9px',
-                          fontWeight: 700,
-                          color: '#7c3aed',
-                          background: '#ede9fe',
-                          padding: '1px 6px',
-                          borderRadius: '10px',
-                        }}
-                      >
-                        RESERVE
-                      </span>
-                    </div>
-                    <div className="bento-service-sub">
-                      Protected triage slot for unscheduled urgent walk-in arrivals
-                    </div>
-                  </div>
-                  <div className="bento-actions-col">
-                    <button
-                      type="button"
-                      className="event-action-btn-sm"
-                      onClick={() => onOpenWalkInBooking && onOpenWalkInBooking(currentDoctor?.id, selectedDate, '01:30 PM')}
-                    >
-                      Assign
-                    </button>
-                  </div>
-                </div>
               )}
             </div>
           ) : (

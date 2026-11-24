@@ -1707,6 +1707,190 @@ class Phase3ClinicSettingsTests(APITestCase):
         self.assertEqual(self.clinic.working_days, [1, 2, 3, 4, 5])
 
 
+class ReserveSlotsTests(APITestCase):
+    """
+    T-786: emergency reserve slots are real rows, not a hardcoded card.
+
+    The grid drew "1 Emergency Reserve" at 01:30 PM whatever the clinic had
+    configured. The rows live in AvailabilityRule (rule_type emergency_reserve)
+    and the booking engine already obeys them, but there was no API to list,
+    add or remove them. These tests pin that API and the schedule feed leg.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.clinic = ClinicSetting.get_settings()
+        self.clinic.webhook_secret = 'clinic_dev_secret_2026'
+        self.clinic.open_time = datetime.time(8, 0)
+        self.clinic.close_time = datetime.time(18, 0)
+        self.clinic.save()
+
+        self.admin = StaffUser.objects.create(
+            full_name='Dr. Admin Director', email='director@clinic.com',
+            role='clinic_admin', is_active=True,
+        )
+        self.admin.set_password('AdminPass123!')
+        self.admin.save()
+
+        self.receptionist = StaffUser.objects.create(
+            full_name='Fatima Frontdesk', email='fatima@clinic.com',
+            role='receptionist', is_active=True,
+        )
+        self.receptionist.set_password('FrontdeskPass123!')
+        self.receptionist.save()
+
+        self.doctor = Doctor.objects.create(
+            name='Dr. Bello Ibrahim', specialty='Dental Surgery',
+            working_days=[1, 2, 3, 4, 5, 6],
+            shift_start=datetime.time(8, 0), shift_end=datetime.time(18, 0),
+            is_active=True,
+        )
+        self.service = Service.objects.create(
+            name='General Consultation', category='General',
+            duration_minutes=30, buffer_minutes=10, price=12000.00,
+        )
+        # A future weekday so the window is legal regardless of run time.
+        self.day = timezone.localdate() + datetime.timedelta(days=1)
+        while self.day.isoweekday() > 5:
+            self.day += datetime.timedelta(days=1)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _aware(self, hour, minute=0):
+        return timezone.make_aware(datetime.datetime.combine(self.day, datetime.time(hour, minute)))
+
+    def _post(self, payload, user=None):
+        self.client.force_authenticate(user=user or self.admin)
+        return self.client.post('/api/v1/clinic/reserve-slots/', payload, format='json')
+
+    def test_list_starts_empty(self):
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.get('/api/v1/clinic/reserve-slots/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 0)
+        self.assertEqual(res.data['reserve_slots'], [])
+
+    def test_create_clinic_wide_reserve(self):
+        res = self._post({
+            'date': self.day.isoformat(), 'start_time': '13:30', 'end_time': '14:00',
+            'reason': 'Walk-in triage',
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        row = AvailabilityRule.objects.get(id=res.data['id'])
+        self.assertEqual(row.rule_type, 'emergency_reserve')
+        self.assertIsNone(row.doctor)
+        self.assertEqual(row.start_datetime, self._aware(13, 30))
+        self.assertEqual(row.end_datetime, self._aware(14, 0))
+        self.assertEqual(res.data['start_time'], '13:30')
+        self.assertEqual(res.data['date'], self.day.isoformat())
+
+    def test_create_reserve_for_one_doctor(self):
+        res = self._post({
+            'date': self.day.isoformat(), 'start_time': '13:30', 'end_time': '14:00',
+            'doctor_id': str(self.doctor.id),
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        row = AvailabilityRule.objects.get(id=res.data['id'])
+        self.assertEqual(row.doctor_id, self.doctor.id)
+        self.assertEqual(res.data['doctor_name'], self.doctor.name)
+
+    def test_receptionist_can_read_but_not_write(self):
+        self.client.force_authenticate(user=self.receptionist)
+        read = self.client.get('/api/v1/clinic/reserve-slots/')
+        self.assertEqual(read.status_code, status.HTTP_200_OK)
+        write = self.client.post('/api/v1/clinic/reserve-slots/', {
+            'date': self.day.isoformat(), 'start_time': '13:30', 'end_time': '14:00',
+        }, format='json')
+        self.assertEqual(write.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_end_must_be_after_start(self):
+        res = self._post({
+            'date': self.day.isoformat(), 'start_time': '14:00', 'end_time': '13:30',
+        })
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_missing_fields_are_refused(self):
+        res = self._post({'date': self.day.isoformat()})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_unknown_doctor_is_refused(self):
+        res = self._post({
+            'date': self.day.isoformat(), 'start_time': '13:30', 'end_time': '14:00',
+            'doctor_id': '00000000-0000-0000-0000-000000000000',
+        })
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_outside_clinic_hours_is_refused(self):
+        res = self._post({
+            'date': self.day.isoformat(), 'start_time': '19:00', 'end_time': '19:30',
+        })
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_overlap_with_a_booking_is_refused(self):
+        Appointment.objects.create(
+            patient_name='Booked Patient', patient_phone='+2348030001234',
+            doctor=self.doctor, service=self.service,
+            start_datetime=self._aware(13, 30), end_datetime=self._aware(14, 0),
+            status='confirmed',
+        )
+        res = self._post({
+            'date': self.day.isoformat(), 'start_time': '13:30', 'end_time': '14:00',
+            'doctor_id': str(self.doctor.id),
+        })
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data['error'], 'RESERVE_OVERLAPS_BOOKING')
+
+    def test_duplicate_reserve_is_refused(self):
+        payload = {
+            'date': self.day.isoformat(), 'start_time': '13:30', 'end_time': '14:00',
+            'doctor_id': str(self.doctor.id),
+        }
+        first = self._post(payload)
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        second = self._post(payload)
+        self.assertEqual(second.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(AvailabilityRule.objects.filter(rule_type='emergency_reserve').count(), 1)
+
+    def test_delete_removes_the_row(self):
+        created = self._post({
+            'date': self.day.isoformat(), 'start_time': '13:30', 'end_time': '14:00',
+        })
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.delete(f"/api/v1/clinic/reserve-slots/{created.data['id']}/")
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(AvailabilityRule.objects.filter(id=created.data['id']).exists())
+
+    def test_delete_unknown_is_404_and_receptionist_403(self):
+        created = self._post({
+            'date': self.day.isoformat(), 'start_time': '13:30', 'end_time': '14:00',
+        })
+        self.client.force_authenticate(user=self.receptionist)
+        forbidden = self.client.delete(f"/api/v1/clinic/reserve-slots/{created.data['id']}/")
+        self.assertEqual(forbidden.status_code, status.HTTP_403_FORBIDDEN)
+        self.client.force_authenticate(user=self.admin)
+        missing = self.client.delete('/api/v1/clinic/reserve-slots/00000000-0000-0000-0000-000000000000/')
+        self.assertEqual(missing.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_schedule_feed_publishes_the_reserve(self):
+        self._post({
+            'date': self.day.isoformat(), 'start_time': '13:30', 'end_time': '14:00',
+            'doctor_id': str(self.doctor.id), 'reason': 'Walk-in triage',
+        })
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.get('/api/v1/calendar/schedule/', {
+            'start_date': self.day.isoformat(),
+            'end_date': (self.day + datetime.timedelta(days=1)).isoformat(),
+        })
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('reserve_slots', res.data)
+        self.assertEqual(len(res.data['reserve_slots']), 1)
+        slot = res.data['reserve_slots'][0]
+        self.assertEqual(slot['doctor_id'], str(self.doctor.id))
+        self.assertEqual(slot['start_time'], '13:30')
+        self.assertEqual(slot['end_time'], '14:00')
+
+
 
 class Phase3RealtimeWebhookTests(APITestCase):
     """

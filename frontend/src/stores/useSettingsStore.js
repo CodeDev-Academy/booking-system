@@ -139,6 +139,9 @@ export const useSettingsStore = create(
       customCategories: [],
       staffRoles: [...DEFAULT_STAFF_ROLES],
       staffSpecialties: [...DEFAULT_STAFF_SPECIALTIES],
+      // T-786: emergency reserve slots come from the API, never local seeds.
+      reserveSlots: [],
+      reserveBusy: false,
       isDirty: false,
       toast: null,
 
@@ -420,6 +423,51 @@ export const useSettingsStore = create(
   },
 
   dismissToast: () => set({ toast: null }),
+
+  // T-786: emergency reserve slots — real AvailabilityRule rows via the API.
+  loadReserveSlots: async () => {
+    if (useAppModeStore.getState().isDemoMode) return;
+    try {
+      const data = await apiService.fetchReserveSlots();
+      set({ reserveSlots: Array.isArray(data?.reserve_slots) ? data.reserve_slots : [] });
+    } catch (err) {
+      console.warn('Reserve slots sync failed:', err);
+    }
+  },
+
+  addReserveSlot: async (payload) => {
+    set({ reserveBusy: true });
+    try {
+      await apiService.createReserveSlot(payload);
+      await get().loadReserveSlots();
+      set({
+        reserveBusy: false,
+        toast: { tone: 'success', text: 'Emergency reserve slot protected.' },
+      });
+      return { success: true };
+    } catch (err) {
+      const message = err?.details?.detail || err?.message || 'Could not add the reserve slot.';
+      set({ reserveBusy: false, toast: { tone: 'error', text: message } });
+      return { success: false, message };
+    }
+  },
+
+  removeReserveSlot: async (id) => {
+    set({ reserveBusy: true });
+    try {
+      await apiService.deleteReserveSlot(id);
+      await get().loadReserveSlots();
+      set({
+        reserveBusy: false,
+        toast: { tone: 'neutral', text: 'Reserve slot removed.' },
+      });
+      return { success: true };
+    } catch (err) {
+      const message = err?.details?.detail || err?.message || 'Could not remove the reserve slot.';
+      set({ reserveBusy: false, toast: { tone: 'error', text: message } });
+      return { success: false, message };
+    }
+  },
 
   generateClientConfigJson: () => {
     const { clinicProfile, operatingHours, clinicHours, lunchBreak, schedulingRules, notificationRules } = get();

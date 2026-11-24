@@ -154,7 +154,7 @@ check('D10 the 7-Day Overview really covers seven days (Monday to Sunday)',
   'six cards under a "7-Day Overview" label hid Sunday\'s real visits');
 
 check('D11 a real Sunday booking is shown, not hidden behind "Clinic Closed"',
-  /selectedDayName === 'Sunday' && activeDayAppointments\.length === 0/.test(gridCalendar),
+  /selectedDayName === 'Sunday' && dayTimeline\.length === 0/.test(gridCalendar),
   'the closed message may only appear when nothing is booked');
 
 console.log('');
