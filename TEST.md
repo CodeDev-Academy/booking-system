@@ -827,6 +827,33 @@ execution log). Production staging (Railway/Vercel) is not deployed yet.
   "12:15 PM until 12:45 PM" between the 09:30 AM and 02:00 PM visits; a zero-length break drew no
   card; Sunday drew none; Settings reloaded with 12:15–12:45, 9.5 hrs net shift and 57.0h/week;
   zero console errors, no horizontal overflow.
+- [x] `T-786`: **Emergency reserve slots are real rows** (API + Settings list + grid cards): the
+  grid drew "1 Emergency Reserve" at a hardcoded 01:30 PM whatever the clinic configured. The rows
+  live in `AvailabilityRule` (`emergency_reserve`) and the booking engine already obeys them, but
+  nothing let staff see, add or remove them. Pinned by `test_reserve_slots.js` (10 checks) and
+  `ReserveSlotsTests` (13 Django tests, written red-first: 9 failures + 4 errors before the routes
+  existed):
+  - `GET/POST /clinic/reserve-slots/` and `DELETE /clinic/reserve-slots/{id}/`. GET is staff,
+    POST/DELETE admin. POST accepts `date` + `start_time` + `end_time` (+ optional `doctor_id`,
+    `reason`); the clinic-aware datetimes are built server-side.
+  - Refusals: invalid date/time/window, outside clinic hours, unknown doctor → 400; a booked
+    patient in the window → 409 `RESERVE_OVERLAPS_BOOKING`; an identical row → 409
+    `DUPLICATE_RESERVE`. Create/delete write an `AuditLog` row.
+  - `GET /calendar/schedule/` publishes `reserve_slots`; the calendar store keeps them and the
+    grid draws each as a card at its real time, interleaved with appointments and lunch. The
+    metric strip counts the real rows for the selected day/doctor (clinic-wide rows apply to all).
+  - Settings → Clinic & Hours gains a **Reserve Slots** manager: list, add form (date, start, end,
+    optional doctor, reason) and per-row remove. All writes go through the API; refusals surface
+    the server's own sentence.
+  - The hardcoded 01:30 PM card and the fixed "1" count are deleted; the Sunday-closed panel now
+    keys off the whole day timeline so a real Sunday reserve is shown too.
+
+  Gates: 17 frontend harnesses **229/229**, `npm run build` clean, Django **521/521 OK**.
+  Browser proof: the panel listed the real rows; adding 16:00–16:30 via the form toasted
+  "Emergency reserve slot protected" and appeared in the list and the grid; a 15:00 attempt was
+  refused with the server's "That window already holds a booked patient."; the grid metric read
+  the real count (2 with the proof row, 1 after); removing it via the UI toasted "Reserve slot
+  removed" and the grid count fell back to 1. Proof row deleted; zero console errors, no overflow.
 
 ---
 
@@ -889,6 +916,7 @@ execution log). Production staging (Railway/Vercel) is not deployed yet.
 | 2026-11-21 | Brain Agent | `UI Consolidation / T-783` | **PASSED** | Owner approved the design review: one clear place for each job, warm light theme. Recalls merged into **Visits & Recalls** as a tab (`/recalls` opens it); **Clinic Settings** split into 3 tabs and the 4 top KPI boxes removed; **Staff & Reports** split into Team Roster / Reports & CSV with the 2 static security boxes removed; the duplicate **"Today's Schedule"** tab, list, detail modal and CSS deleted from Requests Queue; the fake "Abuja, NG" search bar and "Sarah Aliyu" profile menu removed from Schedule Grid, with specialty filters now derived from the real doctors on the selected day; **LeftRail** owns the single staff card and Sign Out while **Header** keeps label/status/clock/Lock; every `#0c1a30` navy and `#38bdf8` sky-blue replaced by the obsidian `#111114` and amber palette; headings use the fixed five-step scale. New `test_impeccable_ui.js` (13 checks) pins all of it, including the calendar store reading the API's `specialty` key and the exact-match specialty filter. Gates: 15 harnesses **197/197**, build clean (index 372.4 kB → 360.0 kB), Django **506/506 OK**. Browser proof: five pages and every tab render with zero console errors and zero horizontal overflow; the staff roster loaded 7 real rows after the API answer; the Schedule Grid showed the 3 real doctors and "Lead Dental Surgeon" filtered to one. |
 | 2026-11-22 | Brain Agent | `Schedule Grid truth / T-784` | **PASSED** | The grid's `DOCTOR_META` table invented patients, rooms and shifts; real doctors showed a blank suite/shift, the 7-Day Overview always read Oct 26–31 with 0 visits and clicked into 2026-10-26, an empty roster produced three demo doctors, and the month calendar highlighted a made-up busy-day list. Deleted `DOCTOR_META`; removed the demo fallback and added an honest empty-roster state; rebuilt the week overview as Monday–Sunday of the real clinic week with real store blocks, real dates and per-day empty text; doctor cards count real weekly visits and show the API's real shift; one `toAgendaRow` helper feeds day and week rows and sorts by real start time; the month calendar marks only real booked days and reads clinic time; "Clinic Closed on Sundays" now only when nothing is booked. 11 red-first checks in `test_impeccable_ui.js` (24 total) plus 1 in `test_calendar_truth.js` (12). Gates: 15 harnesses **209/209**, build clean (CalendarView 86.0 kB → 77.5 kB), Django **506/506 OK**. Browser proof: week cards Nov 16–22 with 3/1/2 visits; Dr. Bello's Sunday card listed 3 real patients; "Switch to Sunday" opened Sunday, Nov 22 with the same 3 rows. |
 | 2026-11-24 | Brain Agent | `Settings lunch wire / T-785` | **PASSED** | The Settings lunch control was a cut wire: the save nested the value under `schedule_engine`, which the serializer drops — verified live (PATCH 200, lunch stayed 13:00–14:00) while the engine protected 13:00–14:00 and the grid drew 12:00–13:00. Now the save sends flat `lunch_break_start`/`lunch_break_end`/`working_days`, the load restores them (`HH:MM:SS` → `HH:MM`), and the hours table has ONE clinic-wide hours + lunch control with per-day open/closed only. `GET /calendar/schedule/` publishes a `clinic` block; the store keeps it on both sync paths; the grid draws the saved window interleaved with the day's appointments and marks the same slots; no break (or start = end) and Sunday draw nothing. 2 Django tests red-first (`clinic` key missing → added; PATCH fields already supported), new `test_settings_truth.js` 8 red → 10 checks. The browser pass caught two real defects, both pinned: the normal sync path never stored the lunch (L9), and a zero-length break still drew a card (L10). Also fixed a clock-flaky helper (`_last_weekday` started at today, so a morning run saw "today 10:00" as future). Gates: 16 harnesses **219/219**, build clean, Django **508/508 OK**. Live: saved 12:15–12:45 → DB 12:15/12:45; grid card "12:15 PM until 12:45 PM" between the 09:30 AM and 02:00 PM visits; zero-length break → no card; Sunday → none; Settings reload 12:15–12:45, 9.5 hrs net, 57.0h/week; zero console errors, no overflow. |
+| 2026-11-24 | Brain Agent | `Reserve slots / T-786` | **PASSED** | The grid's "1 Emergency Reserve" at a hardcoded 01:30 PM was a guess; the real rows live in `AvailabilityRule` and the engine already obeys them, but there was no API or UI. Added `GET/POST /clinic/reserve-slots/` + `DELETE /clinic/reserve-slots/{id}/` (GET staff, writes admin; server builds clinic-aware datetimes; 400 invalid/outside-hours/unknown-doctor, 409 `RESERVE_OVERLAPS_BOOKING` / `DUPLICATE_RESERVE`; audit rows). `GET /calendar/schedule/` now publishes `reserve_slots`; the store keeps them and the grid draws real cards interleaved with appointments + lunch, and the metric counts the real rows. Settings gains a Reserve Slots manager (list / add / remove) wired to the API. Hardcoded card + fixed "1" deleted; Sunday-closed panel keys off the whole timeline. 13 Django tests red-first (9 fail + 4 error → 13/13), new `test_reserve_slots.js` 10 red → 10. Gates: 17 harnesses **229/229**, build clean, Django **521/521 OK**. Live: panel listed real rows; form add 16:00–16:30 → "Emergency reserve slot protected" + grid card + count 2; a 15:00 attempt refused with the server's booked-patient sentence; UI remove → "Reserve slot removed" + count back to 1; proof row deleted; zero console errors, no overflow. |
 
 ---
 

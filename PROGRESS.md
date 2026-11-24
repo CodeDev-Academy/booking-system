@@ -3029,13 +3029,47 @@ read 12:15/12:45; the grid showed "12:15 PM until 12:45 PM" between the 09:30 AM
 02:00 PM visits; a zero-length break drew no card; Sunday drew none; Settings
 reloaded with 12:15–12:45, 9.5 hrs net shift, 57.0h/week; zero console errors.
 
-**Next in this thread (T-786):** emergency reserve slots are still hardcoded
-("1 Emergency Reserve", a 01:30 PM card). They live in `AvailabilityRule` rows but
-have no API to list or edit them.
-
 **Known dead code:** `CalendarDayView.jsx` still hardcodes a 12:00–13:00 lunch, but
 its only parent (`MasterCalendarGrid`) is not mounted anywhere, so no live screen
 shows it. Remove or rewire it when that view is revived.
+
+## Emergency reserve slots — real rows, not a hardcoded card (2026-11-24, T-786)
+
+**The problem.** The Schedule Grid drew "1 Emergency Reserve" at a hardcoded
+01:30 PM whatever the clinic had configured. The rows already existed in
+`AvailabilityRule` (`rule_type='emergency_reserve'`) and the booking engine already
+refused ordinary bookings inside them — but there was no API to list, add or remove
+them, and no UI. Staff could not see or manage the walk-in windows they were told
+about.
+
+**What changed:**
+
+1. **A real API.** `GET/POST /api/v1/clinic/reserve-slots/` and
+   `DELETE /api/v1/clinic/reserve-slots/{id}/`. GET is staff; writes are admin. POST
+   takes `date` + `start_time` + `end_time` (+ optional `doctor_id`, `reason`) and
+   builds the clinic-aware datetimes server-side. It refuses an invalid window, a
+   window outside clinic hours, an unknown doctor (400), a window that already holds
+   a booked patient (409 `RESERVE_OVERLAPS_BOOKING`), and a duplicate (409
+   `DUPLICATE_RESERVE`). Create/delete write an audit row.
+2. **The feed carries them.** `GET /calendar/schedule/` now returns `reserve_slots`;
+   the calendar store keeps them and the grid draws each as a card at its real time,
+   interleaved with the day's appointments and lunch. The metric strip counts the
+   real rows for the selected day/doctor (a clinic-wide row applies to every lane).
+3. **A Settings manager.** Clinic & Hours gains a **Reserve Slots** panel: the list,
+   an add form (date, start, end, optional doctor, reason) and a per-row remove. All
+   writes go through the API and refusals surface the server's own sentence.
+4. **The guesses are deleted.** The hardcoded 01:30 PM card and the fixed "1" count
+   are gone. The Sunday-closed panel now keys off the whole day timeline, so a real
+   Sunday reserve is shown too.
+
+Gates: 17 harnesses 229/229 (new `test_reserve_slots.js`, 10 checks), build clean,
+Django 521/521 OK (13 new `ReserveSlotsTests`, written red-first). Browser proof:
+the panel listed the real rows; adding 16:00–16:30 via the form toasted "Emergency
+reserve slot protected" and appeared in the list and the grid; a 15:00 attempt was
+refused with the server's "That window already holds a booked patient."; the grid
+metric read the real count (2 with the proof row, 1 after); removing it via the UI
+toasted "Reserve slot removed" and the count fell back to 1. Proof row deleted; zero
+console errors, no overflow.
 
 ## Next up - Phase 5 (partner handover)
 

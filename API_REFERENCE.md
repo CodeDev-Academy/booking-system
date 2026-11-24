@@ -518,6 +518,27 @@ booking engine enforces:
 
 Clocks are `HH:MM`. A break whose start equals its end means **no break**; the UI draws none.
 
+The response also carries **`reserve_slots`** (T-786): the real emergency walk-in
+reserve rows overlapping the window, so the grid draws what the clinic configured
+instead of a hardcoded card. Each row: `id`, `doctor_id` (null = clinic-wide),
+`doctor_name`, `date`, `start_time`, `end_time`, `reason`, `start_datetime`,
+`end_datetime`.
+
+### `GET /api/v1/clinic/reserve-slots/`
+Lists the clinic's emergency reserve slots (staff). Optional filters: `start_date`,
+`end_date`, `doctor_id` (a doctor filter also returns clinic-wide rows). Returns
+`{ count, reserve_slots: [...] }`.
+
+### `POST /api/v1/clinic/reserve-slots/`
+Adds a reserve slot (**admin**). Body: `date` (`YYYY-MM-DD`), `start_time`,
+`end_time` (`HH:MM`), optional `doctor_id`, optional `reason`. The clinic-aware
+datetimes are built server-side. Refusals: `400` invalid date/time/window, outside
+clinic hours, or unknown doctor; `409 RESERVE_OVERLAPS_BOOKING` if a patient is
+already booked in the window; `409 DUPLICATE_RESERVE` for an identical row.
+
+### `DELETE /api/v1/clinic/reserve-slots/{id}/`
+Removes one reserve slot (**admin**). `204` on success, `404` if unknown.
+
 ### `GET /api/v1/clinic/settings/`
 Returns complete clinic configuration including operating hours, state machine timers, and custom white-label parameters.
 
