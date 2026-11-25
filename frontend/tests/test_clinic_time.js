@@ -7,9 +7,9 @@
 //
 // Part A is the real proof: the time service itself is EXECUTED in child
 // processes whose fake computers are set to New York and Tokyo, and must
-// still answer in Lagos time. Part B pins the wiring: the calendar, the day
-// view, the walk-in anchor and the stores must all read the clock through
-// the service instead of `new Date()`.
+// still answer in Lagos time. Part B pins the wiring: the calendar grid, the
+// walk-in anchor and the stores must all read the clock through the service
+// instead of `new Date()`.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -82,7 +82,6 @@ for (const zone of ZONES) {
 console.log('B. every schedule surface reads the clock through the service');
 
 const grid = read('../src/components/calendar/DoctorGridBookingCalendar.jsx');
-const dayView = read('../src/components/calendar/CalendarDayView.jsx');
 const calendarView = read('../src/views/CalendarView.jsx');
 const mockData = read('../src/services/mockData.js');
 const apiService = read('../src/services/apiService.js');
@@ -102,9 +101,10 @@ check('B3 the grid reads date parts through the service',
 check('B4 the grid formats hours through the service',
   grid.includes('clinicTimeLabel(') && !/toLocaleTimeString\('en-US'/.test(grid),
   'formatSlotTime must not use the device locale');
-check('B5 the day view horizons start at clinic midnight',
-  dayView.includes('clinicDayStartOffset(0)') && !/setHours\(0,\s*0,\s*0,\s*0\)/.test(dayView),
-  'workload ranges are anchored to the clinic day');
+check('B5 the grid anchors its day and month views to clinic midnight',
+  grid.includes('clinicDayStartOffset(0)') && grid.includes('clinicDayStartOfParts(')
+    && !/setHours\(0,\s*0,\s*0,\s*0\)/.test(grid),
+  'day and month ranges are anchored to the clinic day');
 check('B6 the walk-in date anchor uses clinic parts',
   calendarView.includes('clinicDayStartOfParts(') || calendarView.includes('clinicParts('),
   'CalendarView walk-in callback must not use new Date()');

@@ -34,7 +34,7 @@ const visitsSrc = read('../src/stores/useVisitsStore.js');
 const staffSrc = read('../src/stores/useStaffStore.js');
 const settingsSrc = read('../src/stores/useSettingsStore.js');
 const appModeSrc = read('../src/stores/appModeStore.js');
-const dayViewSrc = read('../src/components/calendar/CalendarDayView.jsx');
+const gridSrc = read('../src/components/calendar/DoctorGridBookingCalendar.jsx');
 
 console.log('I. stores start empty');
 
@@ -95,9 +95,10 @@ check('R2 the calendar reset clears, it does not re-seed',
 check('R3 the visits reset clears, it does not re-seed',
   !/resetToDemoDefaults[\s\S]{0,400}buildInitialVisits\(\)/.test(visitsSrc),
   'a reset must not manufacture visits');
-check('R4 the workload meter counts real blocks only',
-  !/Math\.max\(seed\.today/.test(dayViewSrc),
-  'the capacity meter floored at fake seed counts');
+check('R4 the open-slot meter counts real appointments only',
+  !/Math\.max\(seed\./.test(gridSrc)
+    && /DEFAULT_TIME_SLOTS\.length - activeDayAppointments\.length/.test(gridSrc),
+  'the open-slot count floored at fake seed numbers');
 
 console.log('');
 if (failures) {
