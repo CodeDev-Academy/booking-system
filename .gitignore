@@ -48,3 +48,6 @@ frontend/test-results/
 frontend/playwright-report/
 .system_generated/
 .agents/skills/security-audit/
+
+# playwright-cli browser snapshots and console logs (local tooling output)
+.playwright-cli/
