@@ -3083,8 +3083,8 @@ test suite.
 
 **What changed.**
 
-1. **Both files deleted** (`git rm`). Nothing live imported them and the production
-   chunk sizes are unchanged.
+1. **All three dead files deleted** (`git rm`). Nothing live imported them and the
+   production chunk sizes are unchanged.
 2. **`test_clinic_time.js` B5 re-pointed at the live grid**: it now pins the grid's day
    and month anchors to `clinicDayStartOffset(0)` / `clinicDayStartOfParts(` and forbids
    a local-midnight `setHours(0, 0, 0, 0)`.
@@ -3095,8 +3095,12 @@ test suite.
 **Red first.** Both harnesses died with `ENOENT` on the deleted file, then went green
 after the re-point.
 
-Gates: 17 harnesses **229/229**, build clean, no backend change. Found but left alone
-(owner decision): `CalendarWeekView.jsx` is also imported by nothing.
+Gates: 17 harnesses **229/229**, build clean, no backend change. A third orphan,
+`CalendarWeekView.jsx`, was found and left in place at first; the owner approved its
+deletion, and it is gone too — it drew invented utilisation percentages
+(`70 + (idx * 15 + day.offset * 7) % 25`), the same made-up-numbers pattern the rest of
+the grid no longer uses. No harness referenced it, so the gate was a zero-importer grep,
+229/229 again and a clean build.
 
 ## Next up - Phase 5 (partner handover)
 
