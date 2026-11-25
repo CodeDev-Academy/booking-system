@@ -3029,9 +3029,10 @@ read 12:15/12:45; the grid showed "12:15 PM until 12:45 PM" between the 09:30 AM
 02:00 PM visits; a zero-length break drew no card; Sunday drew none; Settings
 reloaded with 12:15–12:45, 9.5 hrs net shift, 57.0h/week; zero console errors.
 
-**Known dead code:** `CalendarDayView.jsx` still hardcodes a 12:00–13:00 lunch, but
-its only parent (`MasterCalendarGrid`) is not mounted anywhere, so no live screen
-shows it. Remove or rewire it when that view is revived.
+**Dead code, since removed (T-787):** `CalendarDayView.jsx` hardcoded a 12:00–13:00
+lunch, but its only parent (`MasterCalendarGrid`) was never mounted, so no live screen
+showed it. Both files are deleted and the two harness checks that read the dead file
+now pin the live grid instead.
 
 ## Emergency reserve slots — real rows, not a hardcoded card (2026-11-24, T-786)
 
@@ -3070,6 +3071,32 @@ refused with the server's "That window already holds a booked patient."; the gri
 metric read the real count (2 with the proof row, 1 after); removing it via the UI
 toasted "Reserve slot removed" and the count fell back to 1. Proof row deleted; zero
 console errors, no overflow.
+
+## Dead calendar views deleted (2026-11-25, T-787)
+
+**The problem.** Two calendar components were still in the tree but nothing mounted
+them: `MasterCalendarGrid.jsx` was imported by nothing, and `CalendarDayView.jsx` only
+by `MasterCalendarGrid`. The dead day view still hardcoded a 12:00–13:00 lunch — a stale
+copy of the rule T-785 made real — so reviving it would have shipped the old lie. Two
+harnesses also read that file as text, which quietly made dead code load-bearing for the
+test suite.
+
+**What changed.**
+
+1. **Both files deleted** (`git rm`). Nothing live imported them and the production
+   chunk sizes are unchanged.
+2. **`test_clinic_time.js` B5 re-pointed at the live grid**: it now pins the grid's day
+   and month anchors to `clinicDayStartOffset(0)` / `clinicDayStartOfParts(` and forbids
+   a local-midnight `setHours(0, 0, 0, 0)`.
+3. **`test_no_demo_seeds.js` R4 re-pointed at the live grid**: the open-slot count must
+   come from real appointments (`DEFAULT_TIME_SLOTS.length - activeDayAppointments.length`)
+   and never from a `Math.max(seed…` floor.
+
+**Red first.** Both harnesses died with `ENOENT` on the deleted file, then went green
+after the re-point.
+
+Gates: 17 harnesses **229/229**, build clean, no backend change. Found but left alone
+(owner decision): `CalendarWeekView.jsx` is also imported by nothing.
 
 ## Next up - Phase 5 (partner handover)
 

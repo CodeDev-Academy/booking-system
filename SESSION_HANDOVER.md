@@ -1,7 +1,7 @@
 # SESSION_HANDOVER.md — pick up here (cold start)
 
 > Read this first, then `AGENTS.md` (rules) and `PROGRESS.md` / `TEST.md` (detail).
-> Written 2026-11-24 after T-785 + T-786 shipped. Keep this file current when you finish a step.
+> Written 2026-11-25 after T-787 shipped. Keep this file current when you finish a step.
 
 ## 1. Where the code is
 
@@ -9,12 +9,19 @@
 - **`main` / `origin/main` = `7f8bcd9`. NEVER commit to `main`.** Assert this before and after every push.
 - The branch is 100+ commits ahead of `main`; the merge decision belongs to the owner.
 - Latest commits:
-  - `6112d90` docs T-786 · `1aaf7f9` T-786 reserve slots (code)
+  - `470ab22` T-787 dead calendar views removed (code + harness) · docs T-787 (this commit)
+  - `b28c708` docs cold-start note · `6112d90` docs T-786 · `1aaf7f9` T-786 reserve slots (code)
   - `8c654ce` docs T-785 · `8881277` T-785 lunch wire (code)
 - 8 untracked `.tmp_n8n*.py` scratch files in the root — pre-existing, do not commit.
 
 ## 2. Just shipped (do not rebuild)
 
+- **T-787 — dead calendar views deleted.** `CalendarDayView.jsx` + `MasterCalendarGrid.jsx`
+  removed (nothing live imported them; the day view still hardcoded a 12:00–13:00 lunch).
+  The two harnesses that read the dead file as text now pin the live
+  `DoctorGridBookingCalendar.jsx` instead (B5 = clinic-midnight day/month anchors,
+  R4 = open-slot count from real appointments). `CalendarWeekView.jsx` is ALSO imported
+  by nothing — found, not touched, owner decision pending.
 - **T-785 — lunch is a real setting.** Settings saves flat `lunch_break_start/end` + `working_days`;
   one clinic-wide hours + lunch control; `GET /calendar/schedule/` returns a `clinic` block; the grid
   draws the saved lunch interleaved with appointments; no break (start = end) or Sunday draws none.
@@ -79,14 +86,14 @@ Current truth: **17 harnesses 229/229 · build clean · Django 521/521 OK.**
 - **Staging deploy** awaits Railway/Vercel access; migrations 0009–0011 not run there.
 - **Telegram token** missing (owner action). Partner creds absent (VoiceBip, Meta WhatsApp).
 - **CI, Docker, Postgres/MySQL** verification not started (SQLite only so far).
-- Dead code: `CalendarDayView.jsx` hardcodes a 12:00–13:00 lunch, but its parent `MasterCalendarGrid`
-  is not mounted anywhere — no live screen shows it. Remove/rewire if revived.
+- Dead code: `CalendarWeekView.jsx` is imported by nothing (found during T-787, left in
+  place pending the owner's decision). `CalendarDayView`/`MasterCalendarGrid` are gone.
 
 ## 8. Next candidates (owner chooses)
 
 1. Deploy staging (Railway/Vercel) + run migrations 0009–0011 there.
 2. Add the Telegram bot token and prove a real send.
-3. Clean up the dead `CalendarDayView`/`MasterCalendarGrid`.
+3. Decide on `CalendarWeekView.jsx` (imported by nothing; delete or wire it).
 4. The `main` merge decision (100+ commits ahead).
 5. CI / Docker / Postgres verification.
 
