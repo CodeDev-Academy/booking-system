@@ -62,7 +62,7 @@ Sends:
 * **Headers**:
   ```http
   Content-Type: application/json
-  X-Webhook-Secret: clinic_dev_secret_2026
+  X-Webhook-Secret: <WEBHOOK_SECRET from backend/.env>
   ```
 * **Query Parameters**: `window_days=1` (or `window_hours=24`)
 

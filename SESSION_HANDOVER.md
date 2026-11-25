@@ -9,14 +9,23 @@
 - **`main` / `origin/main` = `7f8bcd9`. NEVER commit to `main`.** Assert this before and after every push.
 - The branch is 100+ commits ahead of `main`; the merge decision belongs to the owner.
 - Latest commits:
-  - `050b354` T-787 follow-up: last dead view removed · `470ab22` T-787 dead calendar views (code + harness)
-  - `bcb5d2e` docs T-787 · `b28c708` docs cold-start note
-  - `6112d90` docs T-786 · `1aaf7f9` T-786 reserve slots (code)
-  - `8c654ce` docs T-785 · `8881277` T-785 lunch wire (code)
+  - `2395d40` T-788 env contract names · `5c8c657` T-788 real secrets (code + 8 tests) · docs T-788 (this commit)
+  - `afbc22e` docs: security audit run 1 recorded
+  - `050b354` + `96b087e` T-787 follow-up (CalendarWeekView) · `470ab22` + `bcb5d2e` T-787 (dead calendar views)
+  - `6112d90` + `1aaf7f9` T-786 reserve slots · `8c654ce` + `8881277` T-785 lunch wire
 - 8 untracked `.tmp_n8n*.py` scratch files in the root — pre-existing, do not commit.
 
 ## 2. Just shipped (do not rebuild)
 
+- **T-788 — the two published secrets are gone (audit F3 + F4).** `settings.py` now resolves
+  `DJANGO_SECRET_KEY` through `_resolve_secret_key()`: env value wins, `DEBUG=True` mints an
+  ephemeral per-process key, `DEBUG=False` with no key **refuses to boot**. The
+  `DEV_FALLBACK_WEBHOOK_SECRET` constant and its DEBUG branch are deleted from
+  `webhook_security.py`, so nothing configured = 401 on all five guarded endpoints, in every mode.
+  `backend/.env.example`, `n8n/.env.example` and `docker-compose.yml` were fixed to match the names
+  the code actually reads (they did not). 8 new `SecretHygieneTests`, red first. **Owner still
+  owes:** rotate any environment that used the published values, and declare both variables in
+  `render.yaml` when staging gets set up.
 - **T-787 — dead calendar views deleted.** `CalendarDayView.jsx` + `MasterCalendarGrid.jsx`
   removed (nothing live imported them; the day view still hardcoded a 12:00–13:00 lunch).
   The two harnesses that read the dead file as text now pin the live
@@ -45,7 +54,7 @@ Start-Process npm -ArgumentList "run","dev","--","--port","5173","--strictPort" 
 
 - Backend `http://127.0.0.1:8000`, frontend `http://localhost:5173`.
 - Login: `admin@clinic.com` / `adminpassword123`. Clinic timezone `Africa/Lagos`.
-- Webhook secret: `clinic_dev_secret_2026` (header `X-Webhook-Secret`).
+- Webhook secret: **not written in this file any more** (audit F3). Read it from `backend/.env`; n8n must carry the same string as `DJANGO_WEBHOOK_SECRET`. The old literal is retired.
 - Settings route is `/admin/settings`; calendar `/calendar`; queue `/queue`.
 - **Browser auth** (for the in-app browser): fetch `POST /api/v1/auth/login/`, then set localStorage
   `cbs_auth_token`, `cbs_refresh_token`, and `cbs_auth_session` =
@@ -58,11 +67,11 @@ Start-Process npm -ArgumentList "run","dev","--","--port","5173","--strictPort" 
 # frontend harnesses (from frontend/) — expect 17 files, 229/229 checks
 Get-ChildItem tests -Filter *.js | ForEach-Object { node $_.FullName }
 npm run build
-# backend (from backend/) — expect 521/521 OK
+# backend (from backend/) — expect 529/529 OK
 python manage.py test appointments --verbosity 1
 ```
 
-Current truth: **17 harnesses 229/229 · build clean · Django 521/521 OK.**
+Current truth: **17 harnesses 229/229 · 11 n8n harnesses green · build clean · Django 529/529 OK.**
 
 ## 5. How we work (non-negotiable)
 
@@ -96,9 +105,10 @@ Current truth: **17 harnesses 229/229 · build clean · Django 521/521 OK.**
 **Security audit run 1 (2026-11-25) reorders these.** Report:
 `C:\Users\User\security-audit-skill\booking-system\run-1\REPORT.md` (11 confirmed, 5 open).
 
-1. **Rotate + require the two shared secrets**: generate `WEBHOOK_SECRET` and
-   `DJANGO_SECRET_KEY` per clinic, delete `webhook_security.py:26` fallback, drop the literal from
-   `n8n/.env.example:20` and this file, add both to `render.yaml`.
+1. ~~Rotate + require the two shared secrets~~ — **done in code (T-788)**: fallbacks deleted,
+   boot refuses without a key, examples and docs scrubbed. **Still owed:** generate fresh values
+   for this machine and any deployed host, and add `DJANGO_SECRET_KEY` + `WEBHOOK_SECRET` to
+   `render.yaml` during the staging step.
 2. **Add the missing verify node to n8n workflow 01** (copy `04_patient_response_handler.json:40`).
 3. **Make `PROVIDER_MOCK` explicit and downgrade `mock:true` to a failed row** in 02/03/04/05/08.
 4. **Stop `seed_clinic` on boot** (`render.yaml:12`, `Procfile:1`) and gate it behind

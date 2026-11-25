@@ -39,7 +39,7 @@ Configure the following environment variables in your n8n Railway/Docker instanc
 
 ```env
 DJANGO_API_BASE_URL=http://backend:8000/api/v1
-DJANGO_WEBHOOK_SECRET=clinic_dev_secret_2026
+DJANGO_WEBHOOK_SECRET=   # generate one: python -c "import secrets; print(secrets.token_urlsafe(32))"
 N8N_BLOCK_ENV_ACCESS_IN_NODE=false
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
 

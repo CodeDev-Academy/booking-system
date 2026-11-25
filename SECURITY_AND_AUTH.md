@@ -289,8 +289,8 @@ on sweeper) before any database work.
 1. `ClinicSetting.webhook_secret` (dedicated DB field)
 2. `ClinicSetting.custom_config['webhook_secret']` (legacy JSON storage)
 3. `WEBHOOK_SECRET` environment variable
-4. `clinic_dev_secret_2026` dev fallback — **only when `DEBUG=True`**
-5. Unconfigured in production → **fail-closed** (every guarded request rejected)
+4. *(deleted 2026-11-25, security audit F3)* the `DEBUG=True` fallback to a literal that was committed in this repository
+5. Unconfigured, in any mode → **fail-closed** (every guarded request rejected with 401)
 
 **Fail-closed Telegram posture:** a Telegram-shaped payload arriving with no
 `TELEGRAM_WEBHOOK_SECRET` / `custom_config.telegram_secret_token` configured in production is
@@ -298,7 +298,7 @@ rejected with `403 INVALID_WEBHOOK_SECRET` instead of silently accepted. WhatsAp
 on the same route are unaffected (the Telegram secret is only demanded of Telegram-shaped traffic).
 
 **n8n side:** every workflow header node sends
-`{{ $env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026' }}`; in production the partner must set
+`{{ $env.DJANGO_WEBHOOK_SECRET }}` with no fallback; the partner must set
 `DJANGO_WEBHOOK_SECRET` on the n8n instance to the same value as the backend's `WEBHOOK_SECRET`.
 
 ### 7.5 Data Privacy in Logs (Phase 1 / Task 1.3, 2026-11-12)

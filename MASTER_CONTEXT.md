@@ -76,7 +76,7 @@ external providers (VoiceBip voice, WhatsApp, SMS, Meta, etc.).
 - **Webhook security (Phase 1 / Task 1.1): ✅ COMPLETED 2026-11-12.** `X-Webhook-Secret` now enforced
   (staff auth OR secret) on `slots/hold/`, `appointments/hold/`, `re-request/`, `expiry-sweep/`,
   `upcoming-reminders/`. Central resolution helper in `appointments/services/webhook_security.py`
-  (clinic field → custom_config → env → DEBUG-only dev fallback `'clinic_dev_secret_2026'`;
+  (clinic field → custom_config → env; the DEBUG-only dev fallback literal was deleted on 2026-11-25 (audit F3), so an unconfigured receiver fails closed in every mode;
   fail-closed in production). Telegram inbound is fail-closed in production when unconfigured.
   New `ClinicSetting.webhook_secret` field (migration `0004`). 11 new tests in
   `WebhookSecurityHardeningTests`. Production env requirements: `WEBHOOK_SECRET` + 

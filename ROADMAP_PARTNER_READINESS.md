@@ -20,7 +20,7 @@
 - [x] Fixed Telegram inbound fail-open → fail-closed in production when `TELEGRAM_WEBHOOK_SECRET` unset (WhatsApp/Meta payloads on same route unaffected)
 - [x] Added dedicated `webhook_secret` field to `ClinicSetting` (migration `0004_clinicsetting_webhook_secret`); resolution order: clinic field → custom_config → env → DEBUG-only dev fallback (centralized in new `appointments/services/webhook_security.py`)
 - [x] Tests: new `WebhookSecurityHardeningTests` class (11 tests: reject missing/wrong secret, accept valid, staff bypass, fail-closed, inactive-staff bypass blocked); all pre-existing guarded-endpoint tests updated with headers
-- [x] Verified n8n workflow JSONs already send `X-Webhook-Secret` (`$env.DJANGO_WEBHOOK_SECRET || 'clinic_dev_secret_2026'`) on all Django calls — partner must set `DJANGO_WEBHOOK_SECRET` in production n8n
+- [x] Verified n8n workflow JSONs already send `X-Webhook-Secret` (`$env.DJANGO_WEBHOOK_SECRET`) on all Django calls. Since the 2026-11-25 audit there is no fallback value, so the partner must set `DJANGO_WEBHOOK_SECRET` in production n8n, equal to the backend `WEBHOOK_SECRET`.
 - [x] Suite verification: 95 tests — 93 pass; only 2 failures are PRE-EXISTING in HEAD (verified via clean `git archive` baseline; unrelated to this task)
 - Full spec written to `SECURITY_AND_AUTH.md` §7.4; env template updated in `backend/.env.example`
 

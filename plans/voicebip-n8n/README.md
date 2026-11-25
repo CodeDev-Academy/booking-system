@@ -26,7 +26,7 @@ When your partner deploys n8n, these shared environment variables connect n8n to
 ```env
 # Clinic Management System Backend
 DJANGO_API_BASE_URL=https://your-clinic-backend.up.railway.app
-DJANGO_WEBHOOK_SECRET=clinic_dev_secret_2026
+DJANGO_WEBHOOK_SECRET=<WEBHOOK_SECRET from backend/.env>
 
 # Clinic Backend Outbound Webhook (Configured in Django backend/.env)
 N8N_DISPATCH_WEBHOOK_URL=https://your-n8n-instance.com/webhook/dispatch-offers

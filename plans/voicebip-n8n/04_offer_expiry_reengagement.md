@@ -84,7 +84,7 @@ Feature 4 implements your **3-Phase Expiry & Patient Recovery Strategy** (codifi
 * **Headers**:
   ```http
   Content-Type: application/json
-  X-Webhook-Secret: clinic_dev_secret_2026
+  X-Webhook-Secret: <WEBHOOK_SECRET from backend/.env>
   ```
 * **Payload**:
   ```json
@@ -118,7 +118,7 @@ When the patient taps `[ 🔄 See New Times ]` on WhatsApp or replies `NEW` on S
 * **Headers**:
   ```http
   Content-Type: application/json
-  X-Webhook-Secret: clinic_dev_secret_2026
+  X-Webhook-Secret: <WEBHOOK_SECRET from backend/.env>
   ```
 * **Payload**:
   ```json

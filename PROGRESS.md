@@ -353,7 +353,7 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
   - Created `backend/appointments/services/webhook_security.py` — centralized constant-time
     `X-Webhook-Secret` verification with resolution order: `ClinicSetting.webhook_secret` (new dedicated
     DB field, migration `0004`) → `custom_config['webhook_secret']` → `WEBHOOK_SECRET` env →
-    `clinic_dev_secret_2026` dev fallback **only when `DEBUG=True`** → fail-closed (403) in production.
+    `clinic_dev_secret_2026 (retired 2026-11-25 by audit F3)` dev fallback **only when `DEBUG=True`** → fail-closed (403) in production.
   - Enforced staff-auth-OR-secret on `POST /api/v1/slots/hold/` + `/api/v1/appointments/hold/` and
     `POST /api/v1/booking-requests/{id}/re-request/` (both were previously `AllowAny`).
   - Refactored `UpcomingRemindersView` and `ExpirySweepWebhookView` onto the shared helper
@@ -3138,6 +3138,73 @@ skill's two validators also refuse to open files on Windows (they need POSIX no-
 
 **No code was changed by the audit.** Gates still stand at 17 harnesses 229/229, build clean,
 Django 521/521.
+
+## Secrets batch — the two published credentials (2026-11-25, T-788, audit F3 + F4)
+
+**The problem.** Two values that are supposed to be per-clinic secrets were committed to this
+repository, and the deployment files pointed at the wrong variable names, so a partner following
+the docs would have inherited both.
+
+1. `settings.py` fell back to a literal signing key and `render.yaml` never set
+   `DJANGO_SECRET_KEY`. SimpleJWT signs staff tokens with `SECRET_KEY`, so the documented Render
+   path signed every session with a string anyone reading the repo knew. Knowing one staff UUID
+   (returned by `/auth/me/`) meant forging that person's session, at any role.
+2. `webhook_security.py` fell back to `clinic_dev_secret_2026` whenever `DEBUG=True`, the same
+   literal was the default in `n8n/.env.example`, and it also appeared in five docs files. That
+   header authenticates five state-changing endpoints.
+
+**What changed.**
+
+1. **`_resolve_secret_key(debug, env_value)` in `settings.py`.** Environment value wins. With
+   `DEBUG=True` it generates an ephemeral per-process key (dev keeps working, sessions end on
+   restart). With `DEBUG=False` and no key it **raises** and refuses to boot. `DEBUG` moved above
+   the call so the order is honest.
+2. **The DEBUG fallback is gone** from `webhook_security.py` — constant and branch. Resolution is
+   now `ClinicSetting.webhook_secret → custom_config → WEBHOOK_SECRET`, and nothing configured
+   means 401 on every guarded endpoint, in every mode.
+3. **`backend/.env.example` rewritten.** It documented `DEBUG`, `SECRET_KEY` and `ALLOWED_HOSTS`
+   while the code reads `DJANGO_DEBUG`, `DJANGO_SECRET_KEY` and `DJANGO_ALLOWED_HOSTS` — three
+   names that never landed. It also listed `JWT_SIGNING_KEY` and `N8N_WEBHOOK_URL`, read by
+   nothing, and promised 403 where the endpoints answer 401.
+4. **`docker-compose.yml`**: the backend block was handed `DJANGO_WEBHOOK_SECRET`, a name Django
+   never reads; both secrets had committed fallbacks, now replaced with the `:?` form so compose
+   refuses to start. The n8n block was missing every variable its workflows read
+   (`DJANGO_API_BASE_URL`, `DJANGO_WEBHOOK_SECRET`, `N8N_BLOCK_ENV_ACCESS_IN_NODE`,
+   `PROVIDER_MOCK`), so on that path the adapters resolved to literal `undefined/…` URLs and the
+   inbound guards saw an empty expected secret — the automation was dead on arrival, quietly,
+   because a skipped log write is best-effort by design.
+5. **Docs scrubbed**: `n8n/.env.example`, `n8n/README.md`, `SECURITY_AND_AUTH.md`,
+   `ROADMAP_PARTNER_READINESS.md`, `MASTER_CONTEXT.md`, `SESSION_HANDOVER.md` and the four
+   `plans/voicebip-n8n/*.md` no longer carry the value. `PROGRESS.md:356` and `TEST.md:400` keep
+   it as history, annotated "(retired 2026-11-25 by audit F3)". The remaining hits are test
+   fixtures, which are arbitrary strings, and `n8n/tests/test_sweeper.js` A8, which asserts the
+   workflows do **not** embed it.
+
+**Red first.** `SecretHygieneTests` (8) written before the change: first run **4 failures + 3
+errors**, then green. One test caught the retired literal reappearing — in my own explanatory
+comment in `settings.py` — which is exactly what a hygiene grep is for.
+
+**Gates.** 17 frontend harnesses **229/229**, `npm run build` clean, all **11** n8n harnesses
+green, both edited workflow JSONs parse, `docker-compose.yml` parses with the expected env lists,
+Django **529/529 OK** (521 + 8 new) in 539 s.
+
+**Live behaviour proof.**
+
+- `DJANGO_DEBUG=False` with no key → `RuntimeError: DJANGO_SECRET_KEY is required when DEBUG is
+  False. Generate one with: python -c "import secrets; print(secrets.token_urlsafe(50))"`.
+- `DJANGO_DEBUG=True` (the dev box) → boots, 67-char ephemeral key, not the published literal.
+
+**Still on the owner, not on the code:**
+
+- **The published values must be treated as burned.** If any deployed instance ever used
+  `clinic_dev_secret_2026` or the template signing key, rotate them; the code no longer accepts
+  them, but the old key may still sit in someone's environment.
+- **`render.yaml` still does not declare `DJANGO_SECRET_KEY` or `WEBHOOK_SECRET`.** Deliberately
+  left for the staging step so the manifest and the platform variables get set together. Until
+  then a Render deploy from this file fails at boot — which is the intended, visible outcome
+  replacing a silent one.
+- Local `backend/.env` keeps `WEBHOOK_SECRET=clinic_dev_secret_2026`. Rotate it to a generated
+  value and copy it into the n8n instance as `DJANGO_WEBHOOK_SECRET`.
 
 ## Next up - Phase 5 (partner handover)
 

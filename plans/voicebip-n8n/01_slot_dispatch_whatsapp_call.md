@@ -209,7 +209,7 @@ When the patient responds via **EITHER** SMS or WhatsApp:
 * **Headers**:
   ```http
   Content-Type: application/json
-  X-Webhook-Secret: clinic_dev_secret_2026
+  X-Webhook-Secret: <WEBHOOK_SECRET from backend/.env>
   ```
 * **Payload from n8n (SMS or WhatsApp)**:
   ```json
