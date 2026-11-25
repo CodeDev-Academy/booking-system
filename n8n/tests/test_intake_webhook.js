@@ -107,6 +107,100 @@ check('C10 no env base means no URL - fail loudly, not to a default host',
 check('C11 the secret travels without a fallback',
   withEnv && withEnv.secret === 's3cret' && withoutEnv && withoutEnv.secret === '');
 
+console.log('D. inbound authentication (audit F1)');
+
+// Workflow 01 used to run webhook -> normalize -> Django with NO caller check,
+// while 04/05/07/08 each verify X-Webhook-Secret first. The intake path is the
+// one an anonymous client can hit, so it is the one that must not depend on
+// Django's rate limit to survive.
+
+const verifyNode = node('Verify Intake Secret');
+const authIfNode = node('IF Intake Authorized');
+const denyNode = node('Respond Intake Unauthorized');
+
+check('D1 a verify node sits after the webhook', Boolean(verifyNode),
+  'no Verify Intake Secret node - the graph accepts anyone');
+check('D2 an IF routes on the auth result', Boolean(authIfNode),
+  'no IF Intake Authorized node');
+check('D3 a respond node answers 401', Boolean(denyNode),
+  'no Respond Intake Unauthorized node');
+if (denyNode) {
+  check('D4 the refusal really is a 401',
+    Number(denyNode?.parameters?.options?.responseCode) === 401,
+    'got ' + JSON.stringify(denyNode?.parameters?.options));
+}
+
+// The webhook must feed ONLY the verifier: nothing that touches Django, the
+// clock or the response may run before the decision.
+const webhookOut = (wf.connections['Patient Intake Webhook']?.main || []).flat()
+  .map((c) => c.node);
+check('D5 the webhook connects to nothing but the verifier',
+  webhookOut.length === 1 && webhookOut[0] === 'Verify Intake Secret',
+  'got ' + JSON.stringify(webhookOut));
+if (authIfNode) {
+  const branches = (wf.connections['IF Intake Authorized']?.main || []).map((b) => (b || []).map((c) => c.node));
+  check('D6 the true branch is the only path to normalize',
+    Array.isArray(branches[0]) && branches[0].includes('Normalize Input & E.164 Phone'),
+    'got ' + JSON.stringify(branches));
+  check('D7 the false branch ends in the refusal',
+    Array.isArray(branches[1]) && branches[1].includes('Respond Intake Unauthorized'),
+    'got ' + JSON.stringify(branches));
+  const ifSrc = JSON.stringify(authIfNode?.parameters || {});
+  check('D8 the gate is the auth flag alone - no mock-mode bypass',
+    ifSrc.includes('intake_auth.authorized') && !/PROVIDER_MOCK|providerMock|mock/i.test(ifSrc),
+    'an IF that lets "mock mode" skip authentication is how workflow 08 stays open');
+}
+
+const verifySrc = code('Verify Intake Secret');
+check('D9 the verifier reads the header, not the body',
+  verifySrc.includes('headers') && verifySrc.includes('x-webhook-secret'),
+  'the secret must come from the request header');
+check('D10 no literal fallback secret in the verifier',
+  !/clinic_dev/.test(verifySrc),
+  'a fallback value in source is a published credential');
+
+// The decisive part: execute the shipped source and try to get through.
+function runVerify(inputJson, env) {
+  const sandbox = {
+    $input: { first: () => ({ json: inputJson }) },
+    $env: env || {},
+  };
+  const src = code('Verify Intake Secret');
+  if (!src) return null;
+  return vm.runInNewContext('(function () {\n' + src + '\n})()', sandbox)[0].json;
+}
+
+const body = { body: { patient_name: 'Amina', phone: '08090012345' } };
+const configured = runVerify({ ...body, headers: { 'x-webhook-secret': 'right-value' } },
+  { DJANGO_WEBHOOK_SECRET: 'right-value' });
+check('D11 the correct secret is accepted', Boolean(configured?.intake_auth?.authorized),
+  JSON.stringify(configured?.intake_auth));
+
+const wrong = runVerify({ ...body, headers: { 'x-webhook-secret': 'guess' } },
+  { DJANGO_WEBHOOK_SECRET: 'right-value' });
+check('D12 a wrong secret is refused with a named reason',
+  wrong && wrong.intake_auth?.authorized === false && wrong.intake_auth?.reason === 'bad_secret',
+  JSON.stringify(wrong?.intake_auth));
+
+const none = runVerify(body, { DJANGO_WEBHOOK_SECRET: 'right-value' });
+check('D13 a missing header is refused', none && none.intake_auth?.authorized === false,
+  JSON.stringify(none?.intake_auth));
+
+const unconfigured = runVerify({ ...body, headers: { 'x-webhook-secret': 'anything' } }, {});
+check('D14 an unconfigured receiver refuses everything, fail closed',
+  unconfigured && unconfigured.intake_auth?.authorized === false
+    && unconfigured.intake_auth?.reason === 'secret_not_configured',
+  JSON.stringify(unconfigured?.intake_auth));
+
+const oldLiteral = runVerify({ ...body, headers: { 'x-webhook-secret': 'clinic_dev_secret_2026' } }, {});
+check('D15 the retired published literal never authenticates',
+  oldLiteral && oldLiteral.intake_auth?.authorized === false,
+  'the burned value must be dead on this path too');
+
+check('D16 the payload still reaches the next node intact',
+  configured?.body?.patient_name === 'Amina' || configured?.patient_name === 'Amina',
+  'the verifier must pass the request through, not swallow it');
+
 console.log('');
 if (failures) {
   console.log('FAILED: ' + failures + ' check(s) of ' + checks);
