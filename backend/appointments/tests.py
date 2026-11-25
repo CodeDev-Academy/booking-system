@@ -12691,3 +12691,115 @@ class ClaimCloseOnLogTests(_DisruptionFixture, APITestCase):
         self.assertIsNotNone(blocker)
         self.assertEqual(blocker[0], 'NOTICES_DELIVERED')
 
+
+class SecretHygieneTests(APITestCase):
+    """
+    Security audit run 1 / F3 + F4.
+
+    Two shared secrets were shipped as source text: the JWT signing key
+    (`settings.py:20` fell back to `clinic-booking-agency-template-secret-key-2026`)
+    and the webhook secret (`webhook_security.py:26` fell back to
+    `clinic_dev_secret_2026` whenever DEBUG was on). Both meant a deployment that
+    forgot an environment variable was authenticating with a value anybody could
+    read in this repository.
+
+    The rule these tests pin: a secret comes from the environment or the clinic
+    row, or the thing FAILS CLOSED. Development is allowed to keep working, but
+    only with an ephemeral per-process key that cannot sign anything after the
+    process dies - never with a committed constant.
+    """
+
+    RETIRED_SIGNING_KEY = 'clinic-booking-agency-template-secret-key-2026'
+    RETIRED_WEBHOOK_SECRET = 'clinic_dev_secret_2026'
+
+    # --- the signing key ----------------------------------------------------
+
+    def test_production_without_a_key_refuses_to_start(self):
+        from core.settings import _resolve_secret_key
+        with self.assertRaises(RuntimeError):
+            _resolve_secret_key(debug=False, env_value='')
+        with self.assertRaises(RuntimeError):
+            _resolve_secret_key(debug=False, env_value='   ')
+
+    def test_development_without_a_key_gets_an_ephemeral_key(self):
+        from core.settings import _resolve_secret_key
+        first = _resolve_secret_key(debug=True, env_value='')
+        second = _resolve_secret_key(debug=True, env_value='')
+        self.assertTrue(len(first) >= 32, f'generated key is too short: {len(first)}')
+        self.assertNotEqual(first, second, 'the key must be generated per process, not fixed')
+        self.assertNotEqual(first, self.RETIRED_SIGNING_KEY)
+
+    def test_an_environment_key_always_wins(self):
+        from core.settings import _resolve_secret_key
+        self.assertEqual(_resolve_secret_key(debug=True, env_value='  issued-key  '), 'issued-key')
+        self.assertEqual(_resolve_secret_key(debug=False, env_value='issued-key'), 'issued-key')
+
+    def test_settings_module_ships_no_committed_signing_key(self):
+        import core.settings as core_settings
+        with open(core_settings.__file__, encoding='utf-8') as handle:
+            source = handle.read()
+        self.assertNotIn(
+            'clinic-booking-agency-template', source,
+            'a committed SECRET_KEY fallback lets anyone mint staff tokens')
+        self.assertIn('_resolve_secret_key(', source, 'SECRET_KEY must come from the resolver')
+
+    # --- the webhook secret -------------------------------------------------
+
+    def test_no_debug_fallback_constant_is_left(self):
+        from .services import webhook_security
+        self.assertFalse(
+            hasattr(webhook_security, 'DEV_FALLBACK_WEBHOOK_SECRET'),
+            'the DEBUG fallback constant must not exist: it turns a forgotten '
+            'environment variable into a credential that is published in the repo')
+        with open(webhook_security.__file__, encoding='utf-8') as handle:
+            source = handle.read()
+        self.assertNotIn(self.RETIRED_WEBHOOK_SECRET, source)
+
+    def test_unconfigured_clinic_resolves_to_no_secret_at_all(self):
+        from .services.webhook_security import resolve_webhook_secret
+        from rest_framework.test import APIRequestFactory
+        clinic = ClinicSetting.get_settings()
+        clinic.webhook_secret = ''
+        clinic.custom_config = {}
+        clinic.save()
+
+        with override_settings(WEBHOOK_SECRET='', DEBUG=True):
+            self.assertEqual(resolve_webhook_secret(), '', 'nothing is configured, so nothing is accepted')
+            request = APIRequestFactory().post(
+                '/api/v1/webhooks/expiry-sweep/', {},
+                HTTP_X_WEBHOOK_SECRET=self.RETIRED_WEBHOOK_SECRET)
+            self.assertFalse(resolve_webhook_secret())
+            from .services.webhook_security import verify_webhook_secret
+            self.assertFalse(
+                verify_webhook_secret(request),
+                'the retired literal must never authenticate, in DEBUG or out of it')
+
+    def test_expiry_sweep_refuses_the_retired_literal_even_in_debug(self):
+        clinic = ClinicSetting.get_settings()
+        clinic.webhook_secret = ''
+        clinic.custom_config = {}
+        clinic.save()
+
+        with override_settings(WEBHOOK_SECRET='', DEBUG=True):
+            res = self.client.post(
+                '/api/v1/webhooks/expiry-sweep/', {}, format='json',
+                HTTP_X_WEBHOOK_SECRET=self.RETIRED_WEBHOOK_SECRET)
+            self.assertEqual(res.status_code, 401, res.data if hasattr(res, 'data') else res.content)
+            self.assertEqual(res.data.get('error'), 'INVALID_WEBHOOK_SECRET')
+
+    def test_a_configured_secret_still_works_after_the_change(self):
+        """The fail-closed rule must not break the working path."""
+        from .services.webhook_security import resolve_webhook_secret, verify_webhook_secret
+        from rest_framework.test import APIRequestFactory
+        clinic = ClinicSetting.get_settings()
+        clinic.webhook_secret = 'rotated-per-clinic-value'
+        clinic.custom_config = {}
+        clinic.save()
+
+        with override_settings(WEBHOOK_SECRET='', DEBUG=False):
+            self.assertEqual(resolve_webhook_secret(), 'rotated-per-clinic-value')
+            good = APIRequestFactory().post('/x', {}, HTTP_X_WEBHOOK_SECRET='rotated-per-clinic-value')
+            bad = APIRequestFactory().post('/x', {}, HTTP_X_WEBHOOK_SECRET=self.RETIRED_WEBHOOK_SECRET)
+            self.assertTrue(verify_webhook_secret(good))
+            self.assertFalse(verify_webhook_secret(bad), 'the old published value is retired for good')
+

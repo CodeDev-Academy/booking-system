@@ -6,6 +6,7 @@ Configured by Brain Agent for agency-template deployment.
 from pathlib import Path
 from datetime import timedelta
 import os
+import secrets as _secrets
 import dj_database_url
 from dotenv import load_dotenv
 
@@ -17,9 +18,36 @@ load_dotenv(BASE_DIR.parent / '.env')
 load_dotenv(BASE_DIR / '.env.local')
 load_dotenv(BASE_DIR / '.env')
 
-SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'clinic-booking-agency-template-secret-key-2026')
-
 DEBUG = os.environ.get('DJANGO_DEBUG', 'True').lower() in ('true', '1', 'yes')
+
+
+def _resolve_secret_key(debug, env_value):
+    """
+    Security audit F4 (2026-11-25). SECRET_KEY used to fall back to a literal
+    committed in this file, and `render.yaml` never set DJANGO_SECRET_KEY - so
+    the documented deployment signed every staff JWT with a string anyone who
+    could read the repository knew. Whoever read it could forge a session for
+    any staff id they had.
+
+    The rule now: the key comes from the environment, or a real deployment
+    refuses to boot. Development is not broken, but it gets an EPHEMERAL key
+    generated for this process - tokens die on restart, and no secret value
+    appears anywhere in source (a hygiene test enforces that).
+    """
+    value = (env_value or '').strip()
+    if value:
+        return value
+    if debug:
+        return _secrets.token_urlsafe(50)
+    raise RuntimeError(
+        'DJANGO_SECRET_KEY is required when DEBUG is False. Generate one with: '
+        'python -c "import secrets; print(secrets.token_urlsafe(50))" - and set it '
+        'in the deployment environment. Refusing to start with a signing key that '
+        'is not secret.'
+    )
+
+
+SECRET_KEY = _resolve_secret_key(DEBUG, os.environ.get('DJANGO_SECRET_KEY'))
 
 ALLOWED_HOSTS = os.environ.get('DJANGO_ALLOWED_HOSTS', '*').split(',')
 
@@ -225,7 +253,8 @@ DISPATCH_REQUIRE_REACHABLE_CHANNEL = (
 # n8n Dispatcher shared webhook secret (Phase 1 / Task 1.1).
 # Sent by n8n as the `X-Webhook-Secret` header on every Django write call.
 # Resolution order (services/webhook_security.py): ClinicSetting.webhook_secret ->
-# custom_config['webhook_secret'] -> this env var -> dev fallback (DEBUG only).
-# In production (DEBUG=False) an empty value everywhere = all guarded endpoints fail closed (403).
+# custom_config['webhook_secret'] -> this env var. That is the whole list: an
+# unconfigured receiver answers 401 on every guarded endpoint, in DEBUG too.
+# Generate one per clinic: python -c "import secrets; print(secrets.token_urlsafe(32))"
 WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', '')
 

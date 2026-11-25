@@ -13,17 +13,20 @@ n8n Dispatcher (or an external messaging gateway) calls into the Django backend:
 Security posture:
 - Comparison is constant-time (`secrets.compare_digest`) to prevent timing attacks.
 - Resolution order: ClinicSetting.webhook_secret -> custom_config['webhook_secret']
-  -> settings.WEBHOOK_SECRET (env) -> dev fallback ONLY when DEBUG=True.
-- Fail-closed in production: an unconfigured secret rejects every guarded request.
+  -> settings.WEBHOOK_SECRET (env). That is the whole list.
+- Nothing configured = nothing accepted, in DEBUG as well as in production.
+
+Security audit F3 (2026-11-25) removed the fourth step this file used to have: a
+`DEBUG=True` fallback to a literal that was committed to this repository (in
+`webhook_security.py`, in `n8n/.env.example` and in the handover docs). A secret
+that ships in source cannot authenticate anyone, so the fallback is gone and an
+unconfigured receiver now fails closed everywhere. Rotate the retired value in any
+deployment that used it.
 """
 
 import secrets as pysecrets
 
 from django.conf import settings
-
-# Value the bundled n8n workflow JSONs send when DJANGO_WEBHOOK_SECRET env is
-# unset in local development. Never used when DEBUG=False.
-DEV_FALLBACK_WEBHOOK_SECRET = 'clinic_dev_secret_2026'
 
 
 def resolve_webhook_secret():
@@ -38,8 +41,6 @@ def resolve_webhook_secret():
         configured = (clinic.custom_config.get('webhook_secret') or '').strip()
     if not configured:
         configured = (getattr(settings, 'WEBHOOK_SECRET', '') or '').strip()
-    if not configured and getattr(settings, 'DEBUG', False):
-        configured = DEV_FALLBACK_WEBHOOK_SECRET
     return configured
 
 
