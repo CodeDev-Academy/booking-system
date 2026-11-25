@@ -10,12 +10,20 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-clinic-production-secret-key-change-me-2026}
+      # No fallback values here any more (security audit F3/F4). Compose fails
+      # loudly with "variable is not set" instead of quietly deploying a key
+      # that is published in this repository. Set both in a local .env file or
+      # your shell, generated per clinic:
+      #   python -c "import secrets; print(secrets.token_urlsafe(50))"
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:?set a per-clinic signing key}
       - DJANGO_DEBUG=${DJANGO_DEBUG:-False}
       - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-*}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
       - DATABASE_URL=${DATABASE_URL}
-      - DJANGO_WEBHOOK_SECRET=${DJANGO_WEBHOOK_SECRET:-clinic_dev_secret_2026}
+      # Django reads WEBHOOK_SECRET; n8n reads DJANGO_WEBHOOK_SECRET. Same value,
+      # two names - the backend block used to be given the n8n name, so Django
+      # never saw it and fell back to the published dev secret.
+      - WEBHOOK_SECRET=${DJANGO_WEBHOOK_SECRET:?set the shared n8n secret}
       - N8N_DISPATCH_WEBHOOK_URL=${N8N_DISPATCH_WEBHOOK_URL:-http://n8n:5678/webhook/dispatch-offers}
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/ || exit 1"]
@@ -52,6 +60,18 @@ services:
       - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
       - EXECUTIONS_DATA_PRUNE=true
       - EXECUTIONS_DATA_MAX_AGE=168
+      # Added 2026-11-25 (security audit): the workflows read these four through
+      # $env. Without them every outbound Django call resolved to the literal
+      # string "undefined/..." and every inbound guard saw an empty expected
+      # secret, so the automation was dead on arrival in this deployment path -
+      # quietly, because a skipped log write is best-effort by design.
+      - DJANGO_API_BASE_URL=${DJANGO_API_BASE_URL:-http://backend:8000/api/v1}
+      - DJANGO_WEBHOOK_SECRET=${DJANGO_WEBHOOK_SECRET:?set the shared n8n secret, same value as backend WEBHOOK_SECRET}
+      # The adapters read $env; n8n blocks that inside Code nodes unless unset.
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      # State the mode on purpose. Unset used to mean "simulate", which made a
+      # fake delivery look sent (security audit F2).
+      - PROVIDER_MOCK=${PROVIDER_MOCK:-true}
     volumes:
       - n8n_data:/home/node/.n8n
 
