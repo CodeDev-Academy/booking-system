@@ -93,10 +93,25 @@ Current truth: **17 harnesses 229/229 · build clean · Django 521/521 OK.**
 
 ## 8. Next candidates (owner chooses)
 
-1. Deploy staging (Railway/Vercel) + run migrations 0009–0011 there.
-2. Add the Telegram bot token and prove a real send.
-3. The `main` merge decision (100+ commits ahead).
-4. CI / Docker / Postgres verification.
+**Security audit run 1 (2026-11-25) reorders these.** Report:
+`C:\Users\User\security-audit-skill\booking-system\run-1\REPORT.md` (11 confirmed, 5 open).
+
+1. **Rotate + require the two shared secrets**: generate `WEBHOOK_SECRET` and
+   `DJANGO_SECRET_KEY` per clinic, delete `webhook_security.py:26` fallback, drop the literal from
+   `n8n/.env.example:20` and this file, add both to `render.yaml`.
+2. **Add the missing verify node to n8n workflow 01** (copy `04_patient_response_handler.json:40`).
+3. **Make `PROVIDER_MOCK` explicit and downgrade `mock:true` to a failed row** in 02/03/04/05/08.
+4. **Stop `seed_clinic` on boot** (`render.yaml:12`, `Procfile:1`) and gate it behind
+   `SEED_CLINIC_ALLOWED=1`.
+5. Then the session model: cookie-only auth, JWT blacklist on logout/reset, query-param auth
+   narrowed to the stream route; fix `bool()` casts at `views_auth.py:504,675`.
+6. Deploy staging (Railway/Vercel) + run migrations 0009–0011 there.
+7. Add the Telegram bot token and prove a real send.
+8. The `main` merge decision (100+ commits ahead).
+9. CI / Docker / Postgres verification (`select_for_update` is untested on the engine that matters).
+10. Dead code + performance cleanup: see `run-1\ENGINEERING-REVIEW.md`
+    (`DoctorScheduleSummaryStrip.jsx`, `neonAuth.js`, 16 unused exports, 8 `.tmp_n8n*.py`,
+    duplicate `resolve_doctor_or_default`, N+1 in `DoctorWorkloadView`, no idempotency pruning).
 
 ## 9. Key files
 

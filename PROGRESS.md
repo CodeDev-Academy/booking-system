@@ -3102,6 +3102,43 @@ deletion, and it is gone too — it drew invented utilisation percentages
 the grid no longer uses. No harness referenced it, so the gate was a zero-importer grep,
 229/229 again and a clean build.
 
+## Security audit — run 1 (2026-11-25, Cloudflare `security-audit` skill)
+
+Full source-only audit of backend, frontend, n8n, database and deployment. Artifacts live
+**outside the repo** (the skill's default): `C:\Users\User\security-audit-skill\booking-system\run-1\`
+→ `REPORT.md`, `FINDINGS-DETAIL.md`, `NEEDS-VALIDATION.md`, `ENGINEERING-REVIEW.md`,
+`findings.json`, `coverage-ledger.json`, `architecture.md`, `run-metadata.json`.
+
+**Result: 11 confirmed, 5 needs-validation.** No severity was invented from a guess, and nothing
+was exploited or deployed against. Top four, all high:
+
+1. **n8n workflow 01 (intake) has no inbound auth.** 04/05/07/08 all verify `X-Webhook-Secret`
+   first; 01 goes webhook → Django. Anyone can create unlimited queue rows.
+2. **`PROVIDER_MOCK` defaults to true when unset** (`05:153`, `02:68`, `03`, `04`, `08`) and the
+   simulator answers `status: 'sent'`, which the log nodes accept. Forget that one variable and
+   every patient message is fake while the dashboard says delivered.
+3. **The webhook secret is published in the repo** — `webhook_security.py:26`,
+   `n8n/.env.example:20`, `SESSION_HANDOVER.md:48`. Rotate per clinic, delete the fallback.
+4. **`render.yaml` does not set `DJANGO_SECRET_KEY`** while `settings.py:20` falls back to a
+   committed literal. Sessions are signed with a public key on the documented deploy path.
+
+Medium: tokens in `localStorage` (`useAuthStore.js:137,142`) defeat the HttpOnly cookie; JWT
+accepted in `?token=` on every endpoint (`authentication.py:39-42`); `CF-Connecting-IP` trusted
+unconditionally so the intake rate limit rotates away (`views_booking.py:76`); the messaging
+webhook writes rows before authenticating a non-Telegram payload (`views_realtime.py:138-200`);
+logout cannot revoke a refresh token (no blacklist app, `settings.py:157`);
+`bool('false') is True` makes admin deactivation a silent no-op (`views_auth.py:504,675`); and both
+start commands run `seed_clinic` on every boot, writing demo patients into a live database.
+
+**Run status is `incomplete`, recorded honestly:** the sub-agent quota was exhausted, so Phase 2
+hunter waves and Phase 3/5 *independent* verification did not run — one agent did everything. The
+skill's two validators also refuse to open files on Windows (they need POSIX no-follow reads), so
+`findings.json` was checked structurally against `report-schema.json` by an equivalent script
+(PASS, 16 records) and the ledger was built to the validator's documented contract.
+
+**No code was changed by the audit.** Gates still stand at 17 harnesses 229/229, build clean,
+Django 521/521.
+
 ## Next up - Phase 5 (partner handover)
 
 **Leave flow complete (2026-11-20).** Dated leave, a rolled-back preview,
