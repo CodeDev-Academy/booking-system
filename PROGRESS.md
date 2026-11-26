@@ -3262,6 +3262,38 @@ harnesses; `npm run build` clean; `makemigrations --check` clean.
 Nothing in this repository calls it (the web widget posts to Django directly), so nothing in-repo
 breaks.
 
+## Dashboard audit fixes (2026-11-26, T-790)
+
+**The problem.** Playwright audit of the live dashboard found four issues affecting reception workflow.
+
+1. **`attention_open` stayed false when there were delivery failures.** The logic compared timestamps:
+   only opened attention if the latest failure was newer than the latest success. A patient with 3
+   failures and 1 success (success being the most recent) showed `attention_open: false` — the Needs
+   Attention tab stayed at 0 even though the patient had chronic delivery problems.
+2. **No strict E.164 validation.** The seeder's `kaka` patient had phone `+0938446407` (not valid
+   E.164). The backend accepted it at create time; the queue card showed the raw value, making it
+   impossible to deliver to.
+3. **Calendar overflow at 1280px.** The three-column bento layout extended past the right edge at
+   1280px viewport (1423px content). Violates the AGENTS.md anti-overflow rule.
+4. **Timeline labels lied.** A voice call with status `queued` (held back, not attempted) showed
+   "Voice call sent" — the row header hardcoded "sent" regardless of actual status.
+
+**What changed.**
+
+1. **`attention_open` now opens when:** (a) failures outnumber successes (chronic problem), OR
+   (b) the latest event is a failure (unresolved), OR (c) failure ties with latest success
+   (never silently close). The Needs Attention tab now shows patients who need follow-up.
+2. **`is_valid_e164()` validator** added. Strict regex: `^\+[1-9]\d{6,14}$`, plus Nigerian-specific
+   check (`+234` must be exactly 14 chars). The seeder's malformed phone is now rejected at create
+   time with a clear error message.
+3. **`min-width: 0`** on `.column-calendar-slots` and `.column-doctor-timetable` — the standard
+   flex/grid overflow guard. Calendar fits at 1280px.
+4. **Timeline row header** now reflects actual status: "Voice call queued", "sms failed",
+   "whatsapp simulated", etc. instead of hardcoded "sent".
+
+**Gates.** Django **530/530**, frontend **229/229** (17 harnesses), n8n **11/11**, build clean,
+`makemigrations --check` clean.
+
 ## Next up - Phase 5 (partner handover)
 
 **Leave flow complete (2026-11-20).** Dated leave, a rolled-back preview,

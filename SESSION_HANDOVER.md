@@ -1,15 +1,16 @@
 # SESSION_HANDOVER.md — pick up here (cold start)
 
 > Read this first, then `AGENTS.md` (rules) and `PROGRESS.md` / `TEST.md` (detail).
-> Written 2026-11-26 after T-789 shipped. Keep this file current when you finish a step.
+> Written 2026-11-26 after T-790 shipped. Keep this file current when you finish a step.
 
 ## 1. Where the code is
 
-- **Working branch:** `partner-readiness/phase-1-2` @ `3705ba3` (pushed).
+- **Working branch:** `partner-readiness/phase-1-2` @ `5d298d2` (pushed).
 - **`main` / `origin/main` = `7f8bcd9`. NEVER commit to `main`.** Assert this before and after every push.
 - The branch is 100+ commits ahead of `main`; the merge decision belongs to the owner.
 - Latest commits:
-  - `dfa3ee7` T-789 workflow 01 inbound auth · `3705ba3` T-789 explicit mock mode + `simulated` status
+  - `5d298d2` T-790 dashboard audit fixes (attention_open, phone validation, calendar overflow, timeline labels)
+  - `a2a4716` handover doc update · `dfa3ee7` T-789 workflow 01 inbound auth · `3705ba3` T-789 explicit mock mode + `simulated` status
   - `e39f0ae` gitignore `.playwright-cli/` · `2395d40` T-788 env contract names · `5c8c657` T-788 real secrets
   - `afbc22e` docs: security audit run 1 recorded
   - `050b354` + `96b087e` T-787 follow-up (CalendarWeekView) · `470ab22` + `bcb5d2e` T-787 (dead calendar views)
@@ -18,6 +19,16 @@
 
 ## 2. Just shipped (do not rebuild)
 
+- **T-790 — dashboard audit fixes.** Playwright audit of the live dashboard found four issues:
+  1. **`attention_open` stayed false when there were delivery failures.** Fixed: now opens when
+     failures outnumber successes OR latest event is a failure. The Needs Attention tab now shows
+     patients with chronic delivery problems.
+  2. **No strict E.164 validation.** Added `is_valid_e164()` with strict regex. The seeder's
+     malformed `+0938446407` phone is now rejected at create time.
+  3. **Calendar overflow at 1280px.** Added `min-width: 0` to `.column-calendar-slots` and
+     `.column-doctor-timetable` — fits at 1280px viewport.
+  4. **Timeline labels lied.** A voice call with status `queued` showed "Voice call sent". Now
+     shows actual status: "Voice call queued", "sms failed", "whatsapp simulated", etc.
 - **T-789 — n8n ingestion and delivery honesty (audit F1 + F2).** Workflow 01 now verifies
   `X-Webhook-Secret` before anything runs (`Verify Intake Secret → IF Intake Authorized → 401`,
   fail closed on an unset secret); it used to accept any caller. `PROVIDER_MOCK` must now be stated
