@@ -375,8 +375,10 @@ Guards:
   as `duplicate_dispatch`, which is unlogged, and the patient silently gets nothing. A leg
   that *fails* still stamps: the adapter cannot see the HTTP outcome, so the operator
   decides whether to retry.
-- **Mock** — `PROVIDER_MOCK` unset **or** true → every provider URL is pointed at
-  `06_Provider_Simulator`; the send nodes still run for real. `PROVIDER_MOCK_FAIL=true`
+- **Mock** — `PROVIDER_MOCK=true` (stated explicitly; unset or any other value now throws —
+  audit F2) → every provider URL is pointed at
+  `06_Provider_Simulator`; the send nodes still run for real, and the log row is written as
+  `simulated`, not `sent`. `PROVIDER_MOCK_FAIL=true`
   makes the simulator answer **HTTP 500**, which drives the real failure path.
 - **Not configured** — with mock off, a channel missing its env vars routes to `skip`
   (`provider_not_configured`) instead of firing a broken call.
@@ -652,7 +654,7 @@ row without a phone is still rejected `400`.
 
 | File | State | Your job |
 |---|---|---|
-| `01_intake_webhook.json` | Intake notifications | Minor — intake lands in Django directly; n8n intake webhook is mostly for the dashboard chime |
+| `01_intake_webhook.json` | ✅ `X-Webhook-Secret` gate added 2026-11-26 (audit F1) — 9 nodes | Nothing pending. Fail-closed verifier → 401 on any missing/wrong secret, before normalisation. |
 | `02_hold_and_offer_expiry_cron.json` | Sweeper skeleton | Per §3 — add nudge branch + recovery sends + logging |
 | `03_reminder_flows.json` | Reminder skeleton | Per §2 — add SMS leg + logging + dedupe |
 | `04_patient_response_handler.json` | ✅ Rebuilt (C.2, 2026-11-16) — live `lBAjZ9ozCvFzKIBs`, 19 nodes | Done per §4 — one call to `POST /webhooks/patient-reply/`, `reply_text` delivered verbatim. PATCH branch, duplicate `/api/v1`, secret fallbacks and `re_request_slots_` prefix are **removed** (harness-asserted). See `n8n.md` §5.8.1. |

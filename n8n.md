@@ -116,7 +116,7 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
        │
        ▼
 [Build Provider Requests]
-  • mock (PROVIDER_MOCK unset/true): SMS/WhatsApp → Provider Simulator (/provider-sim/{sms|whatsapp})
+  • mock (PROVIDER_MOCK=true): SMS/WhatsApp → Provider Simulator (/provider-sim/{sms|whatsapp})
   • Telegram → real Bot API sendMessage (chat_id + inline keyboard from the item)
   • live gates: VoiceBip creds / Meta creds + WHATSAPP_TEMPLATE_NAME → else route:"skip" with a named reason
        │
@@ -185,7 +185,7 @@ It details how self-hosted **n8n** functions as the glue between patient messagi
        |
        v
 [Build Provider Requests]   (byte-identical to Workflow B's adapter)
-  |  mock (PROVIDER_MOCK unset/true): SMS/WhatsApp -> Provider Simulator (/provider-sim/{sms|whatsapp})
+  |  mock (PROVIDER_MOCK=true, stated explicitly): SMS/WhatsApp -> Provider Simulator (/provider-sim/{sms|whatsapp})
   |  Telegram -> real Bot API sendMessage (chat_id + inline keyboard from the item)
   |  live gates: VoiceBip creds / Meta creds + WHATSAPP_TEMPLATE_NAME -> else route:"skip" with a named reason
        |
@@ -543,6 +543,12 @@ send nodes. It points every provider URL at `06_Provider_Simulator` — a small 
 that answers `/webhook/provider-sim/{whatsapp|sms|voice}` with a realistic provider payload
 (`external_ref: mock-<channel>-<request_code>-<stamp>`) or an HTTP **500** when
 `PROVIDER_MOCK_FAIL=true`. Consequences:
+
+- The value must be stated as exactly `true` or `false`. Every adapter throws on unset, empty or
+  any other spelling; unset used to mean simulate, which is how a fake send could be recorded as
+  delivered (security audit F2).
+- A simulator answer (`mock: true`) is logged to Django as status **`simulated`**, not `sent`.
+  It ranks below `sent`, so a later real provider event still advances the row.
 
 - The real HTTP nodes, their auth headers and their JSON bodies run exactly as in production,
   so a green mock run is meaningful.

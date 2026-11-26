@@ -276,14 +276,22 @@ const wrap = (status, body) => status + ' - ' + JSON.stringify(body);
 
   // ---- C. adapter, mock mode -------------------------------------------------
   console.log('C. adapter (mock mode)');
-  out = runAdapter({ PROVIDER_MOCK: '' }, 'sms');
+  // Audit F2: the delivery mode must be stated. An empty or unset PROVIDER_MOCK
+  // used to mean "simulate", which is how a patient ends up never messaged while
+  // the log says sent. Prove the refusal, then exercise the explicit mock path.
+  let modeRefused = false;
+  try { runAdapter({ PROVIDER_MOCK: '' }, 'sms'); }
+  catch (e) { modeRefused = /PROVIDER_MOCK/.test(String((e && e.message) || e)); }
+  check('C0 an empty PROVIDER_MOCK refuses instead of simulating', modeRefused,
+    'unset used to mean mock, silently');
+  out = runAdapter({ PROVIDER_MOCK: 'true' }, 'sms');
   check('C1 route is sms', out[0].json.provider_request.route === 'sms');
   check('C2 mock url is the simulator', out[0].json.provider_request.url.indexOf('/sms') !== -1
     && out[0].json.provider_request.url.indexOf('provider-sim') !== -1, out[0].json.provider_request.url);
   check('C3 sms body carries the words VERBATIM', out[0].json.provider_request.body.message === WORDS);
   check('C4 to is the raw phone', out[0].json.provider_request.body.to === '+234 803 111 2233');
 
-  out = runAdapter({ PROVIDER_MOCK: '' }, 'whatsapp');
+  out = runAdapter({ PROVIDER_MOCK: 'true' }, 'whatsapp');
   check('C5 route is whatsapp', out[0].json.provider_request.route === 'whatsapp');
   const body = out[0].json.provider_request.body;
   check('C6 mock url is the simulator', out[0].json.provider_request.url.indexOf('/whatsapp') !== -1);
@@ -335,7 +343,8 @@ const wrap = (status, body) => status + ' - ' + JSON.stringify(body);
 
   // ---- D+. adapter multi-item: one push carries EVERY impacted patient -------
   console.log('D+ adapter (multi-item, 2 patients x 2 channels)');
-  out = runAdapterMulti({ PROVIDER_MOCK: '' }, [
+  // Audit F2: the mode is stated, never guessed.
+  out = runAdapterMulti({ PROVIDER_MOCK: 'true' }, [
     ADAPTER_SRC('sms'),
     ADAPTER_SRC('whatsapp'),
     Object.assign({}, ADAPTER_SRC('sms'), {

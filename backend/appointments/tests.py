@@ -5307,6 +5307,54 @@ class InteractionLogAPITests(APITestCase):
         res = self.client.get('/api/v1/interactions/', {'patient_phone': '08030001122'})
         self.assertEqual(len(res.data), 4)
 
+    def test_a_simulated_send_is_recorded_as_simulated_not_sent(self):
+        """
+        Audit F2. n8n's provider simulator answers { ok: true, mock: true }; the log
+        nodes used to write that as status "sent", so the dashboard claimed a
+        patient had been messaged when nothing left the building. The honest value
+        must be accepted by the API and must rank BELOW a real provider event, so a
+        later delivery report still advances the row.
+        """
+        self.assertIn('simulated', dict(InteractionLog.STATUS_CHOICES))
+        self.assertLess(
+            InteractionLog.STATUS_RANK['simulated'],
+            InteractionLog.STATUS_RANK['sent'],
+        )
+
+        res = self._post_with_secret({
+            'provider': 'meta_whatsapp',
+            'channel': 'whatsapp',
+            'status': 'simulated',
+            'patient_name': 'Amina Test',
+            'patient_phone': '+2348030001122',
+            'request_code': 'REQ-2026-0042',
+            'external_ref': 'wamid.mock-whatsapp-REQ-2026-0042',
+            'summary': 'Simulated by the mock provider - nothing was sent.',
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        row = InteractionLog.objects.get(external_ref='wamid.mock-whatsapp-REQ-2026-0042')
+        self.assertEqual(row.status, 'simulated')
+
+        # A simulated row is neither a delivery nor a failure.
+        self.assertNotIn('simulated', ('failed', 'no_answer', 'expired'))
+        self.assertEqual(
+            BookingRequest.objects.get(request_code='REQ-2026-0042')
+            .interactions.filter(status__in=('failed', 'no_answer', 'expired')).count(),
+            0,
+        )
+
+        # A real provider event for the same message still wins.
+        res = self._post_with_secret({
+            'provider': 'meta_whatsapp',
+            'channel': 'whatsapp',
+            'status': 'delivered',
+            'patient_phone': '+2348030001122',
+            'external_ref': 'wamid.mock-whatsapp-REQ-2026-0042',
+        })
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        row.refresh_from_db()
+        self.assertEqual(row.status, 'delivered')
+
 
 class AsyncDispatchWebhookTests(APITestCase):
     """

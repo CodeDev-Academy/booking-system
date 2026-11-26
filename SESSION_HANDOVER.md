@@ -109,13 +109,16 @@ Current truth: **17 harnesses 229/229 · 11 n8n harnesses green · build clean �
    boot refuses without a key, examples and docs scrubbed. **Still owed:** generate fresh values
    for this machine and any deployed host, and add `DJANGO_SECRET_KEY` + `WEBHOOK_SECRET` to
    `render.yaml` during the staging step.
-2. **Add the missing verify node to n8n workflow 01** (copy `04_patient_response_handler.json:40`).
-3. **Make `PROVIDER_MOCK` explicit and downgrade `mock:true` to a failed row** in 02/03/04/05/08.
+2. ~~Add the missing verify node to n8n workflow 01~~ — **done (T-789)**: verify → IF → 401 trio,
+   fail closed on an unset secret.
+3. ~~Make `PROVIDER_MOCK` explicit and downgrade `mock:true`~~ — **done (T-789)**: only `true`/`false`
+   accepted (throws otherwise), and a simulator answer is logged as the new `simulated` status
+   (migration `0012`) instead of `sent`.
 4. **Stop `seed_clinic` on boot** (`render.yaml:12`, `Procfile:1`) and gate it behind
    `SEED_CLINIC_ALLOWED=1`.
 5. Then the session model: cookie-only auth, JWT blacklist on logout/reset, query-param auth
    narrowed to the stream route; fix `bool()` casts at `views_auth.py:504,675`.
-6. Deploy staging (Railway/Vercel) + run migrations 0009–0011 there.
+6. Deploy staging (Railway/Vercel) + run migrations **0009–0012** there.
 7. Add the Telegram bot token and prove a real send.
 8. The `main` merge decision (100+ commits ahead).
 9. CI / Docker / Postgres verification (`select_for_update` is untested on the engine that matters).

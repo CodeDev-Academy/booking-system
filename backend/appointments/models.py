@@ -778,6 +778,11 @@ class InteractionLog(models.Model):
 
     STATUS_CHOICES = (
         ('queued', 'Queued'),
+        # A simulated send is NOT a delivery. n8n's provider simulator answers
+        # { ok: true, mock: true } and the log nodes record it as "simulated", so
+        # the dashboard can never claim a patient was reached when nothing left
+        # the building (security audit F2).
+        ('simulated', 'Simulated (mock provider)'),
         ('sent', 'Sent'),
         ('delivered', 'Delivered'),
         ('failed', 'Failed'),
@@ -796,6 +801,9 @@ class InteractionLog(models.Model):
     # top rank: they are peers, and the most recent terminal event wins.
     STATUS_RANK = {
         'queued': 0,
+        # Nothing left the building, so it ranks below every real provider event:
+        # a later "sent"/"delivered" for the same external_ref must win.
+        'simulated': 0,
         'sent': 1,
         'delivered': 2,
         'answered': 3,

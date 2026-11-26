@@ -193,5 +193,53 @@ win = {};
 out = run({ PROVIDER_MOCK: 'true' }, { chat_id: '12345' }, win);
 check('M15 no_active_channel stamps nothing', Object.keys(win.seen || {}).length === 0, JSON.stringify(win.seen));
 
+console.log('\nN. the delivery mode must be STATED, never guessed (audit F2)');
+
+// The adapters used to compute  providerMock = env('PROVIDER_MOCK') === '' ? true : truthy(...)
+// which means a deployment that forgot the variable simulated every send and then
+// reported it as delivered. An unset flag must never decide that a patient does not
+// get their message. These checks run the shipped adapter source.
+
+function runMode(envVars, overrides) {
+  try {
+    return { threw: false, out: run(envVars, overrides || {}, {}) };
+  } catch (err) {
+    return { threw: true, message: String((err && err.message) || err) };
+  }
+}
+
+const WA_LIVE = {
+  WHATSAPP_PHONE_NUMBER_ID: '123', WHATSAPP_ACCESS_TOKEN: 'tok',
+  WHATSAPP_TEMPLATE_NAME: 'clinic_slot_offer', WHATSAPP_TEMPLATE_LANG: 'en',
+};
+
+let m = runMode({});
+check('N1 unset PROVIDER_MOCK refuses to run instead of simulating', m.threw,
+  'it ran quietly - that is how a fake send becomes "sent"');
+check('N2 the refusal names the variable and how to fix it',
+  /PROVIDER_MOCK/.test(m.message || '') && /true|false/.test(m.message || ''), m.message);
+
+m = runMode({ PROVIDER_MOCK: '' });
+check('N3 an empty value is not treated as false', m.threw, JSON.stringify(m.message));
+
+m = runMode({ PROVIDER_MOCK: 'maybe' });
+check('N4 anything other than true or false is refused', m.threw, JSON.stringify(m.message));
+
+m = runMode({ PROVIDER_MOCK: 'TRUE' });
+check('N5 the accepted spellings are still forgiving about case', !m.threw, m.message);
+
+m = runMode(Object.assign({ PROVIDER_MOCK: 'true' }, WA_LIVE));
+check('N6 explicit true simulates', !m.threw &&
+  String(m.out[0].json.provider_request.url).indexOf('provider-sim') !== -1,
+  m.threw ? m.message : String(m.out[0].json.provider_request.url));
+
+m = runMode(Object.assign({ PROVIDER_MOCK: 'false' }, WA_LIVE));
+check('N7 explicit false goes to the real provider', !m.threw &&
+  String(m.out[0].json.provider_request.url).indexOf('graph.facebook.com') !== -1,
+  m.threw ? m.message : String(m.out[0].json.provider_request.url));
+
+check('N8 no adapter comment still promises unset=mock', !/unset or true/i.test(CODE),
+  'the comment is what the next operator reads as permission to leave it blank');
+
 console.log(failures ? '\nFAILED: ' + failures : '\nALL PASS');
 process.exit(failures ? 1 : 0);

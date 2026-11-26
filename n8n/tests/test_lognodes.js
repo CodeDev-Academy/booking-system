@@ -178,6 +178,22 @@ const isClean = (s) => typeof s === 'string' && !s.includes('\\') && !s.includes
     check('E4 success -> sent', r.payload.status === 'sent', r.payload.status);
     check('E5 success has empty error_detail', r.payload.error_detail === '', JSON.stringify(r.payload.error_detail));
     check('E6 success keeps external_ref', r.payload.external_ref === 'ext-123', r.payload.external_ref);
+
+    // ---- G. a simulated send must never be recorded as a real one -------------
+    // Workflow 06 answers { ok: true, mock: true, ... }. Before audit F2 this was
+    // written with status 'sent', so the dashboard claimed a message had reached
+    // a patient when nothing left the building.
+    r = await run(node.name, node.channel, {
+      ok: true, mock: true, id: 'wamid.mock-whatsapp-REQ-1',
+    });
+    check('G1 a simulator response is logged as simulated, not sent',
+      r.payload.status === 'simulated', r.payload.status);
+    check('G2 it is not counted as a failure either',
+      r.payload.error_detail === '', JSON.stringify(r.payload.error_detail));
+    check('G3 a real provider response stays sent', r.payload.status !== 'failed', r.payload.status);
+
+    r = await run(node.name, node.channel, { ok: true, mock: false, id: 'wamid.real-1' });
+    check('G4 mock:false is a real send', r.payload.status === 'sent', r.payload.status);
   }
 
   // ---- F. drift guard: one canonical classifier, three copies ----------------

@@ -207,13 +207,19 @@ const emptySweep = () => ({
 
     const runBuild = (items, env) => runSync('Build Provider Requests', {
       $input: { all: () => items.map((json) => ({ json })) },
-      $env: Object.assign({ DJANGO_API_BASE_URL: 'http://x/api/v1' }, env || {}),
+      // Audit F2: the delivery mode is stated, never guessed. Group C tests the
+      // simulated path, so it says so; the unset case is proven separately below.
+      $env: Object.assign({ DJANGO_API_BASE_URL: 'http://x/api/v1', PROVIDER_MOCK: 'true' }, env || {}),
     });
 
-    // Mock mode: PROVIDER_MOCK unset defaults to mock.
     let out = runBuild([rem24Item()], {});
     let j = out[0] && out[0].json;
-    check('C1 unset PROVIDER_MOCK means mock mode', j && j.adapter_meta && j.adapter_meta.provider_mock === true, j && j.adapter_meta);
+    let refused = false;
+    try { runBuild([rem24Item()], { PROVIDER_MOCK: '' }); }
+    catch (e) { refused = /PROVIDER_MOCK/.test(String((e && e.message) || e)); }
+    check('C1 an unset or empty PROVIDER_MOCK refuses instead of simulating', refused,
+      'defaulting to simulation is how a fake send becomes "sent" (audit F2)');
+    check('C1b explicit mock mode is still honoured', j && j.adapter_meta && j.adapter_meta.provider_mock === true, j && j.adapter_meta);
     check('C2 a mock SMS goes to the sms simulator', j && /\/provider-sim\/sms$/.test(String(j.provider_request.url)), j && j.provider_request.url);
     check('C3 the mock SMS body carries Django\u2019s words verbatim', j && j.provider_request.body && j.provider_request.body.message === rem24Item().message,
       j && j.provider_request.body);

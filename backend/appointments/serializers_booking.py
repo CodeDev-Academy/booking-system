@@ -273,6 +273,8 @@ class BookingRequestDetailSerializer(serializers.ModelSerializer):
         return get_patient_dossier(obj.patient_phone)
 
     # --- Task 3.4: Needs Attention fields -------------------------------
+    # `simulated` (audit F2) is deliberately in neither list: nothing was sent, so
+    # it is not a success, and nothing failed, so it must not raise an alarm.
     FAILURE_STATUSES = ('failed', 'no_answer', 'expired')
     SUCCESS_STATUSES = ('sent', 'delivered', 'answered')
 

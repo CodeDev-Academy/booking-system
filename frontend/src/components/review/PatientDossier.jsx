@@ -21,6 +21,8 @@ const STATUS_TONES = {
   delivered: 'ok',
   sent: 'ok',
   answered: 'ok',
+  // A mock-provider send (audit F2): nothing left the building.
+  simulated: 'pending',
   queued: 'pending',
   failed: 'bad',
   no_answer: 'bad',

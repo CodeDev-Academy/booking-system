@@ -71,7 +71,7 @@ services:
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
       # State the mode on purpose. Unset used to mean "simulate", which made a
       # fake delivery look sent (security audit F2).
-      - PROVIDER_MOCK=${PROVIDER_MOCK:-true}
+      - PROVIDER_MOCK=${PROVIDER_MOCK:?set PROVIDER_MOCK to true (simulate) or false (real providers)}
     volumes:
       - n8n_data:/home/node/.n8n
 

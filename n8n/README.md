@@ -19,7 +19,7 @@ All JSON templates live in [`workflows/`](workflows/).
 
 | File | Name | Trigger | Action |
 | :--- | :--- | :--- | :--- |
-| `01_intake_webhook.json` | **Patient Inbound Intake & Normalizer** | Webhook (`POST /webhook/intake`) | Ingests raw patient inquiries, normalizes phone to E.164 (+234...), registers booking in Django queue, checks operating hours, and responds with queue acknowledgment. |
+| `01_intake_webhook.json` | **Patient Inbound Intake & Normalizer** | Webhook (`POST /webhook/intake`) | Verifies `X-Webhook-Secret` first (401 otherwise, fail closed), then ingests raw patient inquiries, normalizes phone to E.164 (+234...), registers booking in Django queue, checks operating hours, and responds with queue acknowledgment. |
 | `02_hold_and_offer_expiry_cron.json` | **60-Second Temporary Hold & Expiry Sweeper** | Cron (`*/1 * * * *`) | Calls Django sweep API every 60s, dispatches 45-minute pre-expiry friendly nudges, sends 60-minute graceful expiry recovery messages with `[🔄 See New Times]`, and releases expired holds. |
 | `03_reminder_flows.json` | **Pre-Visit Reminders & Follow-Ups** | Cron (`0 8,18 * * *`) | Twice-daily check for tomorrow's appointments (24h reminder) and doctor-directed clinical follow-up recall tasks with interactive confirmation buttons. |
 | `04_patient_response_handler.json` | **Patient Response Interactive Router** | Webhook (`POST /webhook/messaging/inbound`) | Handles Telegram inline callback buttons (`select_slot_...`, `confirm_attend_...`, `cancel_...`, `re_request_slots_...`), communicates with Django, and updates appointment state. |
@@ -43,7 +43,7 @@ DJANGO_WEBHOOK_SECRET=   # generate one: python -c "import secrets; print(secret
 N8N_BLOCK_ENV_ACCESS_IN_NODE=false
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
 
-PROVIDER_MOCK=true            # true = traffic goes to 06_Provider_Simulator
+PROVIDER_MOCK=true            # REQUIRED: true = 06_Provider_Simulator (log rows say "simulated"); false = real providers. Unset throws.
 VOICEBIP_API_URL=
 VOICEBIP_API_KEY=
 VOICEBIP_VOICE_AGENT_ID=

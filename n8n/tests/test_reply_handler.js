@@ -280,7 +280,9 @@ const requireNode = (name) => {
     return runSync('Prepare Reply Delivery', {
       $input: { first: () => ({ json: answer }) },
       $: () => ({ first: () => NORMALIZED }),
-      $env: env || {},
+      // Audit F2: the mode is stated, never guessed. Group D exercises the
+      // simulated leg, so it says so explicitly.
+      $env: Object.assign({ PROVIDER_MOCK: 'true' }, env || {}),
     })[0].json;
   };
   const answer = function (over) {
@@ -293,7 +295,11 @@ const requireNode = (name) => {
   if (requireNode('Prepare Reply Delivery')) {
     let r = prep(answer());
     check('D1 mock mode points SMS at the simulator', r.provider_request.url.endsWith('/provider-sim/sms'), r.provider_request.url);
-    check('D2 mock is the default when the flag is unset', r.provider_request.route === 'sms', r.provider_request.route);
+    let refused = false;
+    try { prep(answer(), { PROVIDER_MOCK: '' }); }
+    catch (e) { refused = /PROVIDER_MOCK/.test(String((e && e.message) || e)); }
+    check('D2 an unset or empty flag refuses instead of guessing the mode', refused,
+      'defaulting to simulation means nothing is sent while the log says sent (audit F2)');
     check('D3 the reply is sent verbatim', r.provider_request.body.message === 'Thank you! Your time is held.', r.provider_request.body.message);
     check('D4 the sender id is configurable', r.provider_request.body.sender_id === 'Cedarcare', r.provider_request.body.sender_id);
     check('D5 the request code travels in metadata', r.provider_request.body.metadata.request_code === 'REQ-2026-0042', r.provider_request.body.metadata);
@@ -336,10 +342,15 @@ const requireNode = (name) => {
     r = prep(answer({ reply_text: '' }));
     check('D19 an empty reply is never sent', r.provider_request.skip_reason === 'empty_reply', r.provider_request.skip_reason);
 
-    r = prep(answer(), { PROVIDER_MOCK: 'yes' });
-    check('D20 "yes" still means mock', r.provider_request.url.includes('/provider-sim/'), r.provider_request.url);
-    r = prep(answer(), { PROVIDER_MOCK: '0' });
-    check('D21 "0" means live', r.provider_request.route === 'skip', r.provider_request.route);
+    // Audit F2: only the exact words true and false are accepted. A loose value
+    // like "yes" or "0" is a typo waiting to silently simulate real traffic.
+    let looseRefused = 0;
+    for (const loose of ['yes', '0', '1', 'on']) {
+      try { prep(answer(), { PROVIDER_MOCK: loose }); }
+      catch (e) { if (/PROVIDER_MOCK/.test(String((e && e.message) || e))) looseRefused += 1; }
+    }
+    check('D20 loose values such as "yes" or "0" are refused, not guessed', looseRefused === 4,
+      looseRefused + ' of 4 refused');
   }
   }
 
@@ -374,7 +385,9 @@ const requireNode = (name) => {
 
   if (requireNode('Log Reply Outcome')) {
     let r = await logRun({ mock: true, ok: true, channel: 'sms', external_ref: 'mock-sms-REQ-2026-0042', status: 'sent' });
-    check('E1 a delivered SMS is status sent', r.payload.status === 'sent', r.payload.status);
+    // Audit F2: this fixture carries mock:true, so it is a simulated send and the
+    // row must say so. Reporting it as sent is how a patient is never messaged.
+    check('E1 a simulated SMS is recorded as simulated', r.payload.status === 'simulated', r.payload.status);
     check('E2 the provider ref is stored', r.payload.external_ref === 'mock-sms-REQ-2026-0042', r.payload.external_ref);
     check('E3 the provider is voicebip', r.payload.provider === 'voicebip', r.payload.provider);
     check('E4 it is outbound, not inbound', r.payload.direction === 'outbound', r.payload.direction);

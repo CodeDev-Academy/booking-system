@@ -337,10 +337,24 @@ attacker-controlled garbage) and skipped, falling through to REMOTE_ADDR.
   trust when the app is exposed without a reverse proxy.
 
 **Documented decision:** the shared-secret-guarded n8n endpoints (`/slots/hold/`,
-`/re-request/`, expiry sweep, reminders) deliberately have NO IP rate-limit —
+`/re-request/`, expiry sweep, reminders) deliberately have NO IP rate-limit — 
 all n8n calls share one egress IP, so the webhook secret is the anti-abuse
 control there. The public intake endpoint keeps its 5 req/10 min limit +
 honeypot.
+
+### 7.5 Inbound n8n webhooks authenticate before anything runs
+
+Every n8n webhook that can be reached from outside verifies `X-Webhook-Secret`
+as its first node and answers `401` otherwise, fail closed (an unset
+`DJANGO_WEBHOOK_SECRET` refuses every request). This covers
+`/webhook/intake` (workflow 01), `/webhook/messaging/inbound` (04),
+`/webhook/dispatch-offers` (05), and `/webhook/disruption-alerts` (08).
+
+Workflow 01 was the exception until 2026-11-26 (security audit F1): it went
+from the webhook straight to Django, and the only shield was the public
+endpoint's 5-per-10-minutes cache counter keyed on a client-controlled header.
+The intake route is now authenticated too; the verifier passes the payload
+through unchanged so the normaliser still sees the original body.
 
 ---
 

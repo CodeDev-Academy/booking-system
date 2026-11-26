@@ -178,7 +178,7 @@ erDiagram
         string provider "voicebip | meta_whatsapp | telegram | system"
         string channel "voice | whatsapp | sms | telegram"
         string direction "outbound | inbound"
-        string status "queued | sent | delivered | failed | answered | no_answer | expired"
+        string status "queued | simulated | sent | delivered | failed | answered | no_answer | expired"
         string patient_name
         string patient_phone "E.164 normalized, indexed"
         uuid booking_request_id FK "nullable"

@@ -45,7 +45,7 @@ Never registered with anyone (internal only):
 |---|---|---|
 | `https://SERVER/webhook/dispatch-offers` | Django only, fire-and-forget | `X-Webhook-Secret` — a wrong or missing secret is refused `401` before anything is sent |
 | `https://SERVER/webhook/disruption-alerts` | Django only, fire-and-forget (one-click leave resolver) | `X-Webhook-Secret` — refused `401` before anything is sent |
-| `https://SERVER/webhook/intake` | The clinic's own booking page | none (public intake normalizer; Django re-validates everything) |
+| `https://SERVER/webhook/intake` | The clinic's own booking page | `X-Webhook-Secret` — refused `401` before anything runs (as of 2026-11-26; this route used to be open and relied on Django's rate limit) |
 | `https://SERVER/webhook/provider-sim/*` | Dev-only simulator | deactivated and deleted before launch (runbook §6) |
 
 ---
@@ -79,7 +79,7 @@ missing or wrong → **401 `{"error": "INVALID_WEBHOOK_SECRET"}`** and nothing i
 | `WEBHOOK_SECRET` | = n8n's `DJANGO_WEBHOOK_SECRET` (table above) — **required**; with `DEBUG=false` and no secret, every guarded endpoint fails closed |
 | `TELEGRAM_BOT_TOKEN` | from @BotFather; the launch interactive channel |
 | `TELEGRAM_WEBHOOK_SECRET` | separate secret for the Telegram webhook route |
-| `N8N_WEBHOOK_URL` | = `https://SERVER/webhook/intake` (intake normalizer — workflow `01`'s trigger path) |
+| `N8N_WEBHOOK_URL` | = `https://SERVER/webhook/intake` (intake normalizer — workflow `01`'s trigger path). No in-repo caller today: the web widget posts straight to Django. Anything that does call it must send `X-Webhook-Secret`. |
 | `N8N_DISRUPTION_WEBHOOK_URL` | = `https://SERVER/webhook/disruption-alerts` (one-click leave resolver push — workflow `08`); unset = fail-safe, nothing claimed |
 | `WHATSAPP_ENABLED` / `SMS_ENABLED` / `VOICE_ENABLED` | availability flags the dashboard shows; flip after §5 credentials land |
 | `DISPATCH_REQUIRE_REACHABLE_CHANNEL` | default `false` = advisory mode (recommended at launch) |

@@ -792,7 +792,8 @@ Context: the partner-authored architecture spec is saved at `plans/HYBRID_AI_OPE
   It exposes `provider_request.{route,skip_reason,method,url,headers,body}` and
   `adapter_meta` (`provider_mock`, `configured`, `voice_in_window`, `duplicate`,
   `missing_env[]`) for the log nodes that arrive in D-3.
-- Guards: mock mode (`PROVIDER_MOCK` unset **or** true -> no HTTP, realistic fake
+- Guards: mock mode (`PROVIDER_MOCK=true` — stated explicitly since T-789, audit F2 — -> no
+  HTTP, realistic fake
   `external_ref: mock-<channel>-<request_id>`; `PROVIDER_MOCK_FAIL=true` simulates a
   provider failure), best-effort 10-minute dedupe on n8n static data
   (Django `PATIENT_ALREADY_BOOKED` + offer state stay authoritative), and a
@@ -3205,6 +3206,61 @@ Django **529/529 OK** (521 + 8 new) in 539 s.
   replacing a silent one.
 - Local `backend/.env` keeps `WEBHOOK_SECRET=clinic_dev_secret_2026`. Rotate it to a generated
   value and copy it into the n8n instance as `DJANGO_WEBHOOK_SECRET`.
+
+## n8n ingestion and delivery honesty (2026-11-26, T-789, audit F1 + F2)
+
+**The problem.** Two separate ways the automation could lie.
+
+1. **Workflow 01 accepted anyone.** `/webhook/intake` went straight to the normaliser and then to
+   Django's public booking queue. Workflows 04, 05 and 08 each verify `X-Webhook-Secret` as their
+   first node; 01 did not. The only shield was the public endpoint's 5-per-10-minutes cache counter,
+   which is keyed on a client-controlled header (audit F7), so a caller could rotate it.
+2. **Unset `PROVIDER_MOCK` meant "simulate".** Every adapter computed
+   `env('PROVIDER_MOCK') === '' ? true : …`, so a deployment that forgot the variable sent nothing
+   to any patient — and the provider simulator answers `{ ok: true, mock: true }`, which the log
+   nodes wrote as `status: sent`. The dashboard showed a delivered message that never existed.
+
+**What changed.**
+
+1. **`01_intake_webhook.json` is now 9 nodes:** `Patient Intake Webhook → Verify Intake Secret →
+   IF Intake Authorized → (true) Normalize … | (false) Respond Intake Unauthorized (401)`. The
+   verifier is a copy of workflow 04's fail-closed comparison: expected from
+   `$env.DJANGO_WEBHOOK_SECRET`, accepted only when it is non-empty and matches the header. An
+   unset variable rejects every request. The payload is spread through unchanged, so the
+   normaliser still sees the original body.
+2. **`PROVIDER_MOCK` must be stated** in all five adapters (02, 03, 04, 05, 08). Only the exact
+   words `true` and `false` are accepted; anything else — unset, empty, `yes`, `0` — throws with a
+   message naming the variable and the two legal values. The compose file now uses
+   `${PROVIDER_MOCK:?…}` instead of `:-true`.
+3. **`simulated` is a real `InteractionLog` status** (migration `0012`). All 12 log nodes set it
+   when the provider response carries `mock: true`, and never for a failure. It ranks below
+   `sent`, so a later real delivery callback still advances the row; it is in neither the
+   serializer's failure list nor its success list, so it raises no alarm and claims no delivery.
+   The dashboard timeline renders it neutral (`simulated`).
+
+**Red first.**
+
+- `test_intake_webhook.js` gained a D section (16 checks): **11 of 34 failed** before the nodes
+  existed, then **38/38**.
+- `test_adapter.js` gained an N section: **5 failed** (unset ran quietly, empty treated as false,
+  `maybe` accepted, the old "unset or true" comment still present), then green.
+- `test_lognodes.js` gained a G section: **G1 failed in all three nodes** (`sent` instead of
+  `simulated`), then green.
+- `InteractionLogAPITests.test_a_simulated_send_is_recorded_as_simulated_not_sent` failed on the
+  missing choice, then passed: 201 → row `simulated` → no failure count → later `delivered`
+  advances it.
+
+Three harnesses deliberately asserted the old insecure default (sweeper C1, reminders C1, reply
+D2, disruption C0) and were rewritten to prove the refusal instead. `reply_handler` E1 asserted a
+`mock: true` fixture was `sent`; it now asserts `simulated`.
+
+**Gates.** All **11** n8n harnesses green (intake 38, reply 90, sweeper 79, reminders 82, callback
+44, simulator 19, voice 31 + four unnumbered). Django **530/530**. Frontend **229/229** across 17
+harnesses; `npm run build` clean; `makemigrations --check` clean.
+
+**Deployment note.** Any external caller of `/webhook/intake` must now send `X-Webhook-Secret`.
+Nothing in this repository calls it (the web widget posts to Django directly), so nothing in-repo
+breaks.
 
 ## Next up - Phase 5 (partner handover)
 
