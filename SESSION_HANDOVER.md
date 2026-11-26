@@ -1,15 +1,16 @@
 # SESSION_HANDOVER.md — pick up here (cold start)
 
 > Read this first, then `AGENTS.md` (rules) and `PROGRESS.md` / `TEST.md` (detail).
-> Written 2026-11-25 after T-787 shipped. Keep this file current when you finish a step.
+> Written 2026-11-26 after T-789 shipped. Keep this file current when you finish a step.
 
 ## 1. Where the code is
 
-- **Working branch:** `partner-readiness/phase-1-2` @ `6112d90` (pushed).
+- **Working branch:** `partner-readiness/phase-1-2` @ `3705ba3` (pushed).
 - **`main` / `origin/main` = `7f8bcd9`. NEVER commit to `main`.** Assert this before and after every push.
 - The branch is 100+ commits ahead of `main`; the merge decision belongs to the owner.
 - Latest commits:
-  - `2395d40` T-788 env contract names · `5c8c657` T-788 real secrets (code + 8 tests) · docs T-788 (this commit)
+  - `dfa3ee7` T-789 workflow 01 inbound auth · `3705ba3` T-789 explicit mock mode + `simulated` status
+  - `e39f0ae` gitignore `.playwright-cli/` · `2395d40` T-788 env contract names · `5c8c657` T-788 real secrets
   - `afbc22e` docs: security audit run 1 recorded
   - `050b354` + `96b087e` T-787 follow-up (CalendarWeekView) · `470ab22` + `bcb5d2e` T-787 (dead calendar views)
   - `6112d90` + `1aaf7f9` T-786 reserve slots · `8c654ce` + `8881277` T-785 lunch wire
@@ -17,6 +18,14 @@
 
 ## 2. Just shipped (do not rebuild)
 
+- **T-789 — n8n ingestion and delivery honesty (audit F1 + F2).** Workflow 01 now verifies
+  `X-Webhook-Secret` before anything runs (`Verify Intake Secret → IF Intake Authorized → 401`,
+  fail closed on an unset secret); it used to accept any caller. `PROVIDER_MOCK` must now be stated
+  as exactly `true` or `false` in all five adapters — unset used to mean "simulate". A simulator
+  answer (`mock: true`) is logged as the new `InteractionLog` status **`simulated`** (migration
+  `0012`), never `sent`; it ranks below `sent` so a real callback still advances the row. 36 new
+  harness checks + 1 Django test, red first. **Caller note:** anything outside this repo posting to
+  `/webhook/intake` must send the header; nothing in-repo calls it.
 - **T-788 — the two published secrets are gone (audit F3 + F4).** `settings.py` now resolves
   `DJANGO_SECRET_KEY` through `_resolve_secret_key()`: env value wins, `DEBUG=True` mints an
   ephemeral per-process key, `DEBUG=False` with no key **refuses to boot**. The
@@ -67,11 +76,11 @@ Start-Process npm -ArgumentList "run","dev","--","--port","5173","--strictPort" 
 # frontend harnesses (from frontend/) — expect 17 files, 229/229 checks
 Get-ChildItem tests -Filter *.js | ForEach-Object { node $_.FullName }
 npm run build
-# backend (from backend/) — expect 529/529 OK
+# backend (from backend/) - expect 530/530 OK
 python manage.py test appointments --verbosity 1
 ```
 
-Current truth: **17 harnesses 229/229 · 11 n8n harnesses green · build clean · Django 529/529 OK.**
+Current truth: **17 harnesses 229/229 · 11 n8n harnesses green · build clean · Django 530/530 OK.**
 
 ## 5. How we work (non-negotiable)
 
