@@ -123,6 +123,8 @@ export const PatientDossier = ({ dossier, interactions, onRefresh }) => {
           const Icon = CHANNEL_ICONS[it.channel] || MessageCircle;
           const Inbound = it.direction === 'inbound' ? ArrowDownLeft : ArrowUpRight;
           const tone = STATUS_TONES[it.status] || 'pending';
+          const channelLabel = it.channel === 'voice' ? 'Voice call' : it.channel;
+          const statusLabel = it.status === 'queued' ? 'queued' : it.status === 'simulated' ? 'simulated' : it.status === 'failed' ? 'failed' : 'sent';
           return (
             <li key={it.id} className="dossier-timeline-item">
               <span className={`timeline-icon channel-${it.channel}`}>
@@ -132,7 +134,7 @@ export const PatientDossier = ({ dossier, interactions, onRefresh }) => {
                 <div className="timeline-top">
                   <span className="timeline-kind">
                     <Inbound size={10} className={`dir-${it.direction}`} />
-                    {it.direction === 'inbound' ? 'Patient reply' : `${it.channel === 'voice' ? 'Voice call' : it.channel} sent`}
+                    {it.direction === 'inbound' ? 'Patient reply' : `${channelLabel} ${statusLabel}`}
                   </span>
                   <span className={`timeline-status tone-${tone} tabular-nums`}>{it.status}</span>
                   <span className="timeline-time tabular-nums">{fmtStamp(it.created_at)}</span>

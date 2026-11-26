@@ -8,6 +8,7 @@ def sanitize_phone_e164(phone: str) -> str:
     """
     Normalizes local and international phone formats into E.164 standard.
     Handles Nigerian local prefixes (080..., 070..., 090..., 081...) -> +234...
+    Returns the sanitized phone or empty string if invalid.
     """
     if not phone:
         return ""
@@ -19,6 +20,19 @@ def sanitize_phone_e164(phone: str) -> str:
     if not cleaned.startswith('+') and cleaned:
         return '+' + cleaned
     return cleaned
+
+
+def is_valid_e164(phone: str) -> bool:
+    """Strict E.164 validation: + followed by 7-15 digits, country code +234 for Nigeria."""
+    if not phone:
+        return False
+    # E.164: + followed by 1-15 digits
+    if not re.match(r'^\+[1-9]\d{6,14}$', phone):
+        return False
+    # Nigerian numbers: +234 followed by 10 digits (total 14 chars)
+    if phone.startswith('+234') and len(phone) != 14:
+        return False
+    return True
 
 
 def resolve_service_or_default(service_id):
@@ -179,8 +193,8 @@ class BookingRequestCreateSerializer(serializers.Serializer):
         # Phone sanitization
         raw_phone = attrs.get('patient_phone', '')
         sanitized_phone = sanitize_phone_e164(raw_phone)
-        if len(sanitized_phone) < 8:
-            raise serializers.ValidationError({'patient_phone': 'Invalid phone number format.'})
+        if len(sanitized_phone) < 8 or not is_valid_e164(sanitized_phone):
+            raise serializers.ValidationError({'patient_phone': 'Invalid phone number format. Use E.164 format (e.g., +2348031234567).'})
         attrs['sanitized_phone'] = sanitized_phone
 
         # Preferred Date Range normalization
@@ -297,6 +311,22 @@ class BookingRequestDetailSerializer(serializers.ModelSerializer):
         }
 
     def get_attention_open(self, obj):
+        # A booking needs attention when:
+        # 1. There's an unrecovered failure (latest event is a failure), OR
+        # 2. There are more failures than successes (chronic delivery problem), OR
+        # 3. A failure ties with the latest success (never silently close).
+        failure_count = self._failure_queryset(obj).count()
+        if failure_count == 0:
+            return False
+
+        success_count = obj.interactions.filter(
+            direction='outbound', status__in=self.SUCCESS_STATUSES,
+        ).count()
+
+        # Chronic delivery problem: more failures than successes
+        if failure_count > success_count:
+            return True
+
         latest_failure = self._failure_queryset(obj).order_by('-created_at').first()
         if latest_failure is None:
             return False
@@ -307,4 +337,4 @@ class BookingRequestDetailSerializer(serializers.ModelSerializer):
             return True
         # Tie on timestamp keeps attention open — never silently close on a
         # failure that at least matched the last good send.
-        return latest_failure.created_at > latest_success.created_at
+        return latest_failure.created_at >= latest_success.created_at
