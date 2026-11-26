@@ -158,6 +158,15 @@ class InboundWebhookView(APIView):
             )
         # DEBUG with no token configured: local development convenience — accept.
 
+        # 1.5. Shared webhook secret for all non-Telegram payloads (audit F7)
+        # Telegram uses its own cryptographic token (lines 135-159). Everything else —
+        # WhatsApp, SMS, Meta — must authenticate through the shared webhook secret,
+        # otherwise an unauthenticated caller can inject fake delivery reports and
+        # patient replies (confirmed open in run-2 of the security audit).
+        if not payload_is_telegram:
+            if not verify_webhook_secret(request):
+                return Response({'error': 'INVALID_WEBHOOK_SECRET'}, status=status.HTTP_401_UNAUTHORIZED)
+
 
         # 2. Extract update_id from raw payload or standardized serializer
         raw_update_id = (

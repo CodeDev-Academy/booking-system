@@ -2121,6 +2121,60 @@ class Phase3RealtimeWebhookTests(APITestCase):
         self.assertEqual(res_ok.status_code, status.HTTP_200_OK)
         self.assertEqual(res_ok.data['status'], 'processed')
 
+    def test_non_telegram_payloads_require_webhook_secret(self):
+        """
+        Audit F7: Non-Telegram payloads (WhatsApp/SMS) must authenticate via
+        the shared X-Webhook-Secret, otherwise an unauthenticated caller can
+        inject fake delivery reports and patient replies.
+        """
+        # WhatsApp payload without webhook secret -> 401 Unauthorized
+        whatsapp_payload = {
+            'channel': 'whatsapp',
+            'update_id': 'fake-123',
+            'entry': [{'messaging': [{'message': {'text': '1'}}]}]
+        }
+        res_no_secret = self.client.post(
+            '/api/v1/webhooks/messaging/inbound/',
+            whatsapp_payload,
+            format='json'
+        )
+        self.assertEqual(res_no_secret.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(res_no_secret.data['error'], 'INVALID_WEBHOOK_SECRET')
+
+        # WhatsApp payload with wrong secret -> 401 Unauthorized
+        res_wrong_secret = self.client.post(
+            '/api/v1/webhooks/messaging/inbound/',
+            whatsapp_payload,
+            format='json',
+            HTTP_X_WEBHOOK_SECRET='wrong-secret'
+        )
+        self.assertEqual(res_wrong_secret.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        # WhatsApp payload with correct secret -> proceeds to validation (not 401)
+        res_correct_secret = self.client.post(
+            '/api/v1/webhooks/messaging/inbound/',
+            whatsapp_payload,
+            format='json',
+            HTTP_X_WEBHOOK_SECRET='clinic_dev_secret_2026'
+        )
+        # Should not be 401 — may be 200, 400, or 409 depending on payload validity
+        self.assertNotEqual(res_correct_secret.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        # Telegram payload should NOT require X-Webhook-Secret (it uses its own token)
+        telegram_payload = {
+            'channel': 'telegram',
+            'update_id': 88442211,
+        }
+        res_telegram_no_webhook = self.client.post(
+            '/api/v1/webhooks/messaging/inbound/',
+            telegram_payload,
+            format='json',
+            # No X-Webhook-Secret header
+            HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN='prod-secret-tg-token-777'
+        )
+        # Should not be 401 — Telegram uses its own token
+        self.assertNotEqual(res_telegram_no_webhook.status_code, status.HTTP_401_UNAUTHORIZED)
+
     def test_sse_event_bus_pubsub(self):
         """
         Tests that the SSEEventBus singleton delivers events to subscribed listeners.
