@@ -59,8 +59,9 @@ def get_client_ip(request):
     Task 1.4 hardening + Review Fix #5 (header trust policy):
     - Every candidate value is validated with `ipaddress` — a spoofed or
       malformed edge header is never trusted for rate-limit bucketing.
-    - `CF-Connecting-IP` is always trusted when present: Cloudflare overwrites
-      it, so a client cannot forge it behind Cloudflare.
+    - `CF-Connecting-IP` is trusted only when the direct connection (REMOTE_ADDR)
+      is from a Cloudflare IP range. This prevents spoofing when the app is exposed
+      without Cloudflare protection (audit F6).
     - `X-Real-IP` / `X-Forwarded-For` are only trusted when
       `TRUSTED_PROXY_SETS_XFF` (default 'True' for Railway/Cloudflare) says the
       platform proxy overwrites them. If a proxy merely appends XFF, the first
@@ -73,7 +74,13 @@ def get_client_ip(request):
         trust_xff = os.environ.get('TRUSTED_PROXY_SETS_XFF', 'True').strip().lower() \
             not in ('false', '0', 'no')
 
-        candidates = [('HTTP_CF_CONNECTING_IP', True)]
+        candidates = []
+
+        # CF-Connecting-IP: only trust when REMOTE_ADDR is in Cloudflare's IP ranges
+        cf_ip_header = request.META.get('HTTP_CF_CONNECTING_IP')
+        if cf_ip_header and _is_cloudflare_ip(client_ip):
+            candidates.append(('HTTP_CF_CONNECTING_IP', True))
+
         if trust_xff:
             candidates += [('HTTP_X_REAL_IP', False), ('HTTP_X_FORWARDED_FOR', False)]
 
@@ -93,6 +100,60 @@ def get_client_ip(request):
                 )
 
     return client_ip
+
+
+# Cloudflare IP ranges (IPv4 + IPv6) for validating CF-Connecting-IP trust
+# Source: https://www.cloudflare.com/ips/
+_CLOUDFLARE_IP_NETWORKS = None
+
+
+def _get_cloudflare_networks():
+    """Lazy-load Cloudflare IP ranges. Cached after first call."""
+    global _CLOUDFLARE_IP_NETWORKS
+    if _CLOUDFLARE_IP_NETWORKS is None:
+        _CLOUDFLARE_IP_NETWORKS = [
+            # IPv4 ranges (updated 2024)
+            ipaddress.ip_network('173.245.48.0/20'),
+            ipaddress.ip_network('103.21.244.0/22'),
+            ipaddress.ip_network('103.22.200.0/22'),
+            ipaddress.ip_network('103.31.4.0/22'),
+            ipaddress.ip_network('141.101.64.0/18'),
+            ipaddress.ip_network('108.162.192.0/18'),
+            ipaddress.ip_network('190.93.240.0/20'),
+            ipaddress.ip_network('188.114.96.0/20'),
+            ipaddress.ip_network('197.234.240.0/22'),
+            ipaddress.ip_network('198.41.128.0/17'),
+            ipaddress.ip_network('162.158.0.0/15'),
+            ipaddress.ip_network('104.16.0.0/13'),
+            ipaddress.ip_network('104.24.0.0/14'),
+            ipaddress.ip_network('172.64.0.0/13'),
+            ipaddress.ip_network('131.0.72.0/22'),
+            # IPv6 ranges
+            ipaddress.ip_network('2400:cb00::/32'),
+            ipaddress.ip_network('2606:4700::/32'),
+            ipaddress.ip_network('2803:f800::/32'),
+            ipaddress.ip_network('2405:b500::/32'),
+            ipaddress.ip_network('2405:8100::/32'),
+            ipaddress.ip_network('2a06:98c0::/29'),
+            ipaddress.ip_network('2c0f:f248::/32'),
+        ]
+    return _CLOUDFLARE_IP_NETWORKS
+
+
+def _is_cloudflare_ip(ip_str):
+    """
+    Check if an IP address belongs to Cloudflare's network.
+    Returns False for malformed IPs.
+    """
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except (ValueError, TypeError):
+        return False
+
+    for network in _get_cloudflare_networks():
+        if ip in network:
+            return True
+    return False
 
 
 def resolve_doctor_or_default(doctor_id):

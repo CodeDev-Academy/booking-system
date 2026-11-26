@@ -4701,11 +4701,44 @@ class PrivacyAndIPHardeningTests(TestCase):
 
     def test_get_client_ip_trusted_valid_cf_header(self):
         from .views_booking import get_client_ip
+        # REMOTE_ADDR is a Cloudflare IP (173.245.48.0/20 range)
         req = self._make_request({
-            'REMOTE_ADDR': '10.0.0.1',
+            'REMOTE_ADDR': '173.245.48.1',
             'HTTP_CF_CONNECTING_IP': '102.89.44.7',
         })
         self.assertEqual(get_client_ip(req), '102.89.44.7')
+
+    def test_get_client_ip_cf_header_ignored_when_not_from_cloudflare(self):
+        """
+        Audit F6: CF-Connecting-IP must only be trusted when REMOTE_ADDR is
+        in Cloudflare's IP ranges. Otherwise an attacker can spoof the header
+        to bypass rate limiting.
+        """
+        from .views_booking import get_client_ip
+        # REMOTE_ADDR is NOT a Cloudflare IP
+        req = self._make_request({
+            'REMOTE_ADDR': '198.51.100.50',  # Not in Cloudflare ranges
+            'HTTP_CF_CONNECTING_IP': '102.89.44.7',
+        })
+        # Should fall back to REMOTE_ADDR
+        self.assertEqual(get_client_ip(req), '198.51.100.50')
+
+    def test_get_client_ip_cf_header_accepted_from_known_cloudflare_range(self):
+        """
+        Verify CF-Connecting-IP is trusted when REMOTE_ADDR is in Cloudflare's
+        documented IPv4 ranges (173.245.48.0/20, 104.16.0.0/13, etc.).
+        """
+        from .views_booking import get_client_ip, _is_cloudflare_ip
+        # Test a few known Cloudflare IP ranges
+        self.assertTrue(_is_cloudflare_ip('173.245.48.1'))
+        self.assertTrue(_is_cloudflare_ip('104.16.0.1'))
+        self.assertTrue(_is_cloudflare_ip('108.162.192.1'))
+        self.assertTrue(_is_cloudflare_ip('162.158.0.1'))
+
+        # Non-Cloudflare IPs
+        self.assertFalse(_is_cloudflare_ip('198.51.100.50'))
+        self.assertFalse(_is_cloudflare_ip('10.0.0.1'))
+        self.assertFalse(_is_cloudflare_ip('127.0.0.1'))
 
     def test_get_client_ip_malformed_headers_fall_through(self):
         from .views_booking import get_client_ip
@@ -4744,20 +4777,29 @@ class PrivacyAndIPHardeningTests(TestCase):
         """
         Review Fix #5: when the platform proxy merely APPENDS X-Forwarded-For
         (TRUSTED_PROXY_SETS_XFF=False), the first hop is client-controlled and
-        must not be trusted for rate-limit bucketing. CF-Connecting-IP stays
-        trusted (Cloudflare overwrites it).
+        must not be trusted for rate-limit bucketing. CF-Connecting-IP is only
+        trusted when REMOTE_ADDR is in Cloudflare's IP ranges (audit F6).
         """
         import os
         from .views_booking import get_client_ip
         prev = os.environ.get('TRUSTED_PROXY_SETS_XFF')
         os.environ['TRUSTED_PROXY_SETS_XFF'] = 'False'
         try:
+            # CF header with Cloudflare REMOTE_ADDR -> CF IP used
             req = self._make_request({
-                'REMOTE_ADDR': '10.0.0.1',
+                'REMOTE_ADDR': '173.245.48.1',  # Cloudflare IP
                 'HTTP_CF_CONNECTING_IP': '102.89.44.7',
                 'HTTP_X_FORWARDED_FOR': '102.89.44.8',
             })
-            self.assertEqual(get_client_ip(req), '102.89.44.7')  # CF still trusted
+            self.assertEqual(get_client_ip(req), '102.89.44.7')  # CF trusted (Cloudflare IP)
+
+            # CF header with non-Cloudflare REMOTE_ADDR -> REMOTE_ADDR used
+            req = self._make_request({
+                'REMOTE_ADDR': '10.0.0.1',  # Not Cloudflare
+                'HTTP_CF_CONNECTING_IP': '102.89.44.7',
+                'HTTP_X_FORWARDED_FOR': '102.89.44.8',
+            })
+            self.assertEqual(get_client_ip(req), '10.0.0.1')  # CF not trusted
 
             req = self._make_request({
                 'REMOTE_ADDR': '10.0.0.1',
