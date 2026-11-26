@@ -3334,6 +3334,35 @@ class StaffAuthSecurityHardeningTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('role', res.data)
 
+    def test_query_param_token_rejected_on_non_sse_endpoints(self):
+        """
+        Audit F5: JWT tokens in query parameters must be rejected on all endpoints
+        except SSE (EventStreamView). Query params leak into server logs and browser
+        history, creating a token theft vector.
+        """
+        # 1. Query param token on regular endpoint should be rejected (anonymous request)
+        res = self.client.get('/api/v1/auth/me/?token=fake-token-value')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        # 2. Query param ticket on regular endpoint should be rejected
+        res = self.client.get('/api/v1/auth/me/?ticket=fake-ticket-value')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        # 3. Force authenticate (simulates valid session) should work
+        self.client.force_authenticate(user=self.receptionist)
+        res = self.client.get('/api/v1/auth/me/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        # 4. Clear authentication and verify query param alone doesn't work
+        self.client.force_authenticate(user=None)
+        res = self.client.get('/api/v1/booking-requests/?token=fake-token')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        # 5. SSE endpoint with query param and no auth should also reject
+        # (SSEAuthentication allows query params but token must still be valid)
+        res = self.client.get('/api/v1/realtime/events/?limit=1&token=fake-token')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
 
 class ComprehensiveBackendSyncSpecificationTests(APITestCase):
     """

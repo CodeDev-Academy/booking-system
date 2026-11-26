@@ -13,6 +13,7 @@ from rest_framework.permissions import AllowAny
 
 from .models import IdempotencyKey, ClinicSetting, AuditLog
 from .permissions import IsStaffAuthenticated
+from .authentication import SSEAuthentication
 from rest_framework.renderers import BaseRenderer, JSONRenderer
 from .services.sse_bus import bus, broadcast_event, sse_event_stream
 from .services.telegram_service import TelegramService
@@ -36,8 +37,12 @@ class EventStreamView(APIView):
     Server-Sent Events endpoint streaming real-time clinic updates.
     Implements anti-buffering headers (X-Accel-Buffering: no), 15s heartbeats,
     and strict staff-authenticated RBAC (SEC-01).
+    
+    Uses SSEAuthentication which allows token in query parameters for EventSource
+    connections (which cannot set custom headers).
     """
     permission_classes = [IsStaffAuthenticated]
+    authentication_classes = [SSEAuthentication]
     renderer_classes = [ServerSentEventRenderer, JSONRenderer]
 
     def get(self, request):
